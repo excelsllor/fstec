@@ -12,9 +12,6 @@
 #   fstec-service.desktop
 #   fstec-service.png
 
-%define _topdir %{getenv:_topdir:%{_topdir}}
-%define _rpmdir %{_topdir}/RPMS
-
 Name:           fstec-service
 Version:        0.1.0
 Release:        1%{?dist}

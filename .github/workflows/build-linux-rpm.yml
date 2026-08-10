@@ -106,10 +106,16 @@ jobs:
             --define "_sourcedir $HOME/rpmbuild/SOURCES" \
             --define "_topdir $HOME/rpmbuild" \
             $HOME/rpmbuild/SPECS/fstec-service.spec
+      - name: Collect rpm
+        run: |
+          set -e
+          mkdir -p rpmout
+          cp $HOME/rpmbuild/RPMS/x86_64/*.rpm rpmout/
+          ls -la rpmout/
       - uses: actions/upload-artifact@v4
         with:
           name: fstec-service-rpm
-          path: $HOME/rpmbuild/RPMS/x86_64/*.rpm
+          path: rpmout/*.rpm
           if-no-files-found: error
 
   verify:

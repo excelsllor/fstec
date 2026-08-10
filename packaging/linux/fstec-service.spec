@@ -40,6 +40,9 @@ install -d %{buildroot}/usr/share/applications
 install -d %{buildroot}/usr/share/icons/hicolor/128x128/apps
 
 cp -a %{_sourcedir}/backend/. %{buildroot}/opt/fstec-service/backend/
+chmod 0755 %{buildroot}/opt/fstec-service/backend/fstec-backend
+find %{buildroot}/opt/fstec-service -type f -exec chmod a+r {} +
+find %{buildroot}/opt/fstec-service -type d -exec chmod a+rx {} +
 cp -a %{_sourcedir}/frontend/. %{buildroot}/opt/fstec-service/frontend/
 install -m 0644 %{_sourcedir}/fstec-backend.service %{buildroot}/usr/lib/systemd/system/fstec-backend.service
 install -m 0644 %{_sourcedir}/fstec-service.desktop %{buildroot}/usr/share/applications/fstec-service.desktop

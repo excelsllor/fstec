@@ -50,7 +50,7 @@ jobs:
               export LD_LIBRARY_PATH=/opt/py/lib
               /opt/py/bin/python3.10 --version
               /opt/py/bin/python3.10 -m pip install --upgrade pip wheel
-              /opt/py/bin/python3.10 -m pip install -r backend/requirements.txt pyinstaller
+              /opt/py/bin/python3.10 -m pip install --only-binary=:all: -r backend/requirements.txt pyinstaller
               cd backend && /opt/py/bin/python3.10 -m PyInstaller backend.spec --noconfirm
             '
       - name: Check glibc / libstdc++ requirement (RED OS 7 = glibc 2.17)

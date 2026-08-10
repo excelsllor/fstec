@@ -39,12 +39,34 @@ jobs:
             -v "${{ github.workspace }}":/src \
             -w /src \
             quay.io/pypa/manylinux2014_x86_64 \
-            bash -lc "
+            bash -lc '
               set -e
-              /opt/python/cp310-cp310/bin/python -m pip install --upgrade pip wheel
-              /opt/python/cp310-cp310/bin/python -m pip install -r backend/requirements.txt pyinstaller
-              cd backend && /opt/python/cp310-cp310/bin/python -m PyInstaller backend.spec --noconfirm
-            "
+              # manylinux pythons are static (no libpython.so), PyInstaller needs shared libpython
+              # -> use python-build-standalone CPython 3.10 (shared, glibc >= 2.17)
+              curl -fsSLo /tmp/py.tar.gz \
+                https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.10.20+20260807-x86_64-unknown-linux-gnu-install_only.tar.gz
+              mkdir -p /opt/py
+              tar xzf /tmp/py.tar.gz -C /opt/py --strip-components=1
+              export LD_LIBRARY_PATH=/opt/py/lib
+              /opt/py/bin/python3.10 --version
+              /opt/py/bin/python3.10 -m pip install --upgrade pip wheel
+              /opt/py/bin/python3.10 -m pip install -r backend/requirements.txt pyinstaller
+              cd backend && /opt/py/bin/python3.10 -m PyInstaller backend.spec --noconfirm
+            '
+      - name: Check glibc / libstdc++ requirement (RED OS 7 = glibc 2.17)
+        run: |
+          set -e
+          for f in backend/dist/fstec-backend/fstec-backend backend/dist/fstec-backend/_internal/libpython3.10.so.1.0; do
+            GLIBC_MAX=$(readelf --version-info "$f" | grep -o 'GLIBC_[0-9]*\.[0-9]*' | sort -V | tail -1)
+            GLIBCXX_MAX=$(readelf --version-info "$f" | grep -o 'GLIBCXX_[0-9]*\.[0-9]*' | sort -V | tail -1)
+            echo "$f -> $GLIBC_MAX, $GLIBCXX_MAX"
+            case "$GLIBC_MAX" in GLIBC_2.17|GLIBC_2.16|GLIBC_2.15|GLIBC_2.14|GLIBC_2.13|GLIBC_2.12|GLIBC_2.11|GLIBC_2.10|GLIBC_2.9|GLIBC_2.8|GLIBC_2.7|GLIBC_2.5|GLIBC_2.4|GLIBC_2.3|GLIBC_2.2|GLIBC_2.1|GLIBC_2.0) ;;
+              *) echo "ERROR: $f needs newer glibc ($GLIBC_MAX)"; exit 1 ;;
+            esac
+            case "$GLIBCXX_MAX" in ""|GLIBCXX_3.4.19|GLIBCXX_3.4.18|GLIBCXX_3.4.17|GLIBCXX_3.4.16|GLIBCXX_3.4.15|GLIBCXX_3.4.14|GLIBCXX_3.4.13|GLIBCXX_3.4.12|GLIBCXX_3.4.11|GLIBCXX_3.4.10|GLIBCXX_3.4.9|GLIBCXX_3.4) ;;
+              *) echo "ERROR: $f needs newer libstdc++ ($GLIBCXX_MAX)"; exit 1 ;;
+            esac
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: backend-linux

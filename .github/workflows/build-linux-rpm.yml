@@ -31,15 +31,20 @@ jobs:
   backend:
     name: Build backend (PyInstaller, glibc 2.17)
     runs-on: ubuntu-latest
-    container: quay.io/pypa/manylinux2014_x86_64
     steps:
       - uses: actions/checkout@v4
-      - name: Prepare python
-        run: /opt/python/cp310-cp310/bin/python -m pip install --upgrade pip wheel
-      - name: Install deps
-        run: /opt/python/cp310-cp310/bin/python -m pip install -r backend/requirements.txt pyinstaller
-      - name: Build backend
-        run: cd backend && /opt/python/cp310-cp310/bin/python -m PyInstaller backend.spec --noconfirm
+      - name: Build backend in manylinux2014 (glibc 2.17)
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}":/src \
+            -w /src \
+            quay.io/pypa/manylinux2014_x86_64 \
+            bash -lc "
+              set -e
+              /opt/python/cp310-cp310/bin/python -m pip install --upgrade pip wheel
+              /opt/python/cp310-cp310/bin/python -m pip install -r backend/requirements.txt pyinstaller
+              cd backend && /opt/python/cp310-cp310/bin/python -m PyInstaller backend.spec --noconfirm
+            "
       - uses: actions/upload-artifact@v4
         with:
           name: backend-linux

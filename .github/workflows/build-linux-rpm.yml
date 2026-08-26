@@ -46,7 +46,7 @@ jobs:
               PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.10.20+20260807-x86_64-unknown-linux-gnu-install_only.tar.gz"
               curl -fsSLo /tmp/py.tar.gz "$PYTHON_URL"
               # Verify SHA256 checksum (update hash when upgrading python-build-standalone)
-              echo "417e8e9d42e4b4e4d07a7b6f22c67e76c492e0f9a20a85e6c4f60c82b7c8e0a0  /tmp/py.tar.gz" | sha256sum -c -
+              echo "36d480cf1f8ca45308c6cfedaad54a127e973e0525a97ca19a0229dbd5ce5f13  /tmp/py.tar.gz" | sha256sum -c -
               mkdir -p /opt/py
               tar xzf /tmp/py.tar.gz -C /opt/py --strip-components=1
               export LD_LIBRARY_PATH=/opt/py/lib

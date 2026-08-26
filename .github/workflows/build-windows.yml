@@ -60,7 +60,8 @@ jobs:
         working-directory: frontend
       - name: Build Tauri
         shell: cmd
-        run: 'frontend\node_modules\.bin\tauri.cmd build'
+        working-directory: src-tauri
+        run: '..\frontend\node_modules\.bin\tauri.cmd build'
       - uses: actions/upload-artifact@v4
         with:
           name: fstec-service-windows

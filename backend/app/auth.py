@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from typing import Optional
+import logging
 import bcrypt
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
@@ -10,11 +11,15 @@ from app.database import get_db
 from app.models import User
 from app.schemas import TokenData
 
+logger = logging.getLogger(__name__)
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
 def hash_password(password: str) -> str:
     pw = password.encode("utf-8")[:72]
+    if len(password.encode("utf-8")) > 72:
+        logger.warning("Password truncated to 72 bytes for bcrypt hashing")
     return bcrypt.hashpw(pw, bcrypt.gensalt()).decode("utf-8")
 
 

@@ -55,7 +55,7 @@ export default function LetterList() {
       const { data } = await lettersApi.list();
       setLetters(data);
     } catch (err) {
-      console.error(err);
+      console.error(err?.message || "Error");
     } finally {
       setLoading(false);
     }
@@ -76,7 +76,7 @@ export default function LetterList() {
       setDeleteId(null);
       load();
     } catch (err) {
-      console.error(err);
+      console.error(err?.message || "Error");
     }
   };
 

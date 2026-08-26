@@ -24,16 +24,19 @@
 ## Безопасность
 
 - [ ] На чистой БД: `GET /api/auth/status` → `needs_setup: true`
-- [ ] `GET /api/auth/bootstrap` отдаёт `admin` + сгенерированный пароль (длина ≥ 6)
-- [ ] После первого успешного входа: `needs_setup: false`, `/api/auth/bootstrap` → 404
-- [ ] В `DATA_DIR` нет файла с паролем (одноразовый пароль хранится в БД
-      и удаляется после входа)
+- [ ] Bootstrap-пароль выводится в лог при старте (`journalctl -u fstec-backend` или `backend.log`)
+- [ ] После первого успешного входа: `needs_setup: false`
+- [ ] Bootstrap-пароль хранится в БД как bcrypt-хэш (не plaintext)
+- [ ] В `DATA_DIR` нет файла с паролем
 - [ ] Если пользователей нет (напр., все удалены) — админ создаётся заново
 - [ ] Подделанный JWT (старый/чужой ключ) → 401
-- [ ] Rate-limit логина: 5 неудач за 5 минут → 429
+- [ ] Rate-limit логина: 5 неудач за 5 минут → 429 (в SQLite, переживает рестарт)
 - [ ] Загрузка недопустимого расширения → 415, превышение лимитов → 413
-- [ ] `/docs`, `/redoc`, `/openapi.json` скрыты при `FSTEC_DISABLE_DOCS=1`
-- [ ] CSP задан в `tauri.conf.json`, скачивание DOCX работает при включённом CSP
+- [ ] Проверка magic bytes при загрузке файлов
+- [ ] Object-level auth: удаление/изменение чужого письма → 403 (non-admin)
+- [ ] `/docs`, `/redoc`, `/openapi.json` скрыты по умолчанию (`FSTEC_DISABLE_DOCS=1`)
+- [ ] Service запускается от fstec (не root), `/var/lib/fstec-service` 0700
+- [ ] RPM spec: `%pre` создаёт fstec user/group, `%post` не автозапускает сервис
 - [ ] В репозитории нет секретов; `secret.key` генерируется при первом старте
 
 ## Данные

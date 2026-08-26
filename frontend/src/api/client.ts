@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_BASE = "http://127.0.0.1:8765";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8765";
 
 export const api = axios.create({
   baseURL: API_BASE,
@@ -141,10 +141,9 @@ export interface LetterResponse {
 export const authApi = {
   login: (username: string, password: string) =>
     api.post<TokenResponse>("/api/auth/login", { username, password }),
-  bootstrap: () => api.get<{ username: string; password: string }>("/api/auth/bootstrap"),
   me: () => api.get<UserResponse>("/api/auth/me"),
   status: () =>
-    api.get<{ needs_setup: boolean; user_count: number; bootstrap_username: string | null }>(
+    api.get<{ needs_setup: boolean; user_count: number }>(
       "/api/auth/status"
     ),
 };

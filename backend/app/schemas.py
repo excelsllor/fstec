@@ -25,13 +25,13 @@ UserRole = Literal["admin", "user"]
 
 
 class UserCreate(UserBase):
-    password: str = Field(min_length=MIN_PASSWORD_LENGTH)
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=128)
     role: UserRole = "user"
 
 
 class UserUpdate(BaseModel):
     full_name: str | None = None
-    password: str | None = Field(default=None, min_length=MIN_PASSWORD_LENGTH)
+    password: str | None = Field(default=None, min_length=MIN_PASSWORD_LENGTH, max_length=128)
     role: UserRole | None = None
     is_active: bool | None = None
 
@@ -219,6 +219,14 @@ class VulnerabilityUpdate(BaseModel):
     action_details: str | None = None
     response_point: str | None = None
     software: str | None = None
+
+
+class ThreatMeasuresUpdate(BaseModel):
+    measures: list[str]
+
+
+class ResponseContentUpdate(BaseModel):
+    content: str = Field(max_length=100000)
 
 
 class GenerateResponseRequest(BaseModel):

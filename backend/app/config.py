@@ -1,7 +1,10 @@
 import os
 import secrets
 import stat
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("FSTEC_DATA_DIR")) if os.environ.get("FSTEC_DATA_DIR") else BASE_DIR / "data"
@@ -16,6 +19,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 120
 
 MIN_USERNAME_LENGTH = 3
 MIN_PASSWORD_LENGTH = 6
+MAX_PASSWORD_LENGTH = 128
 
 BOOTSTRAP_USERNAME = "admin"
 BOOTSTRAP_FULL_NAME = "Администратор"
@@ -47,11 +51,12 @@ def _load_or_create_secret(path: Path) -> str:
         path.write_text(value, encoding="utf-8")
         try:
             path.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.error("Cannot set permissions on %s: %s — secret key may be world-readable", path, e)
         return value
-    except OSError:
-        return secrets.token_hex(32)
+    except OSError as e:
+        logger.critical("Cannot read or write secret key at %s: %s — token verification will fail", path, e)
+        raise SystemExit(1) from e
 
 
 SECRET_KEY = _load_or_create_secret(SECRET_FILE)

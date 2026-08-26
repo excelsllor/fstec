@@ -1,8 +1,8 @@
 """API-смоук: полный цикл на всех 12 эталонных письмах на временной БД.
 
 Запускает бэкенд (run_server.py) с FSTEC_DATA_DIR=<временная папка>,
-ждёт /api/health, выполняет: bootstrap (автосоздание admin) -> login
--> upload -> generate -> download DOCX -> 4 экспорта IOC для каждого письма,
+ждёт /api/health, выполняет: login (пароль из backend.log) -> upload
+-> generate -> download DOCX -> 4 экспорта IOC для каждого письма,
 затем проверяет список писем и корректно завершает процесс. Временные
 данные удаляются.
 
@@ -13,6 +13,7 @@
 """
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -76,22 +77,27 @@ def main():
         r = c.get("/api/auth/status")
         check("status needs_setup", r.status_code == 200 and r.json().get("needs_setup"),
               str(r.status_code))
-        r = c.get("/api/auth/bootstrap")
-        check("bootstrap", r.status_code == 200, str(r.status_code))
-        bootstrap = r.json() if r.status_code == 200 else {}
-        username = bootstrap.get("username", "")
-        password = bootstrap.get("password", "")
-        check("bootstrap username", username == "admin", username)
-        check("bootstrap password length", len(password) >= 6, f"len={len(password)}")
-        r = c.post("/api/auth/login", json={"username": username, "password": password})
+        # Read bootstrap password from backend.log
+        password = None
+        log_path = os.path.join(data_dir, "logs", "backend.log")
+        try:
+            with open(log_path) as f:
+                for line in f:
+                    m = re.search(r"Bootstrap password for user .admin.: (\S+)", line)
+                    if m:
+                        password = m.group(1)
+                        break
+        except Exception:
+            pass
+        check("bootstrap_password_in_log", password is not None and len(password) >= 6,
+              str(password))
+        r = c.post("/api/auth/login", json={"username": "admin", "password": password})
         check("login", r.status_code == 200, str(r.status_code))
         token = r.json().get("access_token", "")
         H = {"Authorization": f"Bearer {token}"}
         r = c.get("/api/auth/status")
         check("status после входа", r.status_code == 200 and not r.json().get("needs_setup"),
               str(r.status_code))
-        r = c.get("/api/auth/bootstrap")
-        check("bootstrap после входа 404", r.status_code == 404, str(r.status_code))
 
         for num in LETTERS:
             pdf = os.path.join(BASE, num, num + ".pdf")

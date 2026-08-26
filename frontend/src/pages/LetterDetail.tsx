@@ -121,7 +121,7 @@ export default function LetterDetail() {
       const { data } = await lettersApi.get(Number(id));
       setLetter(data);
     } catch (err) {
-      console.error(err);
+      console.error(err?.message || "Error");
     } finally {
       setLoading(false);
     }
@@ -503,7 +503,7 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
 }
 
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 const threatCutMarkers = [
@@ -613,7 +613,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
       setPreview(data);
       setEditText(buildText(data));
     } catch (err) {
-      console.error(err);
+      console.error(err?.message || "Error");
     } finally {
       setLoading(false);
     }
@@ -637,7 +637,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      console.error(err);
+      console.error(err?.message || "Error");
     }
   };
 

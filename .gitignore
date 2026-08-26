@@ -12,6 +12,12 @@ backend/build/
 backend/data/
 backend/*.egg-info/
 
+# Secrets / database
+*.db
+*.key
+*.pem
+*.env
+
 # Rust / Tauri
 src-tauri/target/
 src-tauri/gen/

@@ -9,8 +9,14 @@ from app.auth import get_current_user
 from app.generator.response_generator import generate_response, generate_response_from_text
 from app.generator.ioc_exporter import EXPORT_TYPES, EXPORT_FILENAMES
 from app.generator.ioc_docx_exporter import EXPORT_DOCX_TYPES, EXPORT_DOCX_FILENAMES
+from app.schemas import ThreatMeasuresUpdate, ResponseContentUpdate
 
 router = APIRouter(prefix="/api/letters", tags=["generate"])
+
+
+def _require_letter_access(letter: Letter, user: User):
+    if letter.created_by != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Нет доступа к этому письму")
 
 
 @router.post("/{letter_id}/generate", status_code=201)
@@ -22,6 +28,7 @@ def generate_letter_response(
     letter = db.query(Letter).filter(Letter.id == letter_id).first()
     if not letter:
         raise HTTPException(status_code=404, detail="Письмо не найдено")
+    _require_letter_access(letter, current_user)
 
     threats = db.query(Threat).filter(Threat.letter_id == letter_id).order_by(Threat.number).all()
     vulns = db.query(Vulnerability).filter(Vulnerability.letter_id == letter_id).all()
@@ -162,7 +169,7 @@ def get_response_preview(
 def update_threat_measures(
     letter_id: int,
     threat_id: int,
-    data: dict,
+    data: ThreatMeasuresUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -170,9 +177,12 @@ def update_threat_measures(
     if not threat:
         raise HTTPException(status_code=404, detail="Угроза не найдена")
 
-    measures = data.get("measures")
-    if measures is None:
-        raise HTTPException(status_code=400, detail="Нет поля measures")
+    letter = db.query(Letter).filter(Letter.id == letter_id).first()
+    if not letter:
+        raise HTTPException(status_code=404, detail="Письмо не найдено")
+    _require_letter_access(letter, current_user)
+
+    measures = data.measures
 
     threat.measures = "\n".join(measures)
     db.commit()
@@ -241,17 +251,16 @@ def download_response(
 @router.put("/{letter_id}/response")
 def update_response_content(
     letter_id: int,
-    data: dict,
+    data: ResponseContentUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     letter = db.query(Letter).filter(Letter.id == letter_id).first()
     if not letter:
         raise HTTPException(status_code=404, detail="Письмо не найдено")
+    _require_letter_access(letter, current_user)
 
-    text = data.get("content")
-    if text is None:
-        raise HTTPException(status_code=400, detail="Нет поля content")
+    text = data.content
 
     docx_bytes = generate_response_from_text(text)
 

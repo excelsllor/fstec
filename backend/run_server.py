@@ -5,6 +5,8 @@
 полностью офлайн и данные переживали перезапуск/обновление приложения.
 """
 import os
+import sys
+import logging
 from pathlib import Path
 
 
@@ -27,6 +29,9 @@ def main():
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "backend.log"
 
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+
     log_config = {
         "version": 1,
         "disable_existing_loggers": False,
@@ -43,6 +48,11 @@ def main():
                 "encoding": "utf-8",
                 "formatter": "default",
             },
+            "stderr": {
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stderr",
+                "formatter": "default",
+            },
             "access": {
                 "class": "logging.handlers.RotatingFileHandler",
                 "filename": str(log_file),
@@ -51,6 +61,10 @@ def main():
                 "encoding": "utf-8",
                 "formatter": "access",
             },
+        },
+        "root": {
+            "handlers": ["default", "stderr"],
+            "level": "WARNING",
         },
         "loggers": {
             "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},

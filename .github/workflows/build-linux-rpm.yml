@@ -43,8 +43,10 @@ jobs:
               set -e
               # manylinux pythons are static (no libpython.so), PyInstaller needs shared libpython
               # -> use python-build-standalone CPython 3.10 (shared, glibc >= 2.17)
-              curl -fsSLo /tmp/py.tar.gz \
-                https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.10.20+20260807-x86_64-unknown-linux-gnu-install_only.tar.gz
+              PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.10.20+20260807-x86_64-unknown-linux-gnu-install_only.tar.gz"
+              curl -fsSLo /tmp/py.tar.gz "$PYTHON_URL"
+              # Verify SHA256 checksum (update hash when upgrading python-build-standalone)
+              echo "417e8e9d42e4b4e4d07a7b6f22c67e76c492e0f9a20a85e6c4f60c82b7c8e0a0  /tmp/py.tar.gz" | sha256sum -c -
               mkdir -p /opt/py
               tar xzf /tmp/py.tar.gz -C /opt/py --strip-components=1
               export LD_LIBRARY_PATH=/opt/py/lib
@@ -138,7 +140,7 @@ jobs:
       - name: Smoke test
         run: |
           cat > /tmp/smoke.py <<'PY'
-          import json, urllib.request, urllib.error, sys
+          import json, urllib.request, urllib.error, sys, re
 
           BASE = "http://127.0.0.1:8765"
           ok, fail = [], []
@@ -193,11 +195,20 @@ jobs:
           st = json.loads(b)
           check("needs_setup", s == 200 and st.get("needs_setup"), str(s))
 
-          s, b = call("GET", "/api/auth/bootstrap")
-          bs = json.loads(b)
-          check("bootstrap", s == 200 and bs.get("username") == "admin" and len(bs.get("password", "")) >= 6, str(s))
+          # Read bootstrap password from server log
+          bs_password = None
+          try:
+              with open("/tmp/be.log") as f:
+                  for line in f:
+                      m = re.search(r"Bootstrap password for user .admin.: (\S+)", line)
+                      if m:
+                          bs_password = m.group(1)
+                          break
+          except Exception:
+              pass
+          check("bootstrap_password_in_log", bs_password is not None and len(bs_password) >= 6, str(bs_password))
 
-          s, b = call("POST", "/api/auth/login", body=json.dumps({"username": bs["username"], "password": bs["password"]}).encode(), ct="application/json")
+          s, b = call("POST", "/api/auth/login", body=json.dumps({"username": "admin", "password": bs_password}).encode(), ct="application/json")
           tok = json.loads(b).get("access_token", "")
           check("login", s == 200 and bool(tok), str(s))
           H = {"Authorization": "Bearer " + tok}
@@ -214,9 +225,6 @@ jobs:
 
           s, b = call("GET", "/api/letters", headers=H)
           check("letters list", s == 200, str(s))
-
-          s, b = call("GET", "/api/auth/bootstrap", headers=H)
-          check("bootstrap consumed", s == 404, str(s))
 
           print("\nTOTAL:", len(ok), "PASS,", len(fail), "FAIL")
           sys.exit(1 if fail else 0)

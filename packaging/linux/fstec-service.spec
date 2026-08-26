@@ -30,28 +30,32 @@ AutoReqProv:    yes
 %build
 # nothing to build, binaries are prebuilt
 
+%pre
+getent group fstec >/dev/null || groupadd -r fstec
+getent passwd fstec >/dev/null || useradd -r -g fstec -d /var/lib/fstec-service -s /sbin/nologin -c "FSTEC Service" fstec
+
 %install
 rm -rf %{buildroot}
 install -d %{buildroot}/opt/fstec-service/backend
 install -d %{buildroot}/opt/fstec-service/frontend
-install -d %{buildroot}/var/lib/fstec-service
+install -d -m 0700 %{buildroot}/var/lib/fstec-service
 install -d %{buildroot}/usr/lib/systemd/system
 install -d %{buildroot}/usr/share/applications
 install -d %{buildroot}/usr/share/icons/hicolor/128x128/apps
 
 cp -a %{_sourcedir}/backend/. %{buildroot}/opt/fstec-service/backend/
-chmod 0755 %{buildroot}/opt/fstec-service/backend/fstec-backend
-find %{buildroot}/opt/fstec-service -type f -exec chmod a+r {} +
-find %{buildroot}/opt/fstec-service -type d -exec chmod a+rx {} +
+chmod 0750 %{buildroot}/opt/fstec-service/backend/fstec-backend
 cp -a %{_sourcedir}/frontend/. %{buildroot}/opt/fstec-service/frontend/
 install -m 0644 %{_sourcedir}/fstec-backend.service %{buildroot}/usr/lib/systemd/system/fstec-backend.service
 install -m 0644 %{_sourcedir}/fstec-service.desktop %{buildroot}/usr/share/applications/fstec-service.desktop
 install -m 0644 %{_sourcedir}/fstec-service.png %{buildroot}/usr/share/icons/hicolor/128x128/apps/fstec-service.png
 
+chown -R fstec:fstec %{buildroot}/opt/fstec-service
+chown -R fstec:fstec %{buildroot}/var/lib/fstec-service
+
 %post
 systemctl daemon-reload || :
 systemctl enable fstec-backend.service || :
-systemctl start fstec-backend.service || :
 
 %preun
 if [ "$1" = "0" ]; then
@@ -63,9 +67,9 @@ fi
 systemctl daemon-reload || :
 
 %files
-/opt/fstec-service/backend
-/opt/fstec-service/frontend
-/var/lib/fstec-service
+%attr(0750, fstec, fstec) /opt/fstec-service/backend
+%attr(0755, fstec, fstec) /opt/fstec-service/frontend
+%attr(0700, fstec, fstec) %dir /var/lib/fstec-service
 /usr/lib/systemd/system/fstec-backend.service
 /usr/share/applications/fstec-service.desktop
 /usr/share/icons/hicolor/128x128/apps/fstec-service.png

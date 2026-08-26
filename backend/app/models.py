@@ -28,6 +28,16 @@ class BootstrapSecret(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class LoginAttempt(Base):
+    __tablename__ = "login_attempts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ip = Column(String(45), nullable=False, index=True)
+    username = Column(String(100), nullable=False)
+    attempts = Column(Integer, default=1)
+    first_attempt_at = Column(DateTime, nullable=False)
+
+
 class Letter(Base):
     __tablename__ = "letters"
 

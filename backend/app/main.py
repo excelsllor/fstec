@@ -3,22 +3,32 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
+import logging
 import os
 from pathlib import Path
 from app.database import init_db, SessionLocal
 from app.api import auth, users, letters, generate, templates
 from app.api.auth import ensure_bootstrap
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     with SessionLocal() as db:
-        ensure_bootstrap(db)
+        bootstrap_pw = ensure_bootstrap(db)
+        if bootstrap_pw:
+            logger.warning(
+                "Bootstrap password for user '%s': %s — "
+                "check systemd journal (journalctl -u fstec-backend) "
+                "or save it now. This password is shown ONLY ONCE.",
+                "admin", bootstrap_pw,
+            )
     yield
 
 
-_docs_enabled = not os.environ.get("FSTEC_DISABLE_DOCS")
+_docs_enabled = not os.environ.get("FSTEC_DISABLE_DOCS", "1")
 
 app = FastAPI(
     title="FSTEC Service API",
@@ -37,7 +47,7 @@ app.add_middleware(
         "tauri://localhost",
         "http://tauri.localhost",
     ],
-    allow_origin_regex=r"^(https?://(tauri\.localhost|localhost|127\.0\.0\.1)(:\d+)?|tauri://localhost)$",
+    allow_origin_regex=r"^(https?://(tauri\.localhost|localhost|127\.0\.0\.1)(:8765)?|tauri://localhost)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

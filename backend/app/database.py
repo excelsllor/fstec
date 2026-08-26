@@ -19,6 +19,7 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_threats_table()
     _migrate_user_roles()
+    _migrate_bootstrap_hash()
     _populate_defaults()
 
 
@@ -47,6 +48,22 @@ def _migrate_threats_table():
             if "full_text" not in mt_col_names:
                 conn.execute(text("ALTER TABLE measure_templates ADD COLUMN full_text TEXT DEFAULT ''"))
                 conn.commit()
+    except Exception:
+        pass
+
+
+def _migrate_bootstrap_hash():
+    """Hash any existing plaintext bootstrap secrets (C-2 fix)."""
+    try:
+        from app.auth import hash_password
+        with engine.connect() as conn:
+            rows = conn.execute(text("SELECT id, secret FROM bootstrap_secrets")).fetchall()
+            for row_id, secret in rows:
+                if secret and not secret.startswith("$2"):
+                    new_hash = hash_password(secret)
+                    conn.execute(text("UPDATE bootstrap_secrets SET secret = :secret WHERE id = :id"),
+                                 {"secret": new_hash, "id": row_id})
+            conn.commit()
     except Exception:
         pass
 

@@ -16,6 +16,31 @@ from app.extractor.vuln_extractor import extract_vulns
 
 router = APIRouter(prefix="/api/letters", tags=["letters"])
 
+_MAGIC_BYTES = {
+    ".pdf": [b"%PDF"],
+    ".docx": [b"PK"],
+    ".doc": [b"\xd0\xcf\x11\xe0"],
+    ".xlsx": [b"PK"],
+    ".xls": [b"\xd0\xcf\x11\xe0"],
+    ".odt": [b"PK"],
+}
+
+
+def _validate_magic_bytes(filename: str, content: bytes):
+    ext = Path(filename).suffix.lower()
+    expected = _MAGIC_BYTES.get(ext)
+    if expected and content:
+        if not any(content[:8].startswith(magic) for magic in expected):
+            raise HTTPException(
+                status_code=415,
+                detail=f"Файл «{filename}» не соответствует формату {ext} (проверка содержимого)",
+            )
+
+
+def _require_letter_access(letter: Letter, user: User):
+    if letter.created_by != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Нет доступа к этому письму")
+
 
 @router.post("/upload", response_model=LetterResponse, status_code=201)
 def upload_letter(
@@ -43,6 +68,8 @@ def upload_letter(
     pdf_content = pdf_file.file.read()
     if len(pdf_content) > MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail=f"Файл больше {MAX_FILE_SIZE // (1024 * 1024)} МБ")
+
+    _validate_magic_bytes(pdf_file.filename, pdf_content)
 
     total_size = len(pdf_content)
 
@@ -104,6 +131,7 @@ def upload_letter(
         if len(att_content) > MAX_FILE_SIZE:
             _cleanup()
             raise HTTPException(status_code=413, detail=f"Вложение «{att_name}» больше {MAX_FILE_SIZE // (1024 * 1024)} МБ")
+        _validate_magic_bytes(att_name, att_content)
         total_size += len(att_content)
         if total_size > MAX_TOTAL_SIZE:
             _cleanup()
@@ -233,6 +261,11 @@ def update_vulnerability(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    letter = db.query(Letter).filter(Letter.id == letter_id).first()
+    if not letter:
+        raise HTTPException(status_code=404, detail="Письмо не найдено")
+    _require_letter_access(letter, current_user)
+
     vuln = db.query(Vulnerability).filter(
         Vulnerability.id == vuln_id,
         Vulnerability.letter_id == letter_id,
@@ -267,6 +300,7 @@ def delete_letter(
     letter = db.query(Letter).filter(Letter.id == letter_id).first()
     if not letter:
         raise HTTPException(status_code=404, detail="Письмо не найдено")
+    _require_letter_access(letter, current_user)
     db.delete(letter)
     db.commit()
 

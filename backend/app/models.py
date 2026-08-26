@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, ForeignKey, Boolean, JSON,
 )
@@ -15,7 +15,7 @@ class User(Base):
     role = Column(String(20), nullable=False, default="user")
     full_name = Column(String(200), default="")
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class BootstrapSecret(Base):
@@ -25,7 +25,7 @@ class BootstrapSecret(Base):
     username = Column(String(100), nullable=False, index=True)
     secret = Column(Text, nullable=False)
     used = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class LoginAttempt(Base):
@@ -51,8 +51,8 @@ class Letter(Base):
     all_text = Column(Text, default="")
     parse_errors = Column(Text, default="")
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     attachments = relationship("Attachment", back_populates="letter", cascade="all, delete-orphan")
     threats = relationship("Threat", back_populates="letter", cascade="all, delete-orphan")
@@ -72,7 +72,7 @@ class Attachment(Base):
     parsed_text = Column(Text, default="")
     parse_status = Column(String(20), default="pending")
     parse_errors = Column(Text, default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     letter = relationship("Letter", back_populates="attachments")
 
@@ -133,7 +133,7 @@ class ThreatType(Base):
     name = Column(String(100), nullable=False, unique=True)
     key = Column(String(50), nullable=False, unique=True)
     description = Column(Text, default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     measure_templates = relationship("MeasureTemplate", back_populates="threat_type", cascade="all, delete-orphan")
 
@@ -147,8 +147,8 @@ class MeasureTemplate(Base):
     measures = Column(Text, default="")
     full_text = Column(Text, default="")
     is_default = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     threat_type = relationship("ThreatType", back_populates="measure_templates")
 
@@ -160,7 +160,7 @@ class VulnType(Base):
     name = Column(String(200), nullable=False, unique=True)
     key = Column(String(50), nullable=False, unique=True)
     description = Column(Text, default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     vuln_templates = relationship("VulnMeasureTemplate", back_populates="vuln_type", cascade="all, delete-orphan")
 
@@ -174,8 +174,8 @@ class VulnMeasureTemplate(Base):
     action_type = Column(String(50), default="update")
     content = Column(Text, default="")
     is_default = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     vuln_type = relationship("VulnType", back_populates="vuln_templates")
 
@@ -188,7 +188,7 @@ class GeneratedResponse(Base):
     content = Column(Text, default="")
     edited_content = Column(Text, default="")
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     letter = relationship("Letter", back_populates="responses")

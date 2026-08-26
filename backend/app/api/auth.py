@@ -2,7 +2,7 @@ import logging
 import secrets
 import string
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -48,7 +48,7 @@ _init_login_attempts()
 
 
 def _check_login_throttle(ip: str, username: str):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=_LOGIN_WINDOW_SECONDS)
     with engine.connect() as conn:
         conn.execute(text("DELETE FROM login_attempts WHERE first_attempt_at < :cutoff"), {"cutoff": cutoff})
@@ -151,13 +151,16 @@ def login(form_data: dict, request: Request, db: Session = Depends(get_db)):
 
     user = db.query(User).filter(User.username == username).first()
     if not user or not verify_password(password, user.password_hash):
+        logger.warning("Login failed: user=%s ip=%s reason=invalid_password", username, ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверное имя пользователя или пароль",
         )
     if not user.is_active:
+        logger.warning("Login failed: user=%s ip=%s reason=account_disabled", username, ip)
         raise HTTPException(status_code=403, detail="Учётная запись отключена")
 
+    logger.info("Login success: user=%s ip=%s", username, ip)
     _login_success(ip, username)
     _consume_bootstrap_secrets(db, user.username)
     token = create_access_token(data={"sub": user.username, "role": user.role})

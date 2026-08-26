@@ -50,9 +50,6 @@ install -m 0644 %{_sourcedir}/fstec-backend.service %{buildroot}/usr/lib/systemd
 install -m 0644 %{_sourcedir}/fstec-service.desktop %{buildroot}/usr/share/applications/fstec-service.desktop
 install -m 0644 %{_sourcedir}/fstec-service.png %{buildroot}/usr/share/icons/hicolor/128x128/apps/fstec-service.png
 
-chown -R fstec:fstec %{buildroot}/opt/fstec-service
-chown -R fstec:fstec %{buildroot}/var/lib/fstec-service
-
 %post
 systemctl daemon-reload || :
 systemctl enable fstec-backend.service || :

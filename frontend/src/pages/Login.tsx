@@ -10,7 +10,6 @@ import {
   CircularProgress,
 } from "@mui/material";
 import SecurityIcon from "@mui/icons-material/Security";
-import LoginIcon from "@mui/icons-material/Login";
 import { useAuthStore } from "../store/auth";
 
 export default function Login() {

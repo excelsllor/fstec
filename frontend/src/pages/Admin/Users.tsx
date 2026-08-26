@@ -42,7 +42,7 @@ export default function Users() {
       const { data } = await usersApi.list();
       setUsers(data);
     } catch (err) {
-      console.error(err?.message || "Error");
+      console.error((err as Error)?.message || "Error");
     }
   };
 

@@ -63,7 +63,7 @@ export default function Templates() {
       setVulnTemplates(vt.data);
       setVulnTypes(vty.data);
     } catch (err) {
-      console.error(err?.message || "Error");
+      console.error((err as Error)?.message || "Error");
     } finally {
       setLoading(false);
     }

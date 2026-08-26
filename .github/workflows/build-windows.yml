@@ -15,7 +15,10 @@ jobs:
         with:
           python-version: "3.10"
       - name: Install deps
-        run: "pip install --only-binary=:all: -r backend/requirements.txt pyinstaller"
+        run: |
+          (Get-Content backend/requirements.txt | Where-Object { $_ -notmatch 'greenlet' }) | Set-Content backend/requirements-win.txt
+          pip install greenlet pyinstaller
+          pip install -r backend/requirements-win.txt
       - name: Build
         run: "cd backend && python -m PyInstaller backend.spec --noconfirm"
       - uses: actions/upload-artifact@v4

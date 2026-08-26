@@ -121,7 +121,7 @@ export default function LetterDetail() {
       const { data } = await lettersApi.get(Number(id));
       setLetter(data);
     } catch (err) {
-      console.error(err?.message || "Error");
+      console.error((err as Error)?.message || "Error");
     } finally {
       setLoading(false);
     }
@@ -613,7 +613,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
       setPreview(data);
       setEditText(buildText(data));
     } catch (err) {
-      console.error(err?.message || "Error");
+      console.error((err as Error)?.message || "Error");
     } finally {
       setLoading(false);
     }
@@ -637,7 +637,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      console.error(err?.message || "Error");
+      console.error((err as Error)?.message || "Error");
     }
   };
 

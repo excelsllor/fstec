@@ -52,7 +52,7 @@ export default function Dashboard() {
         setStats(statsRes.data);
         setLetters(lettersRes.data);
       } catch (err) {
-        console.error(err?.message || "Error loading dashboard");
+        console.error((err as Error)?.message || "Error loading dashboard");
       } finally {
         setLoading(false);
       }

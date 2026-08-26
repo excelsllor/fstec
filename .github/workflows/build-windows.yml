@@ -15,9 +15,9 @@ jobs:
         with:
           python-version: "3.10"
       - name: Install deps
-        run: pip install --only-binary=:all: -r backend\requirements.txt pyinstaller
+        run: "pip install --only-binary=:all: -r backend/requirements.txt pyinstaller"
       - name: Build
-        run: cd backend && python -m PyInstaller backend.spec --noconfirm
+        run: "cd backend && python -m PyInstaller backend.spec --noconfirm"
       - uses: actions/upload-artifact@v4
         with:
           name: backend-windows

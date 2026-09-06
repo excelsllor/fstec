@@ -84,6 +84,7 @@ def get_response_preview(
 ):
     from app.generator.response_generator import (
         _build_threat_description, _get_measures_for_threat,
+        _inflect_addresses, _addr_count_from_iocs,
     )
     from app.models import MeasureTemplate, ThreatType
 
@@ -92,6 +93,8 @@ def get_response_preview(
         raise HTTPException(status_code=404, detail="Письмо не найдено")
 
     threats = db.query(Threat).filter(Threat.letter_id == letter_id).order_by(Threat.number).all()
+    iocs = db.query(IoC).filter(IoC.letter_id == letter_id).all()
+    addr_count = _addr_count_from_iocs(iocs)
     num = letter.letter_number or ""
     dt = letter.letter_date or ""
     if dt:
@@ -134,12 +137,22 @@ def get_response_preview(
             saved = [m.strip() for m in threat.measures.split("\n") if m.strip()]
             if saved:
                 measures = saved
+        measures = _inflect_addresses(measures, addr_count)
 
         # предпросмотр показывает те же короткие меры, что попадают в финальный
         # DOCX-ответ (без списков IoC), чтобы предпросмотр и ответ совпадали
         measures_preview = list(measures)
 
         measure_options = all_measure_options.get(tt_key, [])
+        base_measures = []
+        tt_row = db.query(ThreatType).filter(ThreatType.key == tt_key).first()
+        if tt_row:
+            bm = db.query(MeasureTemplate).filter(
+                MeasureTemplate.threat_type_id == tt_row.id,
+                MeasureTemplate.is_default == True,
+            ).first()
+            if bm:
+                base_measures = [m.strip() for m in bm.measures.split("\n") if m.strip()]
 
         intro_text = f"{prefix}В целях предотвращения возможности реализации угроз безопасности информации, связанных с {desc}, приняты следующие меры защиты:"
         measures_text = "\n".join(f"  {m}" for m in measures_preview)
@@ -154,6 +167,7 @@ def get_response_preview(
             "measures_preview": measures_preview,
             "threat_type": tt_key,
             "measure_options": measure_options,
+            "base_measures": base_measures,
             "intro_text": intro_text,
             "section_text": section_text,
         })

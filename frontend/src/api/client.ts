@@ -177,6 +177,7 @@ export const lettersApi = {
         measures_preview: string[];
         threat_type: string;
         measure_options: string[];
+        base_measures: string[];
         intro_text: string;
         section_text: string;
       }>;

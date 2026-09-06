@@ -82,7 +82,7 @@ def extract_iocs(text: str, tables: list | None = None) -> IoCResult:
         raw = m.group(0)
         domain = raw.replace("[.]", ".")
         domain = _clean_domain(domain)
-        if domain and _valid_domain(domain) and domain not in seen_domains:
+        if domain and _valid_domain(domain, obfuscated=True) and domain not in seen_domains:
             result.domains.append(domain)
             seen_domains.add(domain)
 
@@ -90,7 +90,7 @@ def extract_iocs(text: str, tables: list | None = None) -> IoCResult:
         raw = m.group(0)
         domain = raw.replace("(.)", ".")
         domain = _clean_domain(domain)
-        if domain and _valid_domain(domain) and domain not in seen_domains:
+        if domain and _valid_domain(domain, obfuscated=True) and domain not in seen_domains:
             result.domains.append(domain)
             seen_domains.add(domain)
 
@@ -135,6 +135,8 @@ def _clean_domain(domain: str) -> str:
     domain = domain.strip(".")
     domain = re.sub(r"^https?://", "", domain, flags=re.IGNORECASE)
     domain = re.sub(r"^hxxps?://", "", domain, flags=re.IGNORECASE)
+    domain = re.sub(r"^hxxps?\[\:\]//", "", domain, flags=re.IGNORECASE)
+    domain = re.sub(r"^hxxps?\(\.\)//", "", domain, flags=re.IGNORECASE)
     domain = re.sub(r"^\[/\]//", "", domain)
     domain = re.sub(r"^\[\:\]//", "", domain)
     domain = domain.split("/")[0]
@@ -167,14 +169,14 @@ def _extract_from_tables(tables, result, seen_ips, seen_domains, seen_hashes, se
                 for m in DOMAIN_OBFUSCATED.finditer(cell):
                     raw = m.group(0)
                     domain = _clean_domain(raw.replace("[.]", "."))
-                    if domain and _valid_domain(domain) and domain not in seen_domains:
+                    if domain and _valid_domain(domain, obfuscated=True) and domain not in seen_domains:
                         result.domains.append(domain)
                         seen_domains.add(domain)
 
                 for m in DOMAIN_OBFUSCATED_PAREN.finditer(cell):
                     raw = m.group(0)
                     domain = _clean_domain(raw.replace("(.)", "."))
-                    if domain and _valid_domain(domain) and domain not in seen_domains:
+                    if domain and _valid_domain(domain, obfuscated=True) and domain not in seen_domains:
                         result.domains.append(domain)
                         seen_domains.add(domain)
 
@@ -214,14 +216,15 @@ def _is_internal_email(email: str) -> bool:
     return email.lower() in INTERNAL_EMAILS
 
 
-def _valid_domain(domain: str) -> bool:
+def _valid_domain(domain: str, obfuscated: bool = False) -> bool:
     dl = domain.lower()
-    if dl in FP_EXACT:
-        return False
-    if dl in FP_DOMAINS:
-        return False
-    if dl in COMMON_DOMAINS:
-        return False
+    if not obfuscated:
+        if dl in FP_EXACT:
+            return False
+        if dl in FP_DOMAINS:
+            return False
+        if dl in COMMON_DOMAINS:
+            return False
     for ext in FP_EXTENSIONS:
         if dl.endswith(ext):
             return False

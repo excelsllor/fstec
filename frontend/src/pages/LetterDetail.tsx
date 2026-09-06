@@ -524,7 +524,11 @@ function threatOnlyText(text: string): string {
   return text.slice(0, cut).replace(/\s+$/g, "");
 }
 
-function buildHighlightedHtml(text: string, iocs: IoCResponse[], measureOptions: string[]): string {
+function normMeasure(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, " ").replace(/[;.\s]+$/g, "").trim();
+}
+
+function buildHighlightedHtml(text: string, iocs: IoCResponse[], measureOptions: string[], baseMeasures: string[]): string {
   const escaped = escapeHtml(text);
   const patterns: { re: RegExp; cls: string }[] = [];
 
@@ -538,22 +542,27 @@ function buildHighlightedHtml(text: string, iocs: IoCResponse[], measureOptions:
   for (const d of domainIocs) patterns.push({ re: new RegExp(d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), cls: "hl-domain" });
   for (const e of emailIocs) patterns.push({ re: new RegExp(e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), cls: "hl-email" });
 
+  // базовые меры (из default-шаблона типа угрозы) — синяя подсветка;
+  // компенсирующие/нетипичные меры, не входящие в базовый набор, — оранжевая
+  const baseSet = new Set((baseMeasures || []).map(normMeasure));
   for (const measure of measureOptions) {
     if (measure.length > 15) {
-      patterns.push({ re: new RegExp(measure.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), cls: "hl-measure" });
+      const cls = baseSet.has(normMeasure(measure)) ? "hl-measure" : "hl-measure-unknown";
+      patterns.push({ re: new RegExp(measure.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), cls });
     }
   }
 
-  const marks: { start: number; end: number; cls: string }[] = [];
+  const marks: { start: number; end: number; cls: string; rank: number }[] = [];
+  const rank = (cls: string) => (cls === "hl-measure" ? 1 : 0);
   for (const { re, cls } of patterns) {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(escaped)) !== null) {
       if (m[0].length === 0) { re.lastIndex++; continue; }
-      marks.push({ start: m.index, end: m.index + m[0].length, cls });
+      marks.push({ start: m.index, end: m.index + m[0].length, cls, rank: rank(cls) });
     }
   }
-  marks.sort((a, b) => a.start - b.start || b.end - a.end);
+  marks.sort((a, b) => a.start - b.start || b.end - a.end || b.rank - a.rank);
   const filtered: typeof marks = [];
   let lastEnd = -1;
   for (const mk of marks) {
@@ -587,6 +596,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
       measures_preview: string[];
       threat_type: string;
       measure_options: string[];
+      base_measures: string[];
       intro_text: string;
       section_text: string;
     }>;
@@ -660,6 +670,20 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
 
   const allMeasureOptions = preview
     ? preview.sections.flatMap((s) => s.measure_options)
+    : [];
+
+  const unknownMeasures = preview
+    ? Array.from(
+        new Set(
+          preview.sections
+            .flatMap((s) => s.measure_options)
+            .filter((opt) => opt.length > 15)
+            .filter((opt) => {
+              const base = new Set(preview!.sections.flatMap((sec) => (sec.base_measures || []).map(normMeasure)));
+              return !base.has(normMeasure(opt));
+            })
+        )
+      )
     : [];
 
   const groupedTemplates = preview
@@ -738,6 +762,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
                 "& .hl-domain": { backgroundColor: "#d3f9d8" },
                 "& .hl-email": { backgroundColor: "#ffec99" },
                 "& .hl-measure": { backgroundColor: "#e7f5ff", borderBottom: "1px dashed #1976d2" },
+                "& .hl-measure-unknown": { backgroundColor: "#ffe8cc", borderBottom: "1px dashed #f76707" },
                 "& textarea::selection": { backgroundColor: "rgba(25, 118, 210, 0.3)" },
               }}
             >
@@ -757,7 +782,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
                   lineHeight: "inherit",
                   color: "#000",
                 }}
-                dangerouslySetInnerHTML={{ __html: buildHighlightedHtml(editText, letter.iocs, allMeasureOptions) + "\n" }}
+                dangerouslySetInnerHTML={{ __html: buildHighlightedHtml(editText, letter.iocs, allMeasureOptions, preview ? preview.sections.flatMap((s) => s.base_measures || []) : []) + "\n" }}
               />
               <textarea
                 ref={textareaRef}
@@ -837,6 +862,42 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
                   </AccordionDetails>
                 </Accordion>
               ))}
+
+              <Divider sx={{ my: 2 }} />
+
+              <Typography variant="subtitle2" sx={{ mb: 1, color: "warning.main" }}>
+                Компенсирующие / нетипичные меры ({unknownMeasures.length}) — требуют проверки
+              </Typography>
+              {unknownMeasures.length > 0 ? (
+                <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mb: 2 }}>
+                  {unknownMeasures.map((opt) => (
+                    <Button
+                      key={opt}
+                      size="small"
+                      variant="outlined"
+                      color="warning"
+                      sx={{
+                        textAlign: "left",
+                        justifyContent: "flex-start",
+                        fontSize: "0.72rem",
+                        textTransform: "none",
+                        whiteSpace: "normal",
+                        wordBreak: "break-word",
+                        p: 0.5,
+                        lineHeight: 1.3,
+                      }}
+                      onClick={() => copyToClipboard(opt)}
+                      title={`Не входит в базовый набор мер. Клик — копировать.\n${opt}`}
+                    >
+                      {opt}
+                    </Button>
+                  ))}
+                </Box>
+              ) : (
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+                  Нет нетипичных мер
+                </Typography>
+              )}
 
               <Divider sx={{ my: 2 }} />
 

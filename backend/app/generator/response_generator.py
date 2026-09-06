@@ -6,6 +6,41 @@ from docx.shared import Pt, Cm
 from app.models import Letter, Threat, IoC, Vulnerability
 
 
+def _addr_count_from_iocs(iocs: list | None) -> int:
+    if not iocs:
+        return 0
+    return len({i.value.split(":")[0] for i in iocs if i.ioc_type in ("ip", "domain")})
+
+
+def _inflect_addresses(measures: list[str], addr_count: int) -> list[str]:
+    if addr_count != 1:
+        return list(measures)
+    result = []
+    for m in measures:
+        if "указанным адресам" in m:
+            m = m.replace("указанным адресам", "указанному адресу")
+        result.append(m)
+    return result
+
+
+KNOWN_PRODUCTS = {
+    "программного обеспечения «trueconf server»": "программного обеспечения «TrueConf Server»",
+    "программного обеспечения «microsoft office»": "программного обеспечения «Microsoft Office»",
+    "программного обеспечения «microsoft word»": "программного обеспечения «Microsoft Office»",
+    "редактора «microsoft word»": "редакторов «Microsoft Office»",
+    "операционной системы windows": "операционной системы Windows",
+    "среды выполнения node.js": "среды выполнения Node.js",
+    "сети trueconf server": "сети TrueConf Server",
+}
+
+
+def _canonical_product(phrase: str) -> str:
+    norm = re.sub(r"\s+", " ", phrase or "").strip().lower()
+    if norm in KNOWN_PRODUCTS:
+        return KNOWN_PRODUCTS[norm]
+    return phrase
+
+
 def generate_response(letter: Letter, threats: list[Threat], vulnerabilities: list[Vulnerability], db=None, iocs: list = None) -> bytes:
     doc = _create_doc()
     _add_title(doc, letter)
@@ -16,13 +51,14 @@ def generate_response(letter: Letter, threats: list[Threat], vulnerabilities: li
 
     if iocs is None and db is not None:
         iocs = db.query(IoC).filter(IoC.letter_id == letter.id).all()
+    addr_count = _addr_count_from_iocs(iocs)
 
     if letter.letter_type == "vulnerability" and vulnerabilities:
-        _add_vulnerability_section(doc, letter, vulnerabilities, db)
+        _add_vulnerability_section(doc, letter, vulnerabilities, db, addr_count)
     elif threats:
-        _add_threats_section(doc, letter, threats, vulnerabilities, db, iocs)
+        _add_threats_section(doc, letter, threats, vulnerabilities, db, iocs, addr_count)
     elif letter.letter_type == "compromise":
-        _add_compromise_section(doc, letter, db)
+        _add_compromise_section(doc, letter, db, addr_count)
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -75,7 +111,7 @@ def _add_title(doc: Document, letter: Letter):
     run.bold = True
 
 
-def _add_threats_section(doc: Document, letter: Letter, threats: list[Threat], vulnerabilities: list[Vulnerability], db=None, iocs=None):
+def _add_threats_section(doc: Document, letter: Letter, threats: list[Threat], vulnerabilities: list[Vulnerability], db=None, iocs=None, addr_count: int = 0):
     has_multiple = len(threats) > 1
 
     for threat in threats:
@@ -96,6 +132,7 @@ def _add_threats_section(doc: Document, letter: Letter, threats: list[Threat], v
             saved = [m.strip() for m in threat.measures.split("\n") if m.strip()]
             if saved:
                 measures = saved
+        measures = _inflect_addresses(measures, addr_count)
         for m in measures:
             _add_measure(doc, m)
 
@@ -106,12 +143,13 @@ def _add_threats_section(doc: Document, letter: Letter, threats: list[Threat], v
             p.add_run(note)
 
 
-def _add_compromise_section(doc: Document, letter: Letter, db=None):
+def _add_compromise_section(doc: Document, letter: Letter, db=None, addr_count: int = 0):
     desc = _build_compromise_description(letter)
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     p.add_run(f"В целях предотвращения возможности реализации угроз безопасности информации, связанных с {desc}, приняты следующие меры защиты:")
-    for m in _get_compromise_measures(db):
+    measures = _inflect_addresses(_get_compromise_measures(db), addr_count)
+    for m in measures:
         _add_measure(doc, m)
 
 
@@ -155,7 +193,7 @@ def _get_compromise_measures(db=None) -> list[str]:
     return _COMPROMISE
 
 
-def _add_vulnerability_section(doc: Document, letter: Letter, vulnerabilities: list[Vulnerability], db=None):
+def _add_vulnerability_section(doc: Document, letter: Letter, vulnerabilities: list[Vulnerability], db=None, addr_count: int = 0):
     for idx, vuln in enumerate(vulnerabilities, 1):
         if (vuln.action_type or "").lower() == "exclude":
             continue
@@ -170,7 +208,7 @@ def _add_vulnerability_section(doc: Document, letter: Letter, vulnerabilities: l
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         p.add_run(f"{idx}. В целях предотвращения возможности реализации угроз безопасности информации, связанных с {desc},")
-        measures = _get_vuln_measures(vuln, db)
+        measures = _inflect_addresses(_get_vuln_measures(vuln, db), addr_count)
         for m in measures:
             _add_measure(doc, m)
 
@@ -178,6 +216,8 @@ def _add_vulnerability_section(doc: Document, letter: Letter, vulnerabilities: l
 def _add_measure(doc: Document, text: str):
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    p.paragraph_format.left_indent = Cm(1.25)
+    p.paragraph_format.first_line_indent = Cm(-0.75)
     p.add_run(text)
 
 
@@ -514,6 +554,7 @@ def _build_vuln_inline(threat: Threat, vulnerabilities: list[Vulnerability], bui
             phrase,
             flags=re.IGNORECASE,
         )
+        update_sw = _canonical_product(update_sw)
         return (
             f", а также возможности эксплуатации уязвимости {phrase} ({bdu_paren}) "
             f"регулярно производится обновление {update_sw} из доверенных источников "

@@ -41,18 +41,35 @@ const typeLabels: Record<string, string> = {
   other: "Прочее",
 };
 
+const statusLabels: Record<string, string> = {
+  uploaded: "Загружен",
+  parsed: "Текст извлечён",
+  analyzed: "Проанализирован",
+  assessed: "Оценён",
+  completed: "Отчёт сформирован",
+};
+
 export default function LetterList() {
   const navigate = useNavigate();
   const [letters, setLetters] = useState<LetterListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterType, setFilterType] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
   const [search, setSearch] = useState("");
-  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [page, setPage] = useState(0);
+
+  const PAGE_SIZE = 25;
+  const [deleteIdState, setDeleteId] = useState<number | null>(null);
 
   const load = async () => {
     setLoading(true);
     try {
-      const { data } = await lettersApi.list();
+      const { data } = await lettersApi.list({
+        letter_type: filterType || undefined,
+        status: filterStatus || undefined,
+        skip: page * PAGE_SIZE,
+        limit: PAGE_SIZE,
+      });
       setLetters(data);
     } catch (err) {
       console.error((err as Error)?.message || "Error");
@@ -61,18 +78,17 @@ export default function LetterList() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [filterType, filterStatus, page]);
 
   const filtered = letters.filter((l) => {
-    if (filterType && l.letter_type !== filterType) return false;
     if (search && !l.letter_number.includes(search)) return false;
     return true;
   });
 
   const handleDelete = async () => {
-    if (deleteId === null) return;
+    if (deleteIdState === null) return;
     try {
-      await lettersApi.delete(deleteId);
+      await lettersApi.delete(deleteIdState);
       setDeleteId(null);
       load();
     } catch (err) {
@@ -102,7 +118,7 @@ export default function LetterList() {
           select
           label="Тип"
           value={filterType}
-          onChange={(e) => setFilterType(e.target.value)}
+          onChange={(e) => { setFilterType(e.target.value); setPage(0); }}
           sx={{ width: 200 }}
         >
           <MenuItem value="">Все</MenuItem>
@@ -111,6 +127,30 @@ export default function LetterList() {
           <MenuItem value="vulnerability">Уязвимости</MenuItem>
           <MenuItem value="other">Прочее</MenuItem>
         </TextField>
+        <TextField
+          size="small"
+          select
+          label="Статус"
+          value={filterStatus}
+          onChange={(e) => { setFilterStatus(e.target.value); setPage(0); }}
+          sx={{ width: 200 }}
+        >
+          <MenuItem value="">Все</MenuItem>
+          <MenuItem value="uploaded">Загружен</MenuItem>
+          <MenuItem value="parsed">Извлечён текст</MenuItem>
+          <MenuItem value="analyzed">Проанализирован</MenuItem>
+          <MenuItem value="assessed">Оценён</MenuItem>
+          <MenuItem value="completed">Отчёт сформирован</MenuItem>
+        </TextField>
+        <Box sx={{ ml: "auto", display: "flex", alignItems: "center", gap: 1 }}>
+          <Button size="small" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
+            Назад
+          </Button>
+          <Typography variant="caption">стр. {page + 1}</Typography>
+          <Button size="small" disabled={letters.length < PAGE_SIZE} onClick={() => setPage((p) => p + 1)}>
+            Вперёд
+          </Button>
+        </Box>
       </Box>
 
       <TableContainer component={Paper}>
@@ -151,7 +191,7 @@ export default function LetterList() {
                   </TableCell>
                   <TableCell>
                     <Chip
-                      label={letter.status === "processed" ? "Обработан" : letter.status === "response_generated" ? "Ответ готов" : letter.status}
+                      label={statusLabels[letter.status] || letter.status}
                       size="small"
                       variant="outlined"
                     />
@@ -175,7 +215,7 @@ export default function LetterList() {
         </Table>
       </TableContainer>
 
-      <Dialog open={deleteId !== null} onClose={() => setDeleteId(null)}>
+      <Dialog open={deleteIdState !== null} onClose={() => setDeleteId(null)}>
         <DialogTitle>Удалить письмо?</DialogTitle>
         <DialogContent>
           <Typography>Письмо и все связанные данные будут удалены безвозвратно.</Typography>

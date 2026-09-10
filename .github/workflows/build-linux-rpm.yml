@@ -2,241 +2,50 @@ name: build-linux-rpm
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  frontend:
-    name: Build frontend (Vite)
+  services-test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          python-version: "3.10"
       - name: Install deps
-        run: npm ci
-        working-directory: frontend
-      - name: Build
-        run: npm run build
-        working-directory: frontend
-      - uses: actions/upload-artifact@v4
-        with:
-          name: frontend-dist
-          path: frontend/dist
-          if-no-files-found: error
-
-  backend:
-    name: Build backend (PyInstaller, glibc 2.17)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build backend in manylinux2014 (glibc 2.17)
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}":/src \
-            -w /src \
-            quay.io/pypa/manylinux2014_x86_64 \
-            bash -lc '
-              set -e
-              # manylinux pythons are static (no libpython.so), PyInstaller needs shared libpython
-              # -> use python-build-standalone CPython 3.10 (shared, glibc >= 2.17)
-              PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.10.20+20260807-x86_64-unknown-linux-gnu-install_only.tar.gz"
-              curl -fsSLo /tmp/py.tar.gz "$PYTHON_URL"
-              # Verify SHA256 checksum (update hash when upgrading python-build-standalone)
-              echo "36d480cf1f8ca45308c6cfedaad54a127e973e0525a97ca19a0229dbd5ce5f13  /tmp/py.tar.gz" | sha256sum -c -
-              mkdir -p /opt/py
-              tar xzf /tmp/py.tar.gz -C /opt/py --strip-components=1
-              export LD_LIBRARY_PATH=/opt/py/lib
-              /opt/py/bin/python3.10 --version
-              /opt/py/bin/python3.10 -m pip install --upgrade pip wheel
-              /opt/py/bin/python3.10 -m pip install --only-binary=:all: -r backend/requirements.txt pyinstaller
-              cd backend && /opt/py/bin/python3.10 -m PyInstaller backend.spec --noconfirm
-            '
-      - name: Check glibc / libstdc++ requirement (RED OS 7 = glibc 2.17)
-        run: |
-          set -e
-          for f in backend/dist/fstec-backend/fstec-backend backend/dist/fstec-backend/_internal/libpython3.10.so.1.0; do
-            GLIBC_MAX=$(readelf --version-info "$f" | grep -o 'GLIBC_[0-9]*\.[0-9]*' | sort -V | tail -1)
-            GLIBCXX_MAX=$(readelf --version-info "$f" | grep -o 'GLIBCXX_[0-9]*\.[0-9]*' | sort -V | tail -1)
-            echo "$f -> $GLIBC_MAX, $GLIBCXX_MAX"
-            case "$GLIBC_MAX" in GLIBC_2.17|GLIBC_2.16|GLIBC_2.15|GLIBC_2.14|GLIBC_2.13|GLIBC_2.12|GLIBC_2.11|GLIBC_2.10|GLIBC_2.9|GLIBC_2.8|GLIBC_2.7|GLIBC_2.5|GLIBC_2.4|GLIBC_2.3|GLIBC_2.2|GLIBC_2.1|GLIBC_2.0) ;;
-              *) echo "ERROR: $f needs newer glibc ($GLIBC_MAX)"; exit 1 ;;
-            esac
-            case "$GLIBCXX_MAX" in ""|GLIBCXX_3.4.19|GLIBCXX_3.4.18|GLIBCXX_3.4.17|GLIBCXX_3.4.16|GLIBCXX_3.4.15|GLIBCXX_3.4.14|GLIBCXX_3.4.13|GLIBCXX_3.4.12|GLIBCXX_3.4.11|GLIBCXX_3.4.10|GLIBCXX_3.4.9|GLIBCXX_3.4) ;;
-              *) echo "ERROR: $f needs newer libstdc++ ($GLIBCXX_MAX)"; exit 1 ;;
-            esac
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: backend-linux
-          path: backend/dist/fstec-backend
-          if-no-files-found: error
+        run: python -m pip install -r requirements.txt pytest
+      - name: Run tests
+        run: python -m pytest tests -q
 
   rpm:
-    name: Build rpm package
-    needs: [frontend, backend]
     runs-on: ubuntu-latest
     container: rockylinux:9
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: backend-linux
-          path: src/backend
-      - uses: actions/download-artifact@v4
-        with:
-          name: frontend-dist
-          path: src/frontend
-      - name: Install rpm-build
-        run: dnf install -y rpm-build
-      - name: Assemble sources
+      - name: System deps
         run: |
-          set -e
-          mkdir -p $HOME/rpmbuild/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
-          cp -a src/backend/. $HOME/rpmbuild/SOURCES/backend
-          cp -a src/frontend/. $HOME/rpmbuild/SOURCES/frontend
-          cp packaging/linux/fstec-backend.service $HOME/rpmbuild/SOURCES/
-          cp packaging/linux/fstec-service.desktop $HOME/rpmbuild/SOURCES/
-          cp packaging/linux/fstec-service.png $HOME/rpmbuild/SOURCES/
-          cp packaging/linux/fstec-service.spec $HOME/rpmbuild/SPECS/
+          dnf install -y python3 python3-pip rpm-build nodejs npm git
+          python3 -m pip install -r services/requirements.txt
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
       - name: Build rpm
         run: |
-          rpmbuild -bb \
-            --define "_sourcedir $HOME/rpmbuild/SOURCES" \
-            --define "_topdir $HOME/rpmbuild" \
-            $HOME/rpmbuild/SPECS/fstec-service.spec
-      - name: Collect rpm
-        run: |
-          set -e
-          mkdir -p rpmout
-          cp $HOME/rpmbuild/RPMS/x86_64/*.rpm rpmout/
-          ls -la rpmout/
-      - uses: actions/upload-artifact@v4
+          mkdir -p ~/rpmbuild/SOURCES
+          cp -a services ~/rpmbuild/SOURCES/services
+          cp -a frontend/dist ~/rpmbuild/SOURCES/frontend
+          cp packaging/linux/fstec-gateway.service packaging/linux/fstec-worker@.service \
+             packaging/linux/fstec-service.desktop packaging/linux/fstec-service.png ~/rpmbuild/SOURCES/
+          rpmbuild -bb --define "_sourcedir $HOME/rpmbuild/SOURCES" \
+            --define "_topdir $HOME/rpmbuild" packaging/linux/fstec-service.spec
+      - name: Upload rpm
+        uses: actions/upload-artifact@v4
         with:
           name: fstec-service-rpm
-          path: rpmout/*.rpm
-          if-no-files-found: error
-
-  verify:
-    name: Install rpm and smoke test
-    needs: rpm
-    runs-on: ubuntu-latest
-    container: rockylinux:9
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: fstec-service-rpm
-          path: rpms
-      - name: Install package
-        run: |
-          dnf install -y --setopt=install_weak_deps=False rpms/fstec-service-*.rpm || true
-      - name: Validate systemd unit
-        run: |
-          dnf install -y systemd
-          systemd-analyze verify /usr/lib/systemd/system/fstec-backend.service
-      - name: Smoke test
-        run: |
-          cat > /tmp/smoke.py <<'PY'
-          import json, urllib.request, urllib.error, sys, re
-
-          BASE = "http://127.0.0.1:8765"
-          ok, fail = [], []
-
-          def check(name, cond, extra=""):
-              (ok if cond else fail).append(name)
-              print(("PASS" if cond else "FAIL"), name, extra)
-
-          def call(method, path, body=None, headers=None, ct=None):
-              req = urllib.request.Request(BASE + path, method=method, headers=headers or {})
-              if body is not None:
-                  req.data = body
-                  if ct:
-                      req.add_header("Content-Type", ct)
-              try:
-                  with urllib.request.urlopen(req, timeout=30) as r:
-                      return r.status, r.read()
-              except urllib.error.HTTPError as e:
-                  return e.code, e.read()
-
-          def make_pdf():
-              content = b"BT /F1 12 Tf 72 720 Td (FSTEC test letter) Tj ET"
-              objs = [
-                  b"<< /Type /Catalog /Pages 2 0 R >>",
-                  b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-                  b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
-                  b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
-                  b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-              ]
-              out = [b"%PDF-1.4\n"]
-              offsets = []
-              for i, o in enumerate(objs, 1):
-                  offsets.append(len(b"".join(out)))
-                  out.append(b"%d 0 obj\n" % i + o + b"\nendobj\n")
-              xref_pos = len(b"".join(out))
-              out.append(b"xref\n0 %d\n" % (len(objs) + 1))
-              out.append(b"0000000000 65535 f \n")
-              for off in offsets:
-                  out.append(b"%010d 00000 n \n" % off)
-              out.append(b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref_pos))
-              return b"".join(out)
-
-          s, b = call("GET", "/api/health")
-          check("health", s == 200 and json.loads(b).get("status") == "ok", str(s))
-
-          s, b = call("GET", "/")
-          check("static index", s == 200 and b"root" in b, str(s))
-          s, b = call("GET", "/letters/5")
-          check("spa fallback", s == 200, str(s))
-
-          s, b = call("GET", "/api/auth/status")
-          st = json.loads(b)
-          check("needs_setup", s == 200 and st.get("needs_setup"), str(s))
-
-          # Read bootstrap password from server log
-          bs_password = None
-          try:
-              with open("/tmp/be.log") as f:
-                  for line in f:
-                      m = re.search(r"Bootstrap password for user .admin.: (\S+)", line)
-                      if m:
-                          bs_password = m.group(1)
-                          break
-          except Exception:
-              pass
-          check("bootstrap_password_in_log", bs_password is not None and len(bs_password) >= 6, str(bs_password))
-
-          s, b = call("POST", "/api/auth/login", body=json.dumps({"username": "admin", "password": bs_password}).encode(), ct="application/json")
-          tok = json.loads(b).get("access_token", "")
-          check("login", s == 200 and bool(tok), str(s))
-          H = {"Authorization": "Bearer " + tok}
-
-          boundary = "----fstecsmoke"
-          body = b""
-          body += ("--%s\r\n" % boundary).encode()
-          body += b'Content-Disposition: form-data; name="pdf_file"; filename="test.pdf"\r\n'
-          body += b"Content-Type: application/pdf\r\n\r\n"
-          body += make_pdf() + b"\r\n"
-          body += ("--%s--\r\n" % boundary).encode()
-          s, b = call("POST", "/api/letters/upload", body=body, headers=H, ct="multipart/form-data; boundary=" + boundary)
-          check("upload", s in (200, 201), str(s))
-
-          s, b = call("GET", "/api/letters", headers=H)
-          check("letters list", s == 200, str(s))
-
-          print("\nTOTAL:", len(ok), "PASS,", len(fail), "FAIL")
-          sys.exit(1 if fail else 0)
-          PY
-          FSTEC_DATA_DIR=/tmp/fstec_ci FSTEC_FRONTEND_DIR=/opt/fstec-service/frontend \
-            /opt/fstec-service/backend/fstec-backend >/tmp/be.log 2>&1 &
-          BE=$!
-          for i in $(seq 1 30); do
-            curl -sf http://127.0.0.1:8765/api/health >/dev/null && break
-            sleep 1
-          done
-          python3 /tmp/smoke.py
-          RC=$?
-          kill $BE 2>/dev/null || true
-          exit $RC
+          path: ~/rpmbuild/RPMS/**/*.rpm

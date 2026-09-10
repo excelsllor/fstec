@@ -38,8 +38,10 @@ import {
 } from "@mui/icons-material";
 import {
   lettersApi,
+  documentsApi,
   type LetterResponse,
   type IoCResponse,
+  type VulnerabilityResponse,
 } from "../api/client";
 
 const iocTypeLabels: Record<string, string> = {
@@ -84,6 +86,12 @@ const severityColors: Record<string, "error" | "warning" | "info" | "success" | 
   unknown: "default",
 };
 
+const sourceLabels: Record<string, string> = {
+  nvd: "NVD",
+  bdu: "BDU ФСТЭК",
+  manual: "Вручную",
+};
+
 const actionTypeOptions = [
   {
     value: "",
@@ -106,6 +114,56 @@ const actionTypeOptions = [
     desc: "Полностью исключить уязвимость из ответа (BDU не упоминается).",
   },
 ];
+
+type RiskLevel = "red" | "yellow" | "green";
+
+function vulnRiskLevel(v: VulnerabilityResponse): RiskLevel {
+  if (v.cmdb_match || v.severity === "critical") return "red";
+  if (v.severity === "high" || v.severity === "medium") return "yellow";
+  return "green";
+}
+
+function categorizeRisks(vulns: VulnerabilityResponse[]) {
+  let red = 0, yellow = 0, green = 0;
+  for (const v of vulns) {
+    const lvl = vulnRiskLevel(v);
+    if (lvl === "red") red++;
+    else if (lvl === "yellow") yellow++;
+    else green++;
+  }
+  return { red, yellow, green };
+}
+
+const riskStyleMap: Record<RiskLevel, { bg: string; color: string; label: string }> = {
+  red: { bg: "#c0392b", color: "#fff", label: "К" },
+  yellow: { bg: "#f1c40f", color: "#000", label: "Ж" },
+  green: { bg: "#27ae60", color: "#fff", label: "З" },
+};
+
+function RiskChip({ level, title }: { level: RiskLevel; title: string }) {
+  const s = riskStyleMap[level];
+  return (
+    <Chip
+      size="small"
+      label={`${s.label} — ${title}`}
+      sx={{ bgcolor: s.bg, color: s.color, fontWeight: "bold", mr: 1 }}
+    />
+  );
+}
+
+function RiskSummary({ summary }: { summary: { red: number; yellow: number; green: number } }) {
+  return (
+    <Paper sx={{ p: 1.5, mb: 2, display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+      <Typography variant="subtitle2" sx={{ mr: 1 }}>Индикаторы уязвимостей (ТЗ 4.4):</Typography>
+      {summary.red > 0 && <RiskChip level="red" title={`Критические (${summary.red})`} />}
+      {summary.yellow > 0 && <RiskChip level="yellow" title={`Средние (${summary.yellow})`} />}
+      {summary.green > 0 && <RiskChip level="green" title={`Низкие (${summary.green})`} />}
+      {summary.red === 0 && summary.yellow === 0 && summary.green === 0 && (
+        <Typography variant="body2" color="text.secondary">Уязвимости не обнаружены</Typography>
+      )}
+    </Paper>
+  );
+}
 
 export default function LetterDetail() {
   const { id } = useParams();
@@ -158,6 +216,36 @@ export default function LetterDetail() {
     }
   };
 
+  const handleDownloadReport = async () => {
+    try {
+      const { data } = await documentsApi.downloadReport(Number(id));
+      const url = URL.createObjectURL(data);
+      const a = window.document.createElement("a");
+      a.href = url;
+      a.download = letter?.source_filename
+        ? `Report_${letter.source_filename}_${new Date().toISOString().slice(0, 10)}.docx`
+        : "report.docx";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setSnack("Карточка индикаторов ещё не сформирована");
+    }
+  };
+
+  const handleDownloadRaw = async () => {
+    try {
+      const { data } = await documentsApi.downloadRaw(Number(id));
+      const url = URL.createObjectURL(data);
+      const a = window.document.createElement("a");
+      a.href = url;
+      a.download = letter?.source_filename || "source";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setSnack("Исходный файл не найден");
+    }
+  };
+
   const handleExportDocx = async (type: string) => {
     try {
       const { data } = await lettersApi.exportIocsDocx(Number(id), type);
@@ -186,6 +274,8 @@ export default function LetterDetail() {
   if (loading) return <Typography>Загрузка...</Typography>;
   if (!letter) return <Alert severity="error">Письмо не найдено</Alert>;
 
+  const riskSummary = categorizeRisks(letter.vulnerabilities);
+
   return (
     <Box>
       <Box sx={{ display: "flex", alignItems: "center", mb: 2, gap: 1 }}>
@@ -195,7 +285,26 @@ export default function LetterDetail() {
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           Письмо № {letter.letter_number || letter.id}
         </Typography>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<DownloadIcon />}
+          onClick={handleDownloadReport}
+          disabled={!letter.processing_stage || letter.processing_stage === "uploaded"}
+        >
+          Карточка индикаторов
+        </Button>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<DownloadIcon />}
+          onClick={handleDownloadRaw}
+        >
+          Исходник
+        </Button>
       </Box>
+
+      <RiskSummary summary={riskSummary} />
 
       {letter.parse_errors && (
         <Alert severity="warning" sx={{ mb: 2 }}>
@@ -444,9 +553,38 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
                   size="small"
                   color={severityColors[v.severity] || "default"}
                 />
+                <RiskChip level={vulnRiskLevel(v)} title={
+                  vulnRiskLevel(v) === "red" ? "Высокий риск" :
+                  vulnRiskLevel(v) === "yellow" ? "Средний риск" : "Низкий риск"
+                } />
+                {v.source && (
+                  <Chip
+                    label={`Источник: ${sourceLabels[v.source] || v.source}`}
+                    size="small"
+                    variant="outlined"
+                    color={v.source === "manual" ? "default" : "primary"}
+                  />
+                )}
               </Box>
               {v.description && (
                 <Typography variant="body2" sx={{ mb: 2 }}>{v.description.slice(0, 300)}</Typography>
+              )}
+              {v.cmdb_match && (
+                <Alert severity="error" sx={{ mb: 2 }} icon={false}>
+                  <Typography variant="body2" sx={{ fontWeight: "bold" }}>
+                    Совпадение с инвентаризацией: {v.software && v.current_version
+                      ? `${v.software} ${v.current_version}`
+                      : (v.software || "Компонент системы")}
+                  </Typography>
+                  {v.target_version && (
+                    <Typography variant="body2">Обновить до версии <b>{v.target_version}</b></Typography>
+                  )}
+                  {v.recommendation && (
+                    <Typography variant="body2" component="div">
+                      Рекомендация: {v.recommendation}
+                    </Typography>
+                  )}
+                </Alert>
               )}
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 6 }}>

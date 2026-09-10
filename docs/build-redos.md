@@ -2,12 +2,12 @@
 
 > **Рекомендуется:** универсальный web-режим (один rpm для РЕД ОС 7/8, без
 > WebKitGTK/Tauri) — см. `docs/build-linux-rpm.md`. Ниже — dev-режим и
-> Tauri-сборка (только для дистрибутивов с `webkit2gtk4.1`, РЕД ОС 7 не
+> Tauri-оболочка (только для дистрибутивов с `webkit2gtk4.1`, РЕД ОС 7 не
 > подходит).
 
 Релиз для РЕД ОС собирается на машине с РЕД ОС (x86_64). Скрипт `dev.sh` и
-инструкция ниже покрывают dev-режим; сборка инсталлера (.rpm/.deb) описана
-в конце.
+инструкция ниже покрывают dev-режим; сборка пакета (.rpm) описана в
+`docs/build-linux-rpm.md`.
 
 ## Предварительные требования
 
@@ -22,13 +22,14 @@ sudo dnf install -y \
   rpm-build
 ```
 
-## Backend
+## Services (микросервисы)
 
 ```bash
-cd backend
+cd services
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-pyinstaller backend.spec
-# результат: dist/fstec-backend/fstec-backend
+# запуск dev-стека: bash run_local.sh (поднимает gateway :8666 + 4 воркера)
 ```
 
 ## Frontend
@@ -39,7 +40,7 @@ npm install
 npm run build
 ```
 
-## Desktop (Tauri)
+## Desktop (Tauri, webview без бэкенда)
 
 ```bash
 cd src-tauri
@@ -47,23 +48,22 @@ npx tauri build --bundles rpm,deb
 # результат: target/release/bundle/rpm/*.rpm, target/release/bundle/deb/*.deb
 ```
 
-Для запуска без установки: `npx tauri dev` или собранный бинарь
-`target/release/fstec-service`.
+Для запуска без установки: `npx tauri dev` (требует запущенных микросервисов
+через `services/run_local.sh` + frontend dev-server).
 
 ## Особенности
 
-- Sidecar-путь в `src-tauri/src/lib.rs` ищет бэкенд сначала как
-  `<resource_dir>/fstec-backend/fstec-backend`, затем fallback
-  `backend/dist/fstec-backend/...` — обе раскладки покрыты.
-- Данные: по умолчанию `~/.local/share/fstec-service`
-  (env `FSTEC_DATA_DIR` переопределяет).
-- Бэкенд слушает только `127.0.0.1:8765` — наружу не публикуется.
-- Проверка после установки: запустить приложение, `curl http://127.0.0.1:8765/api/health`
-  → `{"status":"ok"}`.
+- Десктоп — веб-оболочка без sidecar: API ожидается на `http://127.0.0.1:8666`
+  (gateway микросервисов).
+- Данные: по умолчанию `services/data` (env `FSTEC_DATA_DIR` переопределяет).
+- Gateway слушает только `127.0.0.1:8666` — наружу не публикуется; docs: `/api/docs`.
+- Проверка после установки: запустить сервисы, `curl http://127.0.0.1:8666/api/auth/status`
+  → `{"needs_setup":true}`.
+- Смоук полного конвейера: `python services/tools/services_smoke.py --all-formats`.
 
 ## Ограничения
 
 - Парсеры и генерация не зависят от Windows; но сборка .msi/.nsis возможна
   только на Windows (WebView2 + WiX/NSIS).
-- Тесты `tools/smoke_12_letters.py` кроссплатформенны и гоняются через
-  `python3 tools/smoke_12_letters.py`.
+- Локальные микросервисы по умолчанию работают на SQLite-шине (без Kafka/Redis);
+  производственный режим — Kafka/Redis/PostgreSQL по `services/.env.example`.

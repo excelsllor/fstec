@@ -35,3 +35,11 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Качество/корпус/кэш pytest (не код)
+services/data/quality/
+services/corpus/
+services/.pytest_cache/
+services/*.db-shm
+services/*.db-wal
+services/*.db-journal

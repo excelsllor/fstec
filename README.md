@@ -1,18 +1,22 @@
 # ФСТЭК Сервис
 
 Сервис автоматического формирования ответов на предписания ФСТЭК.
+Микросервисная архитектура: gateway (:8666) + воркеры ingest/llm/security/reporting.
 
 ## Требования
 
-- Python 3.11+
-- Node.js 18+
-- Rust + Cargo (для Tauri)
+- Python 3.10+
+- Node.js 18+ (frontend)
+- Kafka >= 3.x и Redis >= 7 (режим `kafka`; для локальной разработки достаточно SQLite-шины)
 
 ## Установка зависимостей
 
-### Backend
+### Services (Python)
 ```bash
-cd backend
+cd services
+python -m venv .venv
+.\.venv\Scripts\activate        # Windows
+source .venv/bin/activate       # Linux
 pip install -r requirements.txt
 ```
 
@@ -36,20 +40,19 @@ chmod +x dev.sh
 ```
 
 ### Ручной запуск
-
-**Терминал 1 — Backend:**
 ```bash
-cd backend
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8765 --reload
+cd services
+powershell -File run_local.ps1    # Windows (gateway :8666 + 4 воркера, SQLite-шина)
+bash run_local.sh                 # Linux
 ```
 
-**Терминал 2 — Frontend:**
+Затем (отдельный терминал):
 ```bash
 cd frontend
 npm run dev
 ```
 
-Открыть: http://localhost:5173
+Открыть: http://localhost:5173 (API: http://127.0.0.1:8666, docs /api/docs)
 
 ## Первый запуск
 
@@ -63,12 +66,13 @@ npm run dev
 
 ## Использование
 
-1. **Загрузить письмо** — выбрать PDF + вложения (DOC/DOCX/ODT/XLSX)
-2. Система автоматически:
-   - Извлечёт текст из всех файлов
+1. **Загрузить письмо** — выбрать PDF + вложения (DOC/DOCX/ODT/XLSX/RTF/TXT)
+2. Система автоматически (конвейер через шину событий):
+   - Извлечёт текст из всех файлов (OCR для сканов PDF при включении)
    - Определит тип письма (хакерская группировка / компрометация / уязвимости)
    - Найдёт угрозы и группировки
    - Извлечёт IOC (IP, домены, хэши, email, BDU, CVE)
+   - Сопоставит уязвимости с NVD/BDU и рабочей CMDB
 3. **Карточка письма** — 6 вкладок:
    - Информация — номер, дата, тип, вложения
    - Угрозы — список с группировками и мерами
@@ -79,65 +83,73 @@ npm run dev
 
 ## Tauri (desktop)
 
+Десктоп-оболочка — веб-вью без встроенного бэкенда; требует запущенных
+микросервисов (см. «Запуск (dev режим)»).
+
 ```bash
 cd src-tauri
 cargo tauri dev
 ```
 
-Tauri автоматически запускает frontend dev server и Python backend.
+## Тесты
 
-## Готовый дистрибутив (Windows)
+```bash
+cd services
+python -m pytest tests -q
+```
 
-Инсталлеры лежат в `installer/` (офлайн, всё внутри):
-
-| Файл | Назначение |
-|------|-----------|
-| `fstec-service_0.1.0_x64-setup.exe` | NSIS, per-user, без прав администратора |
-| `fstec-service_0.1.0_x64_en-US.msi` | MSI, per-machine, требует администратора |
-
-- Приложение само поднимает бэкенд (встроенный `fstec-backend`), интернет не нужен.
-- Данные: `%LOCALAPPDATA%\fstec-service` (БД, uploads, secret.key, логи).
-- Сборка и пред-релизная проверка: `docs/build-redos.md`, `docs/checklist.md`.
+Смоук полного конвейера (нужен поднятый `run_local`):
+```bash
+python tools/services_smoke.py
+python tools/services_smoke.py --all-formats   # docx/xlsx/odt/rtf/txt/pdf/doc
+```
 
 ## Структура проекта
 
 ```
 fstec-service/
-├── backend/           # Python FastAPI
-│   ├── app/
-│   │   ├── api/       # endpoints (auth, users, letters, generate)
-│   │   ├── parsers/   # PDF, DOCX, DOC, ODT, XLSX
-│   │   ├── extractor/ # IOC, letter analyzer, vuln extractor
-│   │   ├── generator/ # DOCX response generator, IOC exporter
-│   │   ├── auth.py    # JWT auth
-│   │   ├── models.py  # ORM models
-│   │   └── main.py    # FastAPI app
-│   ├── data/          # SQLite DB + uploads
+├── services/           # микросервисы (Python/FastAPI)
+│   ├── api_gateway/    # :8666 (auth, upload, документы, отчёты, reply)
+│   ├── ingest_service/ # парсинг файлов + OCR
+│   ├── llm_service/    # классификация (heuristic | vllm: Qwen3)
+│   ├── security_service# NVD/BDU/CMDB, SLA, роутинг
+│   ├── reporting_service # карточки индикаторов (DOCX), ответы
+│   ├── shared/         # общие: config, db, bus (memory|sqlite|kafka), parsers, extractors
+│   ├── tests/          # pytest-набор (E2E по форматам и конвейеру)
+│   ├── tools/          # services_smoke.py, quality audit
+│   ├── run_local.ps1 / run_local.sh
 │   └── requirements.txt
-├── frontend/          # React + TypeScript + MUI
+├── frontend/           # React + TypeScript + MUI (API на :8666)
 │   ├── src/
-│   │   ├── api/       # API client
-│   │   ├── store/     # Zustand (auth)
+│   │   ├── api/        # API client
+│   │   ├── store/      # Zustand (auth)
 │   │   ├── components/ # Layout
-│   │   └── pages/     # Login, Dashboard, Upload, LetterList, LetterDetail, Admin/Users
+│   │   └── pages/      # Login, Dashboard, Upload, LetterList, LetterDetail, Admin/Users
 │   └── package.json
-├── src-tauri/         # Tauri v2 (desktop shell)
-│   ├── src/           # Rust (sidecar launch)
-│   └── tauri.conf.json
-├── dev.bat            # Запуск (Windows)
-├── dev.sh             # Запуск (Linux)
-└── PLAN.md
+├── src-tauri/          # Tauri v2 (desktop shell, webview)
+├── docs/               # архитектура, сборка под РЕД ОС, чек-лист
+├── packaging/          # rpm/система (systemd-юниты микросервисов)
+├── dev.bat             # Запуск (Windows)
+├── dev.sh              # Запуск (Linux)
+└── start.bat           # Запуск (Windows)
 ```
 
 ## Поддерживаемые форматы
 
-| Формат | Библиотека |
-|--------|-----------|
-| PDF | pdfplumber |
+| Формат | Движок |
+|--------|--------|
+| PDF (текст) | pdfplumber |
+| PDF (скан) | OCR (tesseract/paddle, раздел настраивается) |
 | DOCX | python-docx |
 | DOC | olefile + CLX + UTF-16 scan |
 | ODT | zipfile + XML |
 | XLSX | openpyxl |
+| RTF / TXT | striprtf / chardet |
+
+## Конфигурация
+
+Все переменные окружения — в `services/.env.example` (шина `memory|sqlite|kafka`,
+OCR, LLM `heuristic|vllm`, security `mock|live`, CMDB, NVD/BDU).
 
 ## Бизнес-процесс
 

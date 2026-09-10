@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8765";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8666";
 
 export const api = axios.create({
   baseURL: API_BASE,
@@ -104,6 +104,16 @@ export interface VulnerabilityResponse {
   description: string;
   software: string;
   severity: string;
+  cvss_score?: number | null;
+  cpe?: string;
+  affected_range?: string;
+  fixed_version?: string;
+  patch_url?: string;
+  source?: string;
+  cmdb_match?: boolean;
+  current_version?: string;
+  target_version?: string;
+  recommendation?: string;
   is_applicable: boolean | null;
   applicability_notes: string;
   action_type: string;
@@ -126,6 +136,10 @@ export interface LetterResponse {
   letter_date: string;
   letter_type: string;
   status: string;
+  sla: string;
+  routing: string;
+  source_filename: string;
+  processing_stage: string;
   subject: string;
   original_text: string;
   all_text: string;
@@ -136,6 +150,7 @@ export interface LetterResponse {
   threats: ThreatResponse[];
   iocs: IoCResponse[];
   vulnerabilities: VulnerabilityResponse[];
+  response?: { text: string; exists: boolean; id?: number };
 }
 
 export const authApi = {
@@ -149,19 +164,21 @@ export const authApi = {
 };
 
 export const lettersApi = {
-  list: () => api.get<LetterListItem[]>("/api/letters"),
+  list: (params?: { letter_type?: string; status?: string; skip?: number; limit?: number }) =>
+    api.get<LetterListItem[]>("/api/letters", { params }),
   stats: () => api.get<StatsResponse>("/api/letters/stats"),
   get: (id: number) => api.get<LetterResponse>(`/api/letters/${id}`),
   delete: (id: number) => api.delete(`/api/letters/${id}`),
-  upload: (pdfFile: File, attachments: File[]) => {
+  upload: (files: File[]) => {
     const formData = new FormData();
-    formData.append("pdf_file", pdfFile);
-    attachments.forEach((f) => formData.append("attachments", f));
-    return api.post<LetterResponse>("/api/letters/upload", formData, {
+    files.forEach((f) => formData.append("files", f));
+    return api.post<{ id: number; status: string; filename: string }>("/upload", formData, {
       headers: { "Content-Type": "multipart/form-data" },
     });
   },
-  generate: (id: number) => api.post(`/api/letters/${id}/generate`),
+  generate: (id: number) => api.post<{ id: number; document_id: number; status: string; text: string }>(
+    `/reply/generate`, undefined, { params: { doc_id: id } }
+  ),
   getResponseText: (id: number) =>
     api.get<{ text: string; exists: boolean }>(`/api/letters/${id}/response/text`),
   getResponsePreview: (id: number) =>
@@ -195,6 +212,34 @@ export const lettersApi = {
   updateVulnerability: (letterId: number, vulnId: number, data: VulnerabilityUpdateData) =>
     api.put<LetterResponse>(`/api/letters/${letterId}/vulnerabilities/${vulnId}`, data),
 };
+
+// ТЗ 2.6: нижнеуровневые эндпоинты gateway
+export const documentsApi = {
+  list: (params?: { letter_type?: string; status?: string; skip?: number; limit?: number }) =>
+    api.get<DocumentListItem[]>("/documents", { params }),
+  get: (id: number) => api.get<LetterResponse>(`/documents/${id}`),
+  downloadReport: (id: number) =>
+    api.get(`/reports/${id}/download`, { responseType: "blob" }),
+  downloadRaw: (id: number) =>
+    api.get(`/reports/${id}/download_raw`, { responseType: "blob" }),
+  generateReply: (id: number) =>
+    api.post<{ id: number; document_id: number; status: string; text: string }>(
+      `/reply/generate`, undefined, { params: { doc_id: id } }
+    ),
+};
+
+export interface DocumentListItem {
+  id: number;
+  letter_number: string;
+  letter_date: string;
+  letter_type: string;
+  status: string;
+  sla: string;
+  routing: string;
+  source_filename: string;
+  processing_stage: string;
+  created_at: string;
+}
 
 export const usersApi = {
   list: () => api.get<UserResponse[]>("/api/users"),

@@ -90,7 +90,7 @@ export default function Login() {
           <Alert severity="info" sx={{ mt: 2 }}>
             <Typography variant="body2">
               <strong>Первичная настройка:</strong> при первом запуске пароль администратора
-              выводится в журнал systemd (<code>journalctl -u fstec-backend</code>)
+              выводится в журнал systemd (<code>journalctl -u fstec-gateway</code>)
               и в файл <code>backend.log</code>. Имя пользователя: <strong>admin</strong>.
             </Typography>
           </Alert>

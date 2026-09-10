@@ -1,0 +1,79 @@
+[
+  {
+    "text": "производится автоматическая проверка вложений с использованием имеющейся «песочницы» («sandbox») для выявления вредоносной активности на этапе приема письма почтовым сервером;",
+    "threat_type": "phishing",
+    "tags": "phishing",
+    "addr_inflection": false,
+    "source": "etalon"
+  },
+  {
+    "text": "производится проверка почтовых вложений с использованием сертифицированного средства антивирусной защиты с использованием функции «Защита от почтовых угроз»;",
+    "threat_type": "phishing",
+    "tags": "phishing",
+    "addr_inflection": false,
+    "source": "etalon"
+  },
+  {
+    "text": "осуществляется автоматическая проверка указанных в письмах URL-адресов, содержащихся в электронных письмах, с использованием механизмов анализа ссылок;",
+    "threat_type": "phishing",
+    "tags": "phishing",
+    "addr_inflection": false,
+    "source": "etalon"
+  },
+  {
+    "text": "в целях идентификации отправителя производится проверка имени домена отправителя электронного письма;",
+    "threat_type": "phishing",
+    "tags": "phishing",
+    "addr_inflection": false,
+    "source": "etalon"
+  },
+  {
+    "text": "сотрудники проинструктированы о запрете открывать и загружать почтовые вложения писем с тематикой, не относящейся к рабочей деятельности;",
+    "threat_type": "phishing",
+    "tags": "phishing",
+    "addr_inflection": false,
+    "source": "etalon"
+  },
+  {
+    "text": "работы с электронной почтой производятся только с учетных записей пользователей операционной системы с минимальными возможными привилегиями;",
+    "threat_type": "phishing",
+    "tags": "phishing",
+    "addr_inflection": false,
+    "source": "etalon"
+  },
+  {
+    "text": "ограничено получение электронных писем с адреса {{sender}};",
+    "threat_type": "phishing",
+    "tags": "phishing",
+    "addr_inflection": false,
+    "source": "etalon"
+  },
+  {
+    "text": "на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;",
+    "threat_type": "hacker",
+    "tags": "hacker,phishing,malware_attack,compromise,clickfix,vulnerability",
+    "addr_inflection": true,
+    "source": "etalon"
+  },
+  {
+    "text": "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям.",
+    "threat_type": "hacker",
+    "tags": "hacker,phishing,malware_attack,compromise,clickfix,vulnerability",
+    "addr_inflection": false,
+    "source": "etalon"
+  },
+  {
+    "text": "регулярно производится контроль журналов DNS-серверов, прокси-серверов, средств межсетевого экранирования и средств обнаружения и реагирования уровня узла;",
+    "threat_type": "compromise",
+    "tags": "compromise",
+    "addr_inflection": false,
+    "source": "etalon"
+  },
+  {
+    "text": "произведено внеплановое сканирование информационной инфраструктуры средствами антивирусной защиты;",
+    "threat_type": "compromise",
+    "tags": "compromise",
+    "addr_inflection": false,
+    "source": "etalon"
+  }
+]

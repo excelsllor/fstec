@@ -38,6 +38,10 @@ Thumbs.db
 
 # Качество/корпус/кэш pytest (не код)
 services/data/quality/
+services/data/reports/
+services/data/logs/
+services/data/raw/
+services/data/uploads/
 services/corpus/
 services/.pytest_cache/
 services/*.db-shm

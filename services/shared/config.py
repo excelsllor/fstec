@@ -28,6 +28,18 @@ SECRET_KEY = os.environ.get("FSTEC_SECRET_KEY", "dev-insecure-change-me")
 ALGORITHM = "HS256"
 JWT_AUDIENCE = "fstec-service"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("FSTEC_TOKEN_MINUTES", "120"))
+
+
+def _warn_insecure_secret() -> None:
+    import warnings
+    warnings.warn(
+        "FSTEC_SECRET_KEY не задан — используется небезопасный dev-дефолт. "
+        "Обязательно задайте секрет на боевом сервере!",
+        RuntimeWarning, stacklevel=2)
+
+
+if SECRET_KEY == "dev-insecure-change-me":
+    _warn_insecure_secret()
 BOOTSTRAP_USERNAME = "admin"
 BOOTSTRAP_FULL_NAME = "Администратор"
 MIN_PASSWORD_LENGTH = 6
@@ -76,6 +88,8 @@ SECURITY_CACHE_TTL_S = int(os.environ.get("FSTEC_SECURITY_CACHE_TTL_S", str(24 *
 NVD_API_KEY = os.environ.get("NVD_API_KEY", "")
 NVD_API_BASE = os.environ.get("NVD_API_BASE", "https://services.nvd.nist.gov")
 BDU_API_BASE = os.environ.get("BDU_API_BASE", "https://bdu.fstec.ru")
+# Включать fallback с verify=False при сбое TLS у BDU (только для dev/тест-стендов; в проде оставить 0)
+BDU_TLS_INSECURE_FALLBACK = os.environ.get("FSTEC_BDU_INSECURE_FALLBACK", "0") == "1"
 # CMDB Заказчика (Приложение 8): провайдер mock (dev, тот же протокол) | rest
 CMDB_PROVIDER = os.environ.get("CMDB_PROVIDER", "mock")
 CMDB_ENDPOINT = os.environ.get("CMDB_ENDPOINT", "http://localhost:9000/api/inventory/software")
@@ -87,4 +101,4 @@ CMDB_TIMEOUT_S = float(os.environ.get("CMDB_TIMEOUT_S", "5"))
 GATEWAY_PORT = int(os.environ.get("FSTEC_GATEWAY_PORT", "8666"))
 
 # Отчётность (ТЗ 2.5)
-ORG_NAME = os.environ.get("FSTEC_ORG_NAME", "Организация Заказчика")
+ORG_NAME = os.environ.get("FSTEC_ORG_NAME", "Правительства Липецкой области")

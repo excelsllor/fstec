@@ -1,10 +1,14 @@
 import io
 from docx import Document
+
+from shared.parsers._xml_guard import guard_zip_xml
 from shared.parsers.base import ParseResult
 
 
 def parse_docx(content: bytes) -> ParseResult:
     result = ParseResult()
+    if not guard_zip_xml(content, what="DOCX", errors=result.errors):
+        return result
     try:
         doc = Document(io.BytesIO(content))
         text_parts = []

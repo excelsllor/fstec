@@ -118,7 +118,7 @@ services:
     depends_on: [kafka, redis, postgres]
     environment:
       <<: *base-env
-      FSTEC_ORG_NAME: ${FSTEC_ORG_NAME:-Организация Заказчика}
+      FSTEC_ORG_NAME: ${FSTEC_ORG_NAME:-Правительства Липецкой области}
     command: ["python", "-m", "reporting_service.worker"]
     volumes:
       - data:/app/data

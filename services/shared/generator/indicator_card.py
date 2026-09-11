@@ -2,6 +2,8 @@ import io
 from datetime import date
 from pathlib import Path
 
+from shared.config import ORG_NAME
+
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -113,7 +115,7 @@ def build_indicator_card(
 ) -> bytes:
     """Карточка индикаторов (ТЗ 2.5.1): шапка + 4 раздела, К/Ж/З-подсветка."""
     doc = _create_doc()
-    _heading(doc, org_name or "Организация Заказчика")
+    _heading(doc, org_name or ORG_NAME)
 
     today = date.today().isoformat()
     _line(doc, f"Дата: {today}")

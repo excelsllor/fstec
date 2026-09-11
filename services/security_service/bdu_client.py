@@ -20,7 +20,7 @@ from security_service.cache import Cache, MemoryCache
 from security_service.enriched import EnrichedVuln
 from security_service.resilience import retry_async
 from security_service.versioning import build_range
-from shared.config import BDU_API_BASE, SECURITY_CACHE_TTL_S
+from shared.config import BDU_API_BASE, BDU_TLS_INSECURE_FALLBACK, SECURITY_CACHE_TTL_S
 
 logger = logging.getLogger("fstec.security.bdu")
 
@@ -69,11 +69,14 @@ class BDUClient:
 
     async def _fetch(self, bdu_id: str) -> str | None:
         url = f"{self.base_url}/vul/print/{_path_id(bdu_id)}"
-        for verify, label in ((True, "verify"), (False, "verify=False (TLS fallback)")):
+        attempts = [(True, "verify")]
+        if BDU_TLS_INSECURE_FALLBACK:
+            attempts.append((False, "verify=False (TLS fallback)"))
+        for verify, label in attempts:
             try:
                 return await self._fetch_once(url, bdu_id, verify=verify)
             except httpx.TransportError as e:
-                if "CERTIFICATE_VERIFY_FAILED" in str(e) and verify:
+                if "CERTIFICATE_VERIFY_FAILED" in str(e) and verify and BDU_TLS_INSECURE_FALLBACK:
                     logger.warning("BDU TLS verify failed (%s), retry without verify", e)
                     continue
                 raise

@@ -9,6 +9,7 @@ os.environ["FSTEC_EVENT_BUS"] = "memory"
 os.environ["FSTEC_OCR_ENABLED"] = "false"
 os.environ["FSTEC_LLM_PROVIDER"] = "heuristic"
 os.environ["FSTEC_SECURITY_MODE"] = "mock"
+os.environ["FSTEC_DISABLE_LOGIN_RATE_LIMIT"] = "1"
 
 import pytest  # noqa: E402
 from docx import Document as DocxDocument  # noqa: E402

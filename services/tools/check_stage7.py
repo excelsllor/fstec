@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from docx import Document
+from shared.config import ORG_NAME
 from shared.extractor.ioc_extractor import extract_iocs
 from shared.extractor.letter_analyzer import analyze_letter
 from shared.extractor.vuln_extractor import extract_vulns
@@ -74,7 +75,7 @@ def main():
         addr_count = max(1, len(ips) + len(domains))
 
         card = build_indicator_card(
-            org_name="Организация Заказчика",
+            org_name=ORG_NAME,
             source_filename=f"{n}.pdf",
             document_id=1000 + int(n.split("-")[1]),
             ips=ips, ipv6=[], domains=domains, emails=emails,

@@ -1,10 +1,14 @@
 import io
 from openpyxl import load_workbook
+
+from shared.parsers._xml_guard import guard_zip_xml
 from shared.parsers.base import ParseResult
 
 
 def parse_xlsx(content: bytes) -> ParseResult:
     result = ParseResult()
+    if not guard_zip_xml(content, what="XLSX", errors=result.errors):
+        return result
     try:
         wb = load_workbook(io.BytesIO(content), data_only=True)
         text_parts = []

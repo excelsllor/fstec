@@ -8,6 +8,9 @@ import base64
 import logging
 import os
 import shutil
+import threading
+import time
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +38,29 @@ from shared.models import (
 )
 
 logger = logging.getLogger("fstec.gateway")
+
+# --- Rate limit на /api/auth/login (анти-брутфорс; off для автотестов) ---
+
+_LOGIN_LIMIT = int(os.environ.get("FSTEC_LOGIN_RATE_LIMIT", "10"))
+_LOGIN_WINDOW_S = int(os.environ.get("FSTEC_LOGIN_RATE_WINDOW_S", "60"))
+_LOGIN_LIMIT_DISABLED = os.environ.get("FSTEC_DISABLE_LOGIN_RATE_LIMIT", "0") == "1"
+
+_login_attempts: dict[str, deque] = {}
+_login_lock = threading.Lock()
+
+
+def _login_allowed(client_ip: str) -> bool:
+    if _LOGIN_LIMIT_DISABLED:
+        return True
+    now = time.monotonic()
+    with _login_lock:
+        q = _login_attempts.setdefault(client_ip, deque())
+        while q and now - q[0] > _LOGIN_WINDOW_S:
+            q.popleft()
+        if len(q) >= _LOGIN_LIMIT:
+            return False
+        q.append(now)
+        return True
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -93,6 +119,9 @@ def _audit(db: Session, user: User | None, action: str, object_type: str = "",
 
 @app.post("/api/auth/login")
 def login(body: dict, request: Request, db: Session = Depends(get_db)):
+    client_ip = request.client.host if request.client else "unknown"
+    if not _login_allowed(client_ip):
+        raise HTTPException(status_code=429, detail="Слишком много попыток входа, повторите позже")
     username = (body.get("username") or "").strip()
     password = body.get("password") or ""
     user = db.query(User).filter(User.username == username).first()
@@ -164,10 +193,11 @@ async def upload(
     for uf in files:
         sizes.append(_validate_file(uf))
 
+    main_name = Path(files[0].filename).name
     doc = Document(
         letter_type="other", status="uploaded", processing_stage="uploaded",
-        source_filename=files[0].filename,
-        size=sum(sizes), mime=Path(files[0].filename or "").suffix,
+        source_filename=main_name,
+        size=sum(sizes), mime=Path(main_name).suffix,
         created_by=user.id,
     )
     db.add(doc)

@@ -186,6 +186,7 @@ def main():
 
     data = upload_and_wait(headers, "letter.docx", make_docx_bytes(),
                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    doc_id = data["id"]
 
     assert data["letter_type"] == "hacker", data["letter_type"]
     assert data["sla"] == "critical", data["sla"]

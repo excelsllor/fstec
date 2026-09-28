@@ -14,10 +14,24 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 
+class Run(Base):
+    """Сквозной прогон (модель LLM + дата) для сравнения моде в одной БД."""
+    __tablename__ = "runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    model = Column(String(50), default="", index=True)   # 14b | 9b | ...
+    label = Column(String(100), default="")
+    note = Column(Text, default="")
+    created_at = Column(DateTime, default=_utcnow)
+
+    documents = relationship("Document", back_populates="run")
+
+
 class Document(Base):
     __tablename__ = "documents"
 
     id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=True, index=True)
     letter_number = Column(String(50), default="")
     letter_date = Column(String(20), default="")
     letter_type = Column(String(30), default="other")
@@ -40,6 +54,8 @@ class Document(Base):
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
+    run = relationship("Run", back_populates="documents")
+
     attachments = relationship("Attachment", back_populates="document", cascade="all, delete-orphan")
     threats = relationship("Threat", back_populates="document", cascade="all, delete-orphan")
     iocs = relationship("IoC", back_populates="document", cascade="all, delete-orphan")
@@ -52,6 +68,7 @@ class Attachment(Base):
     __tablename__ = "attachments"
 
     id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     filename = Column(String(500), nullable=False)
     file_path = Column(String(1000), nullable=False)
@@ -69,6 +86,7 @@ class Threat(Base):
     __tablename__ = "threats"
 
     id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     number = Column(Integer, default=0)
     group_name = Column(String(200), default="")
@@ -87,6 +105,7 @@ class IoC(Base):
     __tablename__ = "iocs"
 
     id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     ioc_type = Column(String(30), nullable=False, index=True)
     value = Column(String(500), nullable=False)
@@ -101,6 +120,7 @@ class Entity(Base):
     __tablename__ = "entities"
 
     id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     entity_type = Column(String(30), nullable=False)   # organization | deadline | contact
     value = Column(String(500), nullable=False)
@@ -113,6 +133,7 @@ class Summary(Base):
     __tablename__ = "summaries"
 
     id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     summary = Column(String(500), default="")
     confidence = Column(Float, default=0.0)
@@ -124,6 +145,7 @@ class Vulnerability(Base):
     __tablename__ = "vulnerabilities"
 
     id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     bdu_id = Column(String(50), default="", index=True)
     cve_id = Column(String(50), default="", index=True)
@@ -131,6 +153,7 @@ class Vulnerability(Base):
     software = Column(String(500), default="")
     severity = Column(String(30), default="unknown")
     cvss_score = Column(Float, nullable=True)
+    cvss_version = Column(String(20), default="")
     cpe = Column(String(500), default="")
     affected_range = Column(String(200), default="")
     fixed_version = Column(String(100), default="")
@@ -153,6 +176,7 @@ class SLABase(Base):
     __tablename__ = "sla_events"
 
     id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     sla = Column(String(20), default="normal")
     routing = Column(String(20), default="default")
@@ -166,6 +190,7 @@ class Report(Base):
     __tablename__ = "reports"
 
     id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     report_type = Column(String(50), default="indicator_card")
     filename = Column(String(500), nullable=False)
@@ -179,6 +204,7 @@ class GeneratedResponse(Base):
     __tablename__ = "generated_responses"
 
     id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     content = Column(Text, default="")
     edited_content = Column(Text, default="")
@@ -208,6 +234,7 @@ class MeasureCandidate(Base):
     __tablename__ = "measure_candidates"
 
     id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=True, index=True)
     threat_id = Column(Integer, ForeignKey("threats.id", ondelete="CASCADE"), nullable=True)
     text = Column(Text, nullable=False)

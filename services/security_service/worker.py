@@ -1,6 +1,6 @@
-"""Security Posture Analyzer (ТЗ 2.4): document.analyzed → обогащение NVD/BDU + CMDB +
-версионный matching → security.assessed (keep-all; match — флаг). Недоступность внешних
-БД → graceful (raw в письме), внешние ошибки в external_errors + audit + DLQ (ТЗ 4.2)."""
+﻿"""Security Posture Analyzer (РўР— 2.4): document.analyzed в†’ РѕР±РѕРіР°С‰РµРЅРёРµ NVD/BDU + CMDB +
+РІРµСЂСЃРёРѕРЅРЅС‹Р№ matching в†’ security.assessed (keep-all; match вЂ” С„Р»Р°Рі). РќРµРґРѕСЃС‚СѓРїРЅРѕСЃС‚СЊ РІРЅРµС€РЅРёС…
+Р‘Р” в†’ graceful (raw РІ РїРёСЃСЊРјРµ), РІРЅРµС€РЅРёРµ РѕС€РёР±РєРё РІ external_errors + audit + DLQ (РўР— 4.2)."""
 import asyncio
 import logging
 
@@ -20,7 +20,7 @@ from security_service.nvd_client import NVDClient
 
 logger = logging.getLogger("fstec.security")
 
-# Инъекция клиентов для тестов (CI/offline): set_test_clients(nvd=..., bdu=..., cmdb=...)
+# РРЅСЉРµРєС†РёСЏ РєР»РёРµРЅС‚РѕРІ РґР»СЏ С‚РµСЃС‚РѕРІ (CI/offline): set_test_clients(nvd=..., bdu=..., cmdb=...)
 _OVERRIDES: dict[str, object] = {}
 _enrich: bool | None = None
 _nvd: NVDClient | None = None
@@ -147,11 +147,13 @@ def _audit(doc_id: int, reason: str) -> dict:
 
 def main():
     configure_logging()
+    from shared.registry import register_service
+    register_service("security")
     async def _run():
         init_db()
         bus = get_event_bus()
         register_handlers(bus, {"document.analyzed": handle_analyzed})
-        await serve_forever(bus)
+        await serve_forever(bus, heartbeat_name="security")
     asyncio.run(_run())
 
 

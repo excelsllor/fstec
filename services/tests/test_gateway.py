@@ -14,7 +14,8 @@ def _headers(client):
 
 
 def test_login_and_status(client):
-    assert client.get("/api/auth/status").json()["needs_setup"] is True
+    # bootstrap-администратор уже вошёл в фикстуре → первичная настройка завершена
+    assert client.get("/api/auth/status").json()["needs_setup"] is False
     me = client.get("/api/auth/me", headers=_headers(client))
     assert me.status_code == 200
     assert me.json()["role"] == "admin"
@@ -98,6 +99,10 @@ def test_reply_preview_and_response(client):
     body = preview.json()
     assert body["title"]
     assert isinstance(body["sections"], list)
+    # обратная совместимость для фронтенда: секции обязаны содержать measure_options/base_measures
+    for sec in body["sections"]:
+        assert "measure_options" in sec
+        assert "base_measures" in sec
 
     text = client.get(f"/api/letters/{doc_id}/response/text", headers=_headers(client)).json()
     assert "exists" in text
@@ -117,3 +122,54 @@ def test_export_iocs_endpoints(client):
         assert d.content[:2] == b"PK"
     bad = client.get(f"/api/letters/{doc_id}/export/nope", headers=_headers(client))
     assert bad.status_code == 400
+
+
+def test_templates_admin_endpoints(client):
+    """CRUD для шаблонов и библиотеки мер (страница «Шаблоны»)."""
+    import uuid
+    h = _headers(client)
+    r = client.get("/api/templates/threat-types", headers=h)
+    assert r.status_code == 200
+
+    key = f"t_{uuid.uuid4().hex[:8]}"
+    r = client.post("/api/templates/threat-types", headers=h,
+                    json={"name": f"Тест {key}", "key": key, "description": "для теста"})
+    assert r.status_code == 201, r.text
+    tt_id = r.json()["id"]
+
+    r = client.put(f"/api/templates/threat-types/{tt_id}", headers=h,
+                   json={"name": f"Тест {key} (изменён)", "description": ""})
+    assert r.status_code == 200
+    assert r.json()["name"] == f"Тест {key} (изменён)"
+
+    # библиотека мер (MeasureTemplate: content хранит меры построчно)
+    r = client.post("/api/templates/measure-templates", headers=h,
+                    json={"name": f"Блок {key}", "threat_type_id": tt_id,
+                          "measures": "мера один;\nмера два;", "is_default": True})
+    assert r.status_code == 201, r.text
+    mt_id = r.json()["id"]
+    assert r.json()["measures"] == "мера один;\nмера два;"
+
+    r = client.put(f"/api/templates/measure-templates/{mt_id}", headers=h,
+                   json={"is_default": False, "threat_type_id": tt_id})
+    assert r.status_code == 200
+    assert r.json()["is_default"] is False
+
+    r = client.post("/api/templates/vuln-templates", headers=h,
+                    json={"name": f"ВЛ {key}", "action_type": "update",
+                          "content": "обновить {software};", "is_default": False})
+    assert r.status_code == 201, r.text
+    vt_id = r.json()["id"]
+
+    r = client.get("/api/templates/vuln-templates", headers=h)
+    assert r.status_code == 200
+    assert any(t["id"] == vt_id for t in r.json())
+
+    assert client.delete(f"/api/templates/vuln-templates/{vt_id}", headers=h).status_code == 200
+    assert client.delete(f"/api/templates/measure-templates/{mt_id}", headers=h).status_code == 200
+    assert client.delete(f"/api/templates/threat-types/{tt_id}", headers=h).status_code == 200
+
+
+def test_diagnostics_requires_admin(client):
+    """Диагностика доступна только администратору."""
+    assert client.get("/api/diagnostics").status_code == 401

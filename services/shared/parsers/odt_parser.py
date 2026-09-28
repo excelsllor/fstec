@@ -1,6 +1,8 @@
 import io
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
+
+from shared.parsers._xml_guard import guard_zip_xml
 from shared.parsers.base import ParseResult
 
 NS = {
@@ -12,6 +14,8 @@ NS = {
 
 def parse_odt(content: bytes) -> ParseResult:
     result = ParseResult()
+    if not guard_zip_xml(content, what="ODT", errors=result.errors):
+        return result
     try:
         zf = zipfile.ZipFile(io.BytesIO(content))
         xml_bytes = zf.read("content.xml")

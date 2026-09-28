@@ -12,15 +12,20 @@ import json
 import os
 import re
 import sys
-import tempfile
 from pathlib import Path
 
+_RUN_ID_LABEL = os.environ.get("FSTEC_E2E_RUN", "")
+if "--run" in sys.argv:
+    i = sys.argv.index("--run")
+    if i + 1 < len(sys.argv):
+        _RUN_ID_LABEL = sys.argv[i + 1]
+
 if "--db" not in sys.argv:
-    _dbs = sorted(Path(tempfile.gettempdir()).glob("fstec_e2e_*/e2e.db"))
-    if not _dbs:
-        sys.exit("E2E sqlite не найден; передайте --db <path>")
+    _DB = Path(os.environ.get(
+        "FSTEC_E2E_DB",
+        Path(__file__).resolve().parent.parent / "data" / "quality" / "e2e_runs.db"))
     sys.argv.append("--db")
-    sys.argv.append(str(_dbs[-1]))
+    sys.argv.append(str(_DB))
 
 DB = Path(sys.argv[sys.argv.index("--db") + 1])
 os.environ["DATABASE_URL"] = f"sqlite:///{DB}"
@@ -29,7 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from shared.db import SessionLocal  # noqa: E402
-from shared.models import Document, Report, Threat  # noqa: E402
+from shared.models import Document, Report, Run, Threat  # noqa: E402
 from shared.generator.response_generator import generate_reply_text  # noqa: E402
 from shared.parsers import parse_file  # noqa: E402
 
@@ -49,8 +54,15 @@ def tok(s):
 
 
 def load_db(work: dict):
+    run_ids = None
+    if _RUN_ID_LABEL:
+        with SessionLocal() as db:
+            run_ids = [r.id for r in db.query(Run).filter(Run.model == _RUN_ID_LABEL).all()]
     with SessionLocal() as db:
-        for doc in db.query(Document).order_by(Document.id).all():
+        q = db.query(Document).order_by(Document.id)
+        if run_ids:
+            q = q.filter(Document.run_id.in_(run_ids))
+        for doc in q.all():
             n = re.match(r"^(9-\d+)\.", doc.source_filename or "")
             if not n:
                 continue
@@ -69,9 +81,9 @@ def load_db(work: dict):
 
 def main():
     root = Path(r"C:\Users\artyom\Desktop\лгту хуйня")
-    out_dir = ROOT / "data" / "quality" / "e2e"
+    out_dir = ROOT / "data" / "quality" / "e2e" / (_RUN_ID_LABEL or "all")
     out_dir.mkdir(parents=True, exist_ok=True)
-    md_path = ROOT / "docs" / "e2e_generation_report.md"
+    md_path = ROOT / "docs" / f"e2e_generation_report{('_' + _RUN_ID_LABEL) if _RUN_ID_LABEL else ''}.md"
 
     work: dict = {}
     load_db(work)
@@ -154,9 +166,11 @@ def main():
                  f"({round(100 * totals['kw_num'] / max(1, totals['kw_den']))}%); "
                  f"средний ratio `{avg}` (до фиксов 0.14–0.29).**\n")
 
-    report = {"stage": "e2e_generation_final", "db": str(DB), "rows": rows,
+    report = {"stage": "e2e_generation_final", "db": str(DB),
+              "run": _RUN_ID_LABEL or "all",
+              "rows": rows,
               "totals": {k: v for k, v in totals.items() if k != "ratio"} | {"avg_ratio": avg}}
-    (ROOT / "data" / "quality" / "check_e2e.json").write_text(
+    (ROOT / "data" / "quality" / f"check_e2e{('_' + _RUN_ID_LABEL) if _RUN_ID_LABEL else ''}.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text("\n".join(md), encoding="utf-8")

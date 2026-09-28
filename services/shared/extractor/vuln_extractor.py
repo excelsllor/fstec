@@ -36,6 +36,7 @@ class VulnInfo:
     cve_id: str = ""
     description: str = ""
     software: str = ""
+    version: str = ""
     severity: str = "unknown"
 
 
@@ -55,6 +56,7 @@ def extract_vulns(text: str, tables: list | None = None) -> list[VulnInfo]:
             bdu_id=bdu,
             description=sentence.strip()[:500],
             software=_extract_software(sentence, m.group(0)),
+            version=_extract_version(sentence),
             severity=_extract_severity(sentence, m.group(0)),
         ))
 
@@ -70,6 +72,7 @@ def extract_vulns(text: str, tables: list | None = None) -> list[VulnInfo]:
             cve_id=cve,
             description=sentence.strip()[:500],
             software=_extract_software(sentence, m.group(0)),
+            version=_extract_version(sentence),
             severity=_extract_severity(sentence, m.group(0)),
         ))
 
@@ -192,6 +195,26 @@ def _is_valid_software(sw: str, bad_words: set) -> bool:
     if re.match(r"^[А-Яа-яёЁ\s]+$", sw) and len(sw) > 40:
         return False
     return True
+
+
+# Версии ПО: «версии 2.17.0», «до версии 2.16.0», «Apache Log4j 2.17.x»
+_VERSION_PREF = re.compile(
+    r"верси[а-яё]+\s+([0-9]+(?:\.[0-9]+){0,3}[A-Za-z0-9_.\-+]*)", re.IGNORECASE)
+_VERSION_BARE = re.compile(r"([0-9]+(?:\.[0-9]+){1,3}[A-Za-z0-9_.\-+]*)")
+_CVSS_BEFORE = re.compile(r"cvss\s*$", re.IGNORECASE)
+
+
+def _extract_version(sentence: str) -> str:
+    m = _VERSION_PREF.search(sentence)
+    if m:
+        return m.group(1).strip(".,;:()[]")[:24]
+    for m in _VERSION_BARE.finditer(sentence):
+        if _CVSS_BEFORE.search(sentence[:m.start()][-12:]):
+            continue
+        version = m.group(1).strip(".,;:()[]")
+        if re.search(r"\d", version):
+            return version[:24]
+    return ""
 
 
 def _extract_severity(sentence: str, bdu_str: str) -> str:

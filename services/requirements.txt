@@ -10,10 +10,11 @@ aiokafka==0.11.0
 redis==5.2.1
 httpx==0.28.1
 psycopg2-binary==2.9.10
+psutil==5.9.8
 
 # Парсинг и генерация
 pdfplumber==0.11.10
-Pillow==12.2.0
+Pillow==12.3.0
 python-docx==1.2.0
 olefile==0.47
 openpyxl==3.1.5
@@ -21,8 +22,7 @@ chardet==7.4.3
 striprtf==0.0.26
 
 # OCR (опционально: ставить на машине с GPU или CPU; без них используется Tesseract)
-# paddlepaddle-gpu==2.6.2
-# paddleocr==2.7.3
+# GPU-вариант PaddleOCR — отдельный файл requirements-ocr.txt (build arg WITH_OCR=true)
 # (для CPU-only: paddlepaddle==2.6.2)
 
 # LLM / классификация (опционально: RuBERT нужен для быстрой классификации)

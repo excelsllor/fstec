@@ -1,4 +1,4 @@
-"""LLM Service (ТЗ 2.3): document.parsed → анализ → document.analyzed."""
+﻿"""LLM Service (РўР— 2.3): document.parsed в†’ Р°РЅР°Р»РёР· в†’ document.analyzed."""
 import asyncio
 import logging
 
@@ -47,11 +47,13 @@ async def handle_parsed(topic: str, key: str, payload: dict) -> None:
 
 def main():
     configure_logging()
+    from shared.registry import register_service
+    register_service("llm")
     async def _run():
         init_db()
         bus = get_event_bus()
         register_handlers(bus, {"document.parsed": handle_parsed})
-        await serve_forever(bus)
+        await serve_forever(bus, heartbeat_name="llm")
     asyncio.run(_run())
 
 

@@ -25,12 +25,20 @@ from shared.config import BDU_API_BASE, BDU_TLS_INSECURE_FALLBACK, SECURITY_CACH
 logger = logging.getLogger("fstec.security.bdu")
 
 
+_BDU_ID_RE = re.compile(r"^\d{4}-\d{4,}$")
+
+
 def _path_id(bdu_id: str) -> str:
-    """BDU:2021-05969 / bdu:2021-05969 / 2021-05969 -> 2021-05969."""
+    """BDU:2021-05969 / bdu:2021-05969 / 2021-05969 -> 2021-05969.
+
+    Возвращает "" для всего, что не соответствует формату BDU (защита от
+    инъекции в путь URL); вызывающий код трактует "" как «нет данных».
+    """
     raw = (bdu_id or "").strip()
     if ":" in raw:
         raw = raw.rsplit(":", 1)[-1]
-    return raw.strip()
+    raw = raw.strip()
+    return raw if _BDU_ID_RE.fullmatch(raw) else ""
 
 _SEVERITY_RU = {
     "критический": "critical",

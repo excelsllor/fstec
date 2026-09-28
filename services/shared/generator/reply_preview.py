@@ -14,28 +14,15 @@ import re
 from shared.config import ORG_NAME
 from shared.generator.response_generator import NO_RISK_TEXT, _inflect
 
-# Набор мер по умолчанию, доступных оператору при редактировании
-DEFAULT_MEASURES = [
-    "производится автоматическая проверка вложений с использованием имеющейся «песочницы» («sandbox») для выявления вредоносной активности на этапе приема письма почтовым сервером;",
-    "производится проверка почтовых вложений с использованием сертифицированного средства антивирусной защиты с использованием функции «Защита от почтовых угроз»;",
-    "осуществляется автоматическая проверка указанных в письмах URL-адресов, содержащихся в электронных письмах, с использованием механизмов анализа ссылок;",
-    "в целях идентификации отправителя производится проверка имени домена отправителя электронного письма;",
-    "сотрудники проинструктированы о запрете открывать и загружать почтовые вложения писем с тематикой, не относящейся к рабочей деятельности;",
-    "работы с электронной почтой производятся только с учетных записей пользователей операционной системы с минимальными возможными привилегиями;",
-    "на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;",
-    "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям.",
-]
 
-MONITORING = [
-    "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям.",
-]
-
-COMPROMISE_MEASURES = [
-    "регулярно производится контроль журналов DNS-серверов, прокси-серверов, средств межсетевого экранирования, средств обнаружения и реагирования уровня узла;",
-    "на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;",
-    "произведено внеплановое сканирование информационной инфраструктуры средствами антивирусной защиты;",
-    "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям.",
-]
+def _library_measures(db, tag: str) -> list[str]:
+    """Меры единой библиотеки (measures) по тегу в каноническом порядке."""
+    try:
+        from shared.generator.templated_reply import _measures_for_tag, load_reply_resources
+        library, _, _ = load_reply_resources(db)
+        return _measures_for_tag(library, tag)
+    except Exception:
+        return []
 
 
 def _normalize_date(dt: str) -> str:
@@ -47,20 +34,11 @@ def _normalize_date(dt: str) -> str:
 
 
 def _base_measures_for_threat_type(db, threat_type: str) -> list[str]:
-    """Меры по умолчанию для типа угрозы из справочника MeasureTemplate."""
-    try:
-        from shared.models import MeasureTemplate, ThreatType
-        tt = db.query(ThreatType).filter(ThreatType.key == threat_type).first()
-        if tt:
-            tmpl = (db.query(MeasureTemplate)
-                    .filter(MeasureTemplate.threat_type_id == tt.id,
-                            MeasureTemplate.is_default == True)
-                    .first())
-            if tmpl and tmpl.content:
-                return [m.strip() for m in tmpl.content.split("\n") if m.strip()]
-    except Exception:
-        pass
-    return []
+    """Меры по умолчанию для типа угрозы из единой библиотеки (measures по тегу)."""
+    measures = _library_measures(db, threat_type)
+    if not measures:
+        measures = _library_measures(db, "phishing")
+    return measures
 
 
 def build_preview(*, db, document, threats, vulnerabilities, iocs) -> dict:
@@ -120,7 +98,7 @@ def build_preview(*, db, document, threats, vulnerabilities, iocs) -> dict:
                 "measures": [text],
                 "measures_preview": [text],
                 "threat_type": "vulnerability",
-                "measure_options": DEFAULT_MEASURES,
+                "measure_options": _library_measures(db, "phishing"),
                 "base_measures": [],
                 "intro_text": "",
                 "section_text": text,
@@ -132,7 +110,7 @@ def build_preview(*, db, document, threats, vulnerabilities, iocs) -> dict:
         for t in threats:
             prefix = f"{t.number}. " if multiple else ""
             desc = re.sub(r"\s+", " ", (t.theme or t.description or "")).strip() or "угрозой безопасности информации"
-            measures = _base_measures_for_threat_type(db, t.threat_type) or DEFAULT_MEASURES
+            measures = _base_measures_for_threat_type(db, t.threat_type)
             measures = _inflect(measures, addr_count)
             if t.measures and t.measures.strip():
                 saved = [m.strip() for m in t.measures.split("\n") if m.strip()]
@@ -140,13 +118,11 @@ def build_preview(*, db, document, threats, vulnerabilities, iocs) -> dict:
                     measures = saved
             intro_text = (f"{prefix}В целях предотвращения возможности реализации угроз безопасности "
                           f"информации, связанных с {desc}, приняты следующие меры защиты:")
-            measure_options = _inflect(DEFAULT_MEASURES, addr_count)
+            base = _inflect(_base_measures_for_threat_type(db, t.threat_type)
+                            or _library_measures(db, "phishing"), addr_count)
+            measure_options = list(base)
             if t.threat_type == "compromise":
-                measure_options = _inflect(COMPROMISE_MEASURES, addr_count)
-                base = measure_options
-            else:
-                base = _inflect(_base_measures_for_threat_type(db, t.threat_type)
-                                or DEFAULT_MEASURES, addr_count)
+                measure_options = _inflect(_library_measures(db, "compromise"), addr_count)
             section_text = intro_text + "\n" + "\n".join(f"  {m}" for m in measures)
             sections.append({
                 "threat_id": t.id,
@@ -178,7 +154,7 @@ def build_preview(*, db, document, threats, vulnerabilities, iocs) -> dict:
 def _fallback_sections(threats, addr_count, db):
     sections = []
     for t in threats:
-        measures = _inflect(DEFAULT_MEASURES, addr_count)
+        measures = _inflect(_library_measures(db, "phishing"), addr_count)
         intro_text = (f"В целях предотвращения возможности реализации угроз безопасности информации, "
                       f"связанных с {t.theme or 'угрозой безопасности информации'}, приняты следующие меры защиты:")
         sections.append({

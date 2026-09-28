@@ -1,5 +1,5 @@
-"""Reporting Service (ТЗ 2.5): security.assessed → карточка индикаторов (2.5.1)
-и проект ответа (2.5.2) → report.ready + reply.generated."""
+﻿"""Reporting Service (РўР— 2.5): security.assessed в†’ РєР°СЂС‚РѕС‡РєР° РёРЅРґРёРєР°С‚РѕСЂРѕРІ (2.5.1)
+Рё РїСЂРѕРµРєС‚ РѕС‚РІРµС‚Р° (2.5.2) в†’ report.ready + reply.generated."""
 import asyncio
 import base64
 import logging
@@ -47,6 +47,7 @@ async def handle_assessed(topic: str, key: str, payload: dict) -> None:
             "software": v.get("software", ""),
             "severity": v.get("severity", "unknown"),
             "cvss_score": v.get("cvss_score"),
+            "cvss_version": v.get("cvss_version", ""),
             "affected_range": v.get("affected_range", ""),
             "fixed_version": v.get("fixed_version", ""),
             "patch_url": v.get("patch_url", ""),
@@ -57,7 +58,7 @@ async def handle_assessed(topic: str, key: str, payload: dict) -> None:
             "source": v.get("source", "manual"),
         } for v in assessed_vulns]
 
-        # 2.5.1 Карточка индикаторов
+        # 2.5.1 РљР°СЂС‚РѕС‡РєР° РёРЅРґРёРєР°С‚РѕСЂРѕРІ
         card_bytes = build_indicator_card(
             org_name=ORG_NAME,
             source_filename=doc.source_filename,
@@ -78,7 +79,7 @@ async def handle_assessed(topic: str, key: str, payload: dict) -> None:
         db.add(Report(document_id=doc.id, report_type="indicator_card",
                       filename=fname, file_path=str(report_path)))
 
-        # 2.5.2 Проект ответа (шаблон + библиотека мер + LLM-подбор; fallback — детерминированный)
+        # 2.5.2 РџСЂРѕРµРєС‚ РѕС‚РІРµС‚Р° (С€Р°Р±Р»РѕРЅ + Р±РёР±Р»РёРѕС‚РµРєР° РјРµСЂ + LLM-РїРѕРґР±РѕСЂ; fallback вЂ” РґРµС‚РµСЂРјРёРЅРёСЂРѕРІР°РЅРЅС‹Р№)
         threat_rows = (db.query(Threat).filter(Threat.document_id == doc_id)
                        .order_by(Threat.number).all())
         blocks = [{
@@ -124,11 +125,13 @@ async def handle_assessed(topic: str, key: str, payload: dict) -> None:
 
 def main():
     configure_logging()
+    from shared.registry import register_service
+    register_service("reporting")
     async def _run():
         init_db()
         bus = get_event_bus()
         register_handlers(bus, {"security.assessed": handle_assessed})
-        await serve_forever(bus)
+        await serve_forever(bus, heartbeat_name="reporting")
     asyncio.run(_run())
 
 

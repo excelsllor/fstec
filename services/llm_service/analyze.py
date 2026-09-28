@@ -38,16 +38,30 @@ def analyze(provider: LLMProvider, text: str) -> tuple[DocumentAnalyzed, dict]:
     ner = extract_standard_ner(text)
     summary = summarize_heuristic(text)
 
-    # Классификация: regex-first (ТЗ 2.3) → RuBERT — только если regex не определил
-    # тип (вернул "other"); LLM-валидация — финальный слой.
+    # IoC: гибрид regex ∪ LLM (LLM-слой с анти-галлюцинацией подтверждает/дополняет).
+    # Провайдеры duck-typed (тесты/фейки) могут не иметь этих методов — безопасный вызов.
+    _extract_llm = getattr(provider, "extract_iocs_llm", None)
+    llm_io = _extract_llm(text) if callable(_extract_llm) else None
+    if llm_io:
+        _merge_iocs(iocs, llm_io)
+
+    # Классификация: regex-first (ТЗ 2.3) → RuBERT (если regex не определил) →
+    # LLM-классификация типов (3 класса, авторитетный слой — сверка 22/22 vs 12/22)
+    # → сведение compromise → hacker.
     classification = letter.letter_type
     if classification == "other" and rubert_available():
         rl, conf = get_rubert().classify(text)
         if rl and conf:
             classification = rl
-    llm_result = provider.analyze(text, hint=letter.letter_type)
+    _classify = getattr(provider, "classify_type", None)
+    llm_cls = _classify(text) if callable(_classify) else ""
+    llm_result = provider.analyze(text, hint=classification)
     if llm_result.llm_used and llm_result.classification in ("hacker", "compromise", "vulnerability", "other"):
-        classification = llm_result.classification
+        if not llm_cls:
+            classification = llm_result.classification
+        else:
+            # классификация из analyze() уже покрыта слоем classify_type (3 класса)
+            classification = llm_cls
     if llm_result.summary:
         summary = llm_result.summary
     if llm_result.entities:
@@ -55,12 +69,16 @@ def analyze(provider: LLMProvider, text: str) -> tuple[DocumentAnalyzed, dict]:
         ner.deadlines = [e["value"] for e in llm_result.entities if e.get("type") == "deadline"] or ner.deadlines
         ner.contacts = [e["value"] for e in llm_result.entities if e.get("type") == "contact"] or ner.contacts
 
+    # сведение типов к 3: compromise -> hacker (блоки ответа сохраняют threat_type compromise)
+    if classification == "compromise":
+        classification = "hacker"
+
     threats = [{"number": t.number, "threat_type": t.threat_type, "group_name": t.group_name,
                 "theme": t.theme, "archive_name": t.archive_name, "exe_name": t.exe_name,
                 "malware_type": t.malware_type, "description": t.description,
                 "measures": t.measures} for t in letter.threats]
     vuln_items = [{"bdu_id": v.bdu_id, "cve_id": v.cve_id, "description": v.description,
-                   "software": v.software, "severity": v.severity} for v in vulns]
+                   "software": v.software, "version": v.version, "severity": v.severity} for v in vulns]
 
     entities_out = [
         {"type": "organization", "value": o} for o in ner.organizations
@@ -69,6 +87,11 @@ def analyze(provider: LLMProvider, text: str) -> tuple[DocumentAnalyzed, dict]:
     ] + [
         {"type": "contact", "value": c} for c in ner.contacts
     ]
+
+    software_items = []
+    for v in vulns:
+        if v.software and not any(s["name"] == v.software for s in software_items):
+            software_items.append({"name": v.software, "version": v.version})
 
     event = DocumentAnalyzed(
         document_id=0,
@@ -85,6 +108,7 @@ def analyze(provider: LLMProvider, text: str) -> tuple[DocumentAnalyzed, dict]:
             emails=iocs.emails,
             cve=iocs.cve_ids,
             bdu=iocs.vuln_ids,
+            software=software_items,
         ),
         threats=threats,
         vulns_raw=vuln_items,
@@ -96,6 +120,17 @@ def analyze(provider: LLMProvider, text: str) -> tuple[DocumentAnalyzed, dict]:
         "classification": classification,
         "domains": iocs.domains,
     }
+
+
+def _merge_iocs(base, llm):
+    """Гибрид: добавляем в regex-базу только те значения, что предложила модель."""
+    for attr, src in (("ips", "ips"), ("ipv6", "ipv6"), ("domains", "domains"),
+                      ("hashes", "hashes"), ("emails", "emails")):
+        existing = set(getattr(base, src))
+        for v in getattr(llm, src):
+            if v not in existing:
+                getattr(base, src).append(v)
+                existing.add(v)
 
 
 def persist_analysis(db: Session, doc: Document, event: DocumentAnalyzed) -> None:
@@ -118,7 +153,9 @@ def persist_analysis(db: Session, doc: Document, event: DocumentAnalyzed) -> Non
         ("bdu", event.iocs.bdu),
     ]:
         for v in values:
-            db.add(IoC(document_id=doc.id, ioc_type=ioc_type, value=v, source="regex" if not event.llm_used else "llm"))
+            db.add(IoC(document_id=doc.id, ioc_type=ioc_type, value=v,
+                       source="regex" if not event.llm_used else "llm",
+                       llm_validated=event.llm_used))
 
     for t in event.threats:
         db.add(Threat(document_id=doc.id, number=t.get("number", 0), threat_type=t.get("threat_type", ""),

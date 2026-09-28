@@ -45,12 +45,24 @@ def init_db(create_all: bool = True):
 
 def _migrate_sqlite():
     """Лёгкие миграции существующих БД SQLite (create_all не меняет таблицы)."""
+    _run_id_tables = [
+        "documents", "attachments", "threats", "vulnerabilities", "iocs",
+        "entities", "summaries", "sla_events", "reports",
+        "generated_responses", "measure_candidates",
+    ]
     try:
         with engine.connect() as conn:
             cols = {r[1] for r in conn.execute(text("PRAGMA table_info(generated_responses)"))}
             if cols and "plan_json" not in cols:
                 conn.execute(text("ALTER TABLE generated_responses ADD COLUMN plan_json TEXT DEFAULT ''"))
-                conn.commit()
+            for t in _run_id_tables:
+                tcols = {r[1] for r in conn.execute(text(f"PRAGMA table_info({t})"))}
+                if tcols and "run_id" not in tcols:
+                    conn.execute(text(f"ALTER TABLE {t} ADD COLUMN run_id INTEGER"))
+            vcols = {r[1] for r in conn.execute(text("PRAGMA table_info(vulnerabilities)"))}
+            if vcols and "cvss_version" not in vcols:
+                conn.execute(text("ALTER TABLE vulnerabilities ADD COLUMN cvss_version VARCHAR(20) DEFAULT ''"))
+            conn.commit()
     except Exception as e:
         logger.error("SQLite migration failed: %s", e)
 
@@ -135,11 +147,28 @@ def _seed_reply_resources():
                 db.add(IntroFragment(key=fr["key"], label=fr.get("label", ""),
                                      template=fr["template"], applies_to=fr.get("applies_to", ""),
                                      is_default=True))
+        measures_seed = _load("measures_library.json")
         if db.query(Measure).count() == 0:
-            for m in _load("measures_library.json"):
+            for m in measures_seed:
                 db.add(Measure(text=m["text"], threat_type=m.get("threat_type", ""),
                                tags=m.get("tags", ""), addr_inflection=bool(m.get("addr_inflection", False)),
                                source=m.get("source", "seed")))
+        else:
+            # Пересинхронизация эталонных мер из JSON (порядок/теги), не трогая меры admin/llm
+            etalon = (db.query(Measure).filter(Measure.source.in_(("etalon", "seed")))
+                      .order_by(Measure.id).all())
+            seed_sig = [(m["text"], m.get("tags", ""), bool(m.get("addr_inflection", False)))
+                        for m in measures_seed]
+            db_sig = [(m.text, m.tags or "", bool(m.addr_inflection)) for m in etalon]
+            if measures_seed and db_sig != seed_sig:
+                for m in etalon:
+                    db.delete(m)
+                db.flush()
+                for m in measures_seed:
+                    db.add(Measure(text=m["text"], threat_type=m.get("threat_type", ""),
+                                   tags=m.get("tags", ""),
+                                   addr_inflection=bool(m.get("addr_inflection", False)),
+                                   source=m.get("source", "etalon")))
         db.commit()
     except Exception as e:
         logger.error("Seed reply resources failed: %s", e)

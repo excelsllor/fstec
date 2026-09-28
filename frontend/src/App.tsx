@@ -10,6 +10,8 @@ import LetterList from "./pages/LetterList";
 import LetterDetail from "./pages/LetterDetail";
 import Users from "./pages/Admin/Users";
 import Templates from "./pages/Admin/Templates";
+import Measures from "./pages/Admin/Measures";
+import Diagnostics from "./pages/Diagnostics";
 
 function ProtectedRoute({ children, requireAdmin }: { children: React.ReactNode; requireAdmin?: boolean }) {
   const { token, user } = useAuthStore();
@@ -61,6 +63,8 @@ export default function App() {
         <Route path="/letters/:id" element={<LetterDetail />} />
         <Route path="/admin/users" element={<ProtectedRoute requireAdmin><Users /></ProtectedRoute>} />
         <Route path="/admin/templates" element={<ProtectedRoute requireAdmin><Templates /></ProtectedRoute>} />
+        <Route path="/admin/measures" element={<ProtectedRoute requireAdmin><Measures /></ProtectedRoute>} />
+        <Route path="/diagnostics" element={<ProtectedRoute requireAdmin><Diagnostics /></ProtectedRoute>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

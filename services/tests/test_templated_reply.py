@@ -3,8 +3,8 @@ import pytest
 
 from shared.db import SessionLocal
 from shared.generator.templated_reply import (
-    build_annotated_preview, generate_reply, load_reply_resources,
-    persist_candidates, plan_reply, render_reply,
+    _backfill_empty_blocks, _vulns_to_blocks, build_annotated_preview, generate_reply,
+    load_reply_resources, persist_candidates, plan_reply, render_reply,
 )
 from shared.models import (
     Document, IntroFragment, Measure, MeasureCandidate,
@@ -149,6 +149,11 @@ def test_generate_reply_plan_json_and_candidates(doc_db):
     ann = build_annotated_preview(db, plan, blocks, addr_count=1)
     assert ann[0]["measure_annotations"][-1]["source"] == "new"
     assert ann[0]["section_text"].startswith("1. В целях")
+    # обратная совместимость для редактора ответа: measure_options/base_measures обязательны
+    assert ann[0]["measure_options"]
+    assert ann[0]["base_measures"]
+    assert "новая мера от LLM;" in ann[0]["measure_options"]
+    assert "новая мера от LLM;" not in ann[0]["base_measures"]
 
 
 def test_accept_candidate_adds_to_library(doc_db):
@@ -301,3 +306,94 @@ def test_vuln_render_paragraph(doc_db):
     assert "уровень опасности по CVSS 3.1 — критический" in text
     assert ", связанная с непринятием мер" in text
     assert "С уважением," in text
+
+
+def test_vuln_letter_llm_plan_blocks(doc_db):
+    """Vulnerability-письмо: уязвимость → LLM-блок (меры из плана), абзац без
+    хвоста «Эксплуатация уязвимости…», формат «уровень опасности по CVSS {v} — {sev}»."""
+    db, doc, _ = doc_db
+    doc.letter_type = "vulnerability"
+    db.commit()
+    from shared.generator.templated_reply import _apply_llm_plan
+    vulns = [{
+        "bdu_id": "BDU:2026-07317", "cve_id": "CVE-2026-4480",
+        "description": ("Уязвимость подсистемы печати (printing subsystem) программ сетевого "
+                        "взаимодействия Samba связана с непринятием мер по нейтрализации "
+                        "специальных элементов при обработке параметра %J. Уровень опасности по "
+                        "CVSS 3.1 — критический. Эксплуатация уязвимости "
+                        "может позволить нарушителю, действующему удаленно, выполнить произвольный код"),
+        "software": "Samba", "severity": "critical", "cvss_score": 10.0,
+        "cvss_version": "", "recommendation": "Обновить Samba",
+    }]
+    blocks = _vulns_to_blocks(vulns)
+    assert blocks[0]["threat_type"] == "vulnerability"
+    assert blocks[0]["n"] == 1 and blocks[0]["bdu_id"] == "BDU:2026-07317"
+    library, fragments, tpl = load_reply_resources(db)
+    lib_by_id = {m["id"]: m for m in library}
+    frag_by_key = {f["key"]: f for f in fragments}
+    llm_plan = {"template_key": "vulnerability", "blocks": [
+        {"n": 1, "fragment_id": "", "measure_ids": [1, 10], "new_measures": [
+            {"text": "Контроль применения обновлений Samba;", "note": ""}]}]}
+    plan = _apply_llm_plan(llm_plan, lib_by_id, frag_by_key, blocks, addr_count=1)
+    assert plan and plan["llm"] is True
+    blk = plan["blocks"][0]
+    assert blk["software"] == "Samba"  # cvss_version из описания подставляется на рендере
+    assert len(blk["measures"]) == 2  # мера 10 (base) + new_measure; мера 1 (phishing) отсечена
+    assert blk["measures"][0]["measure_id"] == 10
+    text, _ = render_reply(plan=plan, templates=tpl, letter_number="9/114",
+                           letter_date="2026-06-10",
+                           org_name="Правительства Липецкой области",
+                           active_vulns=vulns, addr_count=1)
+    assert "Эксплуатация уязвимости может позволить" not in text
+    assert "уровень опасности по CVSS 3.1 — критический" in text
+    assert "Уязвимость подсистемы печати (printing subsystem)" in text
+    assert "связанная с непринятием мер" in text
+    assert "Дополнительно приняты следующие меры:" in text
+    assert "Контроль применения обновлений Samba;" in text
+
+
+def test_vuln_letter_fallback_still_bdu(doc_db):
+    """LLM недоступен → vuln-план пустой, рендер остаётся на BDU-описаниях."""
+    db, doc, _ = doc_db
+    doc.letter_type = "vulnerability"
+    db.commit()
+    vulns = [{
+        "bdu_id": "BDU:2026-07317", "cve_id": "CVE-2026-4480",
+        "description": ("Уязвимость подсистемы печати (printing subsystem) программ сетевого "
+                        "взаимодействия Samba связана с непринятием мер по нейтрализации "
+                        "специальных элементов при обработке параметра %J."),
+        "software": "Samba", "severity": "critical", "cvss_score": 10.0,
+        "cvss_version": "3.1", "recommendation": "",
+    }]
+    blocks = _vulns_to_blocks(vulns)
+    plan = plan_reply(db=db, letter_type="vulnerability", blocks=blocks,
+                      addr_count=1, use_llm=False)
+    assert plan["blocks"] == [] and plan["llm"] is False
+    text, _ = render_reply(plan=plan, templates=load_reply_resources(db)[2],
+                           letter_number="9/114", letter_date="2026-06-10",
+                           org_name="Правительства Липецкой области", active_vulns=vulns)
+    assert "Уязвимость подсистемы печати" in text
+    assert "BDU:2026-07317" in text
+
+
+def test_backfill_empty_llm_measures(doc_db):
+    """Пустой measure_ids от LLM (как у 9B) → блок заполняется fallback-мерами."""
+    db, doc, threats = doc_db
+    library, _, _ = load_reply_resources(db)
+    plan = {"template_key": "hacker", "llm": True, "blocks": [
+        {"number": 1, "threat_id": threats[0].id, "fragment_key": "phishing_general",
+         "intro": "деятельностью хакерской группировки Vortex Werewolf",
+         "threat_type": "phishing", "description": threats[0].description,
+         "measures": [], "new_measures": []},
+        {"number": 2, "threat_id": threats[1].id, "fragment_key": "",
+         "intro": "реализуемыми угрозами безопасности информации",
+         "threat_type": "malware_attack", "description": "атака с DCRat",
+         "measures": [], "new_measures": []},
+    ]}
+    _backfill_empty_blocks(plan, "hacker", addr_count=1, library=library)
+    blk0 = plan["blocks"][0]
+    blk1 = plan["blocks"][1]
+    assert blk0["measures"], "фишинг-блок обязан получить антифишинговый набор"
+    assert any("песочниц" in m["text"] for m in blk0["measures"])
+    assert blk1["measures"], "не-фишинг блок обязан получить базовые меры"
+    assert all(m["source"] == "library" for m in blk0["measures"] + blk1["measures"])

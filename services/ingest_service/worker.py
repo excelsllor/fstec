@@ -1,4 +1,4 @@
-"""Ingest Service (ТЗ 2.2): парсинг + OCR → document.parsed."""
+﻿"""Ingest Service (РўР— 2.2): РїР°СЂСЃРёРЅРі + OCR в†’ document.parsed."""
 import asyncio
 import logging
 from pathlib import Path
@@ -87,6 +87,8 @@ async def handle_uploaded(topic: str, key: str, payload: dict) -> None:
 
 def main():
     configure_logging()
+    from shared.registry import register_service
+    register_service("ingest")
     asyncio.run(run_service())
 
 
@@ -94,7 +96,7 @@ async def run_service():
     bus = get_event_bus()
     register_handlers(bus, {"documents.uploaded": handle_uploaded})
     from shared.worker import serve_forever
-    await serve_forever(bus)
+    await serve_forever(bus, heartbeat_name="ingest")
 
 
 if __name__ == "__main__":

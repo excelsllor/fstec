@@ -12,7 +12,6 @@ import json
 import os
 import re
 import sys
-import tempfile
 import time
 import difflib
 from pathlib import Path
@@ -20,22 +19,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-_RESUME = os.environ.get("FSTEC_E2E_DIR")
-_TMP = Path(_RESUME) if _RESUME else Path(tempfile.mkdtemp(prefix="fstec_e2e_"))
-os.environ["FSTEC_DATA_DIR"] = str(_TMP)
-os.environ["DATABASE_URL"] = f"sqlite:///{_TMP / 'e2e.db'}"
+# Единая БД всех прогонов (9B/14B/...): каждая модель пишет как свой Run (run_id).
+_RUN_ID_LABEL = os.environ.get("FSTEC_E2E_RUN", "")
+_UNIFIED_DB = Path(os.environ.get("FSTEC_E2E_DB", ROOT / "data" / "quality" / "e2e_runs.db"))
+os.environ["FSTEC_DATA_DIR"] = str(_UNIFIED_DB.parent)
+os.environ["DATABASE_URL"] = f"sqlite:///{_UNIFIED_DB}"
 os.environ["FSTEC_EVENT_BUS"] = "memory"
 os.environ["FSTEC_OCR_ENABLED"] = "false"
 os.environ["FSTEC_LLM_PROVIDER"] = "vllm"
 os.environ["VLLM_BASE_URL"] = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000/v1")
-os.environ["VLLM_MODEL"] = os.environ.get("VLLM_MODEL", "Qwen3-8B")
+os.environ["VLLM_MODEL"] = os.environ.get("VLLM_MODEL", "Qwen3.5-9B")
 os.environ["FSTEC_LLM_TIMEOUT_S"] = "600"
 os.environ["FSTEC_SECURITY_MODE"] = "live"
 
 from shared.bus import get_event_bus  # noqa: E402
 from shared.config import UPLOAD_DIR  # noqa: E402
 from shared.db import SessionLocal, init_db  # noqa: E402
-from shared.models import Attachment, Document, GeneratedResponse, Report, Threat  # noqa: E402
+from shared.models import (Attachment, Document, GeneratedResponse, Report,
+                           Run, Threat)  # noqa: E402
 from shared.parsers import parse_file  # noqa: E402
 from shared.worker import register_handlers  # noqa: E402
 from ingest_service.worker import handle_uploaded as ingest_handler  # noqa: E402
@@ -44,6 +45,20 @@ from security_service.worker import handle_analyzed as security_handler  # noqa:
 from reporting_service.worker import handle_assessed as reporting_handler  # noqa: E402
 
 init_db()
+
+
+def get_or_create_run(model: str) -> Run:
+    with SessionLocal() as db:
+        r = db.query(Run).filter(Run.model == model).order_by(Run.id.desc()).first()
+        if r is None:
+            r = Run(model=model, label=(os.environ.get("VLLM_MODEL") or ""))
+            db.add(r)
+            db.commit()
+            db.refresh(r)
+        return r
+
+
+RUN: Run | None = None
 
 register_handlers(get_event_bus(), {
     "documents.uploaded": ingest_handler,
@@ -67,17 +82,31 @@ def tok(s):
     return " ".join(WORD.findall(s.lower()))
 
 
+def strip_cmdb(text: str) -> str:
+    """Исключает из сравнения фрагменты, зависящие от CMDB заказчика (нет доступа к базе
+    ПО заказчика): текущую версию в рекомендации «Обновить {ПО} с {current} до {fixed}»
+    и утверждение «Используемая версия … не подвержена уязвимости» (проверка применяемости)."""
+    out = text or ""
+    out = re.sub(r"(\bОбновить\b[^.]*?)\bс\s+v?[0-9][\w\-.()]*\s+до\s+", r"\1до ", out,
+                 flags=re.IGNORECASE)
+    out = re.sub(r"Используемая версия[^.]*?не подвержена[^.]*\.?", " ", out,
+                 flags=re.IGNORECASE)
+    return out
+
+
 def create_doc(pdf_bytes: bytes, filename: str) -> int:
     with SessionLocal() as db:
         doc = Document(source_filename=filename, letter_type="other",
-                       status="uploaded", processing_stage="uploaded")
+                       status="uploaded", processing_stage="uploaded",
+                       run_id=RUN.id if RUN else None)
         db.add(doc)
         db.flush()
         fpath = UPLOAD_DIR / f"doc_{doc.id}" / filename
         fpath.parent.mkdir(parents=True, exist_ok=True)
         fpath.write_bytes(pdf_bytes)
         db.add(Attachment(document_id=doc.id, filename=filename, file_path=str(fpath),
-                          file_type=".pdf", parse_status="pending", is_main=True))
+                          file_type=".pdf", parse_status="pending", is_main=True,
+                          run_id=RUN.id if RUN else None))
         db.commit()
         return doc.id
 
@@ -92,7 +121,12 @@ async def run_chain(doc_id: int):
 def evaluate(n: str, ref_text: str, ref_alt_text: str = ""):
     row = {}
     with SessionLocal() as db:
-        doc = db.query(Document).filter(Document.source_filename == f"{n}.pdf").first()
+        doc = (db.query(Document)
+               .filter(Document.source_filename == f"{n}.pdf")
+               .filter(Document.run_id == (RUN.id if RUN else None))
+               .order_by(Document.id.desc()).first())
+        if not doc:
+            return {"id": n, "error": "doc not found"}
         threats = db.query(Threat).filter(Threat.document_id == doc.id).order_by(Threat.number).all()
         resp = db.query(GeneratedResponse).filter(GeneratedResponse.document_id == doc.id) \
             .order_by(GeneratedResponse.id.desc()).first()
@@ -109,13 +143,13 @@ def evaluate(n: str, ref_text: str, ref_alt_text: str = ""):
             "reply_chars": len(resp.content) if resp else 0,
         }
     if ref_text and row["reply"]:
-        rn, un = norm(ref_text), norm(row["reply"])
+        rn, un = norm(strip_cmdb(ref_text)), norm(strip_cmdb(row["reply"]))
         rw = WORD.findall(rn)
         uw = WORD.findall(un)
         ratio = round(difflib.SequenceMatcher(None, uw, rw).ratio(), 3)
         row["ratio"] = ratio
         if ref_alt_text:
-            rn2 = norm(ref_alt_text)
+            rn2 = norm(strip_cmdb(ref_alt_text))
             ratio2 = round(difflib.SequenceMatcher(
                 None, uw, WORD.findall(rn2)).ratio(), 3)
             row["ratio_alt"] = ratio2
@@ -171,11 +205,21 @@ def _find_cases(root: Path) -> list[tuple[str, Path, Path, Path]]:
 
 
 def main():
+    global RUN
+    args = list(sys.argv[1:])
+    run_arg = _RUN_ID_LABEL
+    if "--run" in args:
+        i = args.index("--run")
+        if i + 1 < len(args):
+            run_arg = args[i + 1]
+        args = [a for a in args if a != "--run"]
+        args = [a for a in args if not a.startswith("-")]
+    RUN = get_or_create_run(run_arg or os.environ.get("VLLM_MODEL", "unknown"))
     root = Path(r"C:\Users\artyom\Desktop\лгту хуйня")
     out_dir = ROOT / "data" / "quality" / "e2e"
     out_dir.mkdir(parents=True, exist_ok=True)
-    report_path = ROOT / "data" / "quality" / "check_e2e.json"
-    only = set(sys.argv[1:]) or None
+    report_path = ROOT / "data" / "quality" / f"check_e2e_{run_arg or RUN.model}.json"
+    only = set(args) or None
     force = {x for x in os.environ.get("FSTEC_E2E_FORCE", "").split(",") if x}
     cases = _find_cases(root)
     if only:
@@ -201,7 +245,9 @@ def main():
             ref_alt_text = parse_file(ref_alt).text or ""
 
         with SessionLocal() as db:
-            existing = (db.query(Document).filter(Document.source_filename == f"{n}.pdf")
+            existing = (db.query(Document)
+                        .filter(Document.source_filename == f"{n}.pdf")
+                        .filter(Document.run_id == RUN.id)
                         .order_by(Document.id.desc()).first())
             has_reply = bool(existing and db.query(GeneratedResponse)
                              .filter(GeneratedResponse.document_id == existing.id).first())
@@ -242,13 +288,14 @@ def main():
 
 def _save_row(n, row, out_dir, report_path, rows):
     if row.get("reply"):
-        sub = out_dir / f"doc_{n}"
+        sub = out_dir / (RUN.model if RUN else "run") / f"doc_{n}"
         sub.mkdir(parents=True, exist_ok=True)
         (sub / "reply.txt").write_text(row["reply"], encoding="utf-8")
         if row.get("report_file") and Path(row["report_file"]).is_file():
             (sub / "card.docx").write_bytes(Path(row["report_file"]).read_bytes())
     rows[:] = [r for r in rows if r.get("id") != n] + [row]
-    report_path.write_text(json.dumps({"stage": "e2e_generation", "rows": rows},
+    report_path.write_text(json.dumps({"stage": "e2e_generation", "run": RUN.model if RUN else None,
+                                       "rows": rows},
                                       ensure_ascii=False, indent=1), encoding="utf-8")
 
 

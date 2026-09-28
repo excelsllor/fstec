@@ -1,7 +1,10 @@
 services:
   kafka:
-    image: bitnami/kafka:3.7
+    # bitnami/kafka:3.7 снят с публикации; используется поддерживаемый legacy-репозиторий
+    # с тем же набором переменных KAFKA_CFG_*.
+    image: bitnamilegacy/kafka:3.7
     container_name: fstec-kafka
+    restart: unless-stopped
     environment:
       - KAFKA_CFG_NODE_ID=0
       - KAFKA_CFG_PROCESS_ROLES=controller,broker
@@ -12,7 +15,7 @@ services:
       - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
       - ALLOW_PLAINTEXT_LISTENER=yes
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"
     healthcheck:
       test: ["CMD", "kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list"]
       interval: 10s
@@ -22,50 +25,111 @@ services:
   redis:
     image: redis:7-alpine
     container_name: fstec-redis
-    ports:
-      - "6379:6379"
-
-  postgres:
-    image: postgres:16-alpine
-    container_name: fstec-postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: fstec
-      POSTGRES_PASSWORD: fstec
-      POSTGRES_DB: fstec
-    ports:
-      - "5432:5432"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD обязателен}
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --appendonly yes"]
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - redisdata:/data
+    ports:
+      - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fstec"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 10
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: fstec-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fstec}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD обязателен}
+      POSTGRES_DB: ${POSTGRES_DB:-fstec}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fstec}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Инференс LLM (Qwen3.5-9B) на GPU. Веса скачиваются при первом старте (нужен интернет).
+  vllm:
+    image: vllm/vllm-openai:v0.9.0
+    container_name: fstec-vllm
+    restart: unless-stopped
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    command: >
+      --model ${VLLM_MODEL_ID:-Qwen/Qwen3.5-9B}
+      --served-model-name ${VLLM_MODEL:-Qwen3.5-9B}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-16384}
+      --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.80}
+      --host 0.0.0.0 --port 8000
+    ports:
+      - "127.0.0.1:8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request;urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 600s
+
   api-gateway:
     build: { context: ., dockerfile: Dockerfile, args: { SERVICE: api_gateway } }
     container_name: fstec-api-gateway
+    restart: unless-stopped
     depends_on: [kafka, redis, postgres]
     environment: &base-env
+      FSTEC_ENV: prod
       FSTEC_EVENT_BUS: kafka
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      DATABASE_URL: postgresql+psycopg2://fstec:fstec@postgres:5432/fstec
-      FSTEC_SECRET_KEY: ${FSTEC_SECRET_KEY:-dev-insecure-change-me}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fstec}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD обязателен}@postgres:5432/${POSTGRES_DB:-fstec}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD обязателен}@redis:6379/0
+      FSTEC_SECRET_KEY: ${FSTEC_SECRET_KEY:?FSTEC_SECRET_KEY обязателен — задайте уникальный секрет}
+      FSTEC_DISABLE_DOCS: "1"
       FSTEC_DATA_DIR: /app/data
       FSTEC_GATEWAY_PORT: "8666"
+    volumes:
+      - data:/app/data
     ports:
-      - "8666:8666"
-    command: ["uvicorn", "api_gateway.main:app", "--host", "0.0.0.0", "--port", "8666"]
+      - "127.0.0.1:8666:8666"
+    command: ["uvicorn", "api_gateway.main:app", "--host", "0.0.0.0", "--port", "8666",
+              "--proxy-headers", "--forwarded-allow-ips", "*"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8666/api/health')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   ingest-service:
-    build: { context: ., dockerfile: Dockerfile, args: { SERVICE: ingest_service } }
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { SERVICE: ingest_service, WITH_OCR: "true" }
     container_name: fstec-ingest
+    restart: unless-stopped
     depends_on: [kafka, redis, postgres]
     environment:
       <<: *base-env
-      FSTEC_OCR_ENABLED: "true"
-      FSTEC_OCR_ENGINE: paddle
-      FSTEC_OCR_DEVICE: gpu
+      FSTEC_OCR_ENABLED: ${FSTEC_OCR_ENABLED:-true}
+      FSTEC_OCR_ENGINE: ${FSTEC_OCR_ENGINE:-paddle}
+      FSTEC_OCR_DEVICE: ${FSTEC_OCR_DEVICE:-gpu}
     command: ["python", "-m", "ingest_service.worker"]
     volumes:
       - data:/app/data
@@ -80,13 +144,15 @@ services:
   llm-service:
     build: { context: ., dockerfile: Dockerfile, args: { SERVICE: llm_service } }
     container_name: fstec-llm
-    depends_on: [kafka, redis, postgres]
+    restart: unless-stopped
+    depends_on: [kafka, redis, postgres, vllm]
     environment:
       <<: *base-env
-      FSTEC_LLM_PROVIDER: ${FSTEC_LLM_PROVIDER:-heuristic}
+      FSTEC_LLM_PROVIDER: ${FSTEC_LLM_PROVIDER:-vllm}
       VLLM_BASE_URL: ${VLLM_BASE_URL:-http://vllm:8000/v1}
+      VLLM_MODEL: ${VLLM_MODEL:-Qwen3.5-9B}
       FSTEC_RUBERT_MODEL: ${FSTEC_RUBERT_MODEL:-DeepPavlov/rubert-base-cased-conversational}
-      FSTEC_RUBERT_DEVICE: cpu
+      FSTEC_RUBERT_DEVICE: ${FSTEC_RUBERT_DEVICE:-cpu}
     command: ["python", "-m", "llm_service.worker"]
     volumes:
       - data:/app/data
@@ -94,16 +160,18 @@ services:
   security-service:
     build: { context: ., dockerfile: Dockerfile, args: { SERVICE: security_service } }
     container_name: fstec-security
+    restart: unless-stopped
     depends_on: [kafka, redis, postgres]
     environment:
       <<: *base-env
-      FSTEC_SECURITY_MODE: ${FSTEC_SECURITY_MODE:-mock}
+      FSTEC_SECURITY_MODE: ${FSTEC_SECURITY_MODE:-live}
       FSTEC_SECURITY_RETRY_MAX: ${FSTEC_SECURITY_RETRY_MAX:-3}
       FSTEC_SECURITY_CACHE_TTL_S: ${FSTEC_SECURITY_CACHE_TTL_S:-86400}
       NVD_API_BASE: ${NVD_API_BASE:-https://services.nvd.nist.gov}
       NVD_API_KEY: ${NVD_API_KEY:-}
       BDU_API_BASE: ${BDU_API_BASE:-https://bdu.fstec.ru}
-      CMDB_PROVIDER: ${CMDB_PROVIDER:-mock}
+      FSTEC_BDU_INSECURE_FALLBACK: ${FSTEC_BDU_INSECURE_FALLBACK:-0}
+      CMDB_PROVIDER: ${CMDB_PROVIDER:-rest}
       CMDB_ENDPOINT: ${CMDB_ENDPOINT:-http://localhost:9000/api/inventory/software}
       CMDB_AUTH_TYPE: ${CMDB_AUTH_TYPE:-none}
       CMDB_AUTH_TOKEN: ${CMDB_AUTH_TOKEN:-}
@@ -115,6 +183,7 @@ services:
   reporting-service:
     build: { context: ., dockerfile: Dockerfile, args: { SERVICE: reporting_service } }
     container_name: fstec-reporting
+    restart: unless-stopped
     depends_on: [kafka, redis, postgres]
     environment:
       <<: *base-env
@@ -123,6 +192,21 @@ services:
     volumes:
       - data:/app/data
 
+  # UI: отдаёт статику SPA и проксирует API на gateway (единый порт 80 для клиентов в локалке).
+  nginx:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE: /gw
+    container_name: fstec-nginx
+    restart: unless-stopped
+    depends_on: [api-gateway]
+    ports:
+      - "${FSTEC_HTTP_PORT:-80}:8080"
+
 volumes:
   pgdata:
+  redisdata:
   data:
+  hf_cache:

@@ -684,7 +684,7 @@ function buildHighlightedHtml(text: string, iocs: IoCResponse[], measureOptions:
   // компенсирующие/нетипичные меры, не входящие в базовый набор, — оранжевая
   const baseSet = new Set((baseMeasures || []).map(normMeasure));
   for (const measure of measureOptions) {
-    if (measure.length > 15) {
+    if (measure && measure.length > 15) {
       const cls = baseSet.has(normMeasure(measure)) ? "hl-measure" : "hl-measure-unknown";
       patterns.push({ re: new RegExp(measure.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), cls });
     }
@@ -807,17 +807,18 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
   };
 
   const allMeasureOptions = preview
-    ? preview.sections.flatMap((s) => s.measure_options)
+    ? preview.sections.flatMap((s) => s.measure_options || []).filter(Boolean)
     : [];
 
   const unknownMeasures = preview
     ? Array.from(
         new Set(
           preview.sections
-            .flatMap((s) => s.measure_options)
+            .flatMap((s) => s.measure_options || [])
+            .filter(Boolean)
             .filter((opt) => opt.length > 15)
             .filter((opt) => {
-              const base = new Set(preview!.sections.flatMap((sec) => (sec.base_measures || []).map(normMeasure)));
+              const base = new Set(preview!.sections.flatMap((sec) => (sec.base_measures || []).map(normMeasure)).filter(Boolean));
               return !base.has(normMeasure(opt));
             })
         )
@@ -920,7 +921,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
                   lineHeight: "inherit",
                   color: "#000",
                 }}
-                dangerouslySetInnerHTML={{ __html: buildHighlightedHtml(editText, letter.iocs, allMeasureOptions, preview ? preview.sections.flatMap((s) => s.base_measures || []) : []) + "\n" }}
+                dangerouslySetInnerHTML={{ __html: buildHighlightedHtml(editText, letter.iocs, allMeasureOptions, preview ? preview.sections.flatMap((s) => s.base_measures || []).filter(Boolean) : []) + "\n" }}
               />
               <textarea
                 ref={textareaRef}

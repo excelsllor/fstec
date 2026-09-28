@@ -15,31 +15,60 @@ from shared.generator.response_generator import _clean_theme, render_reply_docx
 
 logger = logging.getLogger("fstec.reply")
 
-# --- fallback-наборы (по образцу response_generator) ---------------------
-
-_FALLBACK_PHISHING = [
-    "производится автоматическая проверка вложений с использованием имеющейся «песочницы» («sandbox») для выявления вредоносной активности на этапе приема письма почтовым сервером;",
-    "производится проверка почтовых вложений с использованием сертифицированного средства антивирусной защиты с использованием функции «Защита от почтовых угроз»;",
-    "осуществляется автоматическая проверка указанных в письмах URL-адресов, содержащихся в электронных письмах, с использованием механизмов анализа ссылок;",
-    "в целях идентификации отправителя производится проверка имени домена отправителя электронного письма;",
-    "сотрудники проинструктированы о запрете открывать и загружать почтовые вложения писем с тематикой, не относящейся к рабочей деятельности;",
-    "работы с электронной почтой производятся только с учетных записей пользователей операционной системы с минимальными возможными привилегиями;",
-    "на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;",
-    "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям.",
-]
-_FALLBACK_MINIMAL = [
-    "на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;",
-    "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям.",
-]
-_SCAN_MEASURE = "произведено внеплановое сканирование информационной инфраструктуры средствами антивирусной защиты;"
+# --- валидация внешних полей уязвимости (защита от prompt injection/подмены) ---
+_CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$")
+_BDU_RE = re.compile(r"^(?:BDU:)?\d{4}-\d{4,}$")
+_SEVERITIES = {"critical", "high", "medium", "low", "unknown"}
 
 
-def _vary_minimal_measures(idx: int) -> list[str]:
+def _clean_cve(v) -> str:
+    s = str(v or "").strip().upper()
+    return s if _CVE_RE.fullmatch(s) else ""
+
+
+def _clean_bdu(v) -> str:
+    s = str(v or "").strip().upper()
+    if _BDU_RE.fullmatch(s):
+        return s if s.startswith("BDU:") else f"BDU:{s}"
+    return ""
+
+
+def _clean_cvss(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if 0.0 <= f <= 10.0 else None
+
+
+def _clean_severity(v) -> str:
+    s = str(v or "").strip().lower()
+    return s if s in _SEVERITIES else "unknown"
+
+# --- fallback-наборы из единой библиотеки measures_library.json ----------
+
+def _measures_for_tag(library: list[dict], tag: str) -> list[str]:
+    """Меры библиотеки с заданным тегом (без плейсхолдеров {{...}}) в порядке библиотеки."""
+    out = []
+    for m in library:
+        tags = [t.strip() for t in (m.get("tags") or "").split(",") if t.strip()]
+        if tag in tags and "{{" not in (m.get("text") or ""):
+            out.append(m["text"])
+    return out
+
+
+def _scan_measure(library: list[dict]) -> str:
+    measures = _measures_for_tag(library, "scan")
+    return measures[0] if measures else ""
+
+
+def _vary_minimal_measures(library: list[dict], idx: int) -> list[str]:
     """Вариативность мер для повторяющихся блоков вредоносного ПО (эталон 9-70)."""
-    base = list(_FALLBACK_MINIMAL)
-    limit = base[0]
-    monitor = base[1]
-    scan = _SCAN_MEASURE
+    base = _measures_for_tag(library, "base")
+    if len(base) < 2:
+        return list(base)
+    limit, monitor = base[0], base[1]
+    scan = _scan_measure(library)
     if idx % 4 == 0:
         return [limit, scan, monitor]
     if idx % 4 == 1:
@@ -47,12 +76,6 @@ def _vary_minimal_measures(idx: int) -> list[str]:
     if idx % 4 == 2:
         return [limit, scan]
     return [limit]
-_FALLBACK_COMPROMISE = [
-    "регулярно производится контроль журналов DNS-серверов, прокси-серверов, средств межсетевого экранирования и средств обнаружения и реагирования уровня узла;",
-    "на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;",
-    "произведено внеплановое сканирование информационной инфраструктуры средствами антивирусной защиты;",
-    "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям.",
-]
 
 _RE_IMPORT = re.compile(r"^from\s+shared\s|^import\s+shared")
 
@@ -158,6 +181,7 @@ def _render_fragment(template: str, ctx: dict) -> str:
 def load_reply_resources(db):
     from shared.models import Measure, IntroFragment, ReplyTemplate
     library = db.query(Measure).order_by(Measure.id).all()
+    library = sorted(library, key=lambda m: (m.source not in ("etalon", "seed"), m.id))
     fragments = db.query(IntroFragment).order_by(IntroFragment.id).all()
     templates = {t.key: (t.skeleton or {}) for t in db.query(ReplyTemplate).all()}
     return (
@@ -177,17 +201,47 @@ def _fragments_for_type(fragments: list[dict], threat_type: str, letter_type: st
     return out or fragments
 
 
+# --- vulnerability-письма: блок = одна уязвимость ---------------------------
+
+def _vulns_to_blocks(active_vulns: list[dict]) -> list[dict]:
+    """Уязвимости → блоки LLM-плана (по одной на уязвимость, как в эталонах)."""
+    blocks = []
+    for i, v in enumerate(active_vulns or [], 1):
+        v = v or {}
+        blocks.append({
+            "id": f"vuln:{i}",
+            "n": i,
+            "number": i,
+            "threat_type": "vulnerability",
+            "theme": (v.get("software") or "").strip(),
+            "group_name": "",
+            "archive_name": "",
+            "exe_name": "",
+            "malware_type": "",
+            "description": (v.get("description") or "").strip(),
+            "software": (v.get("software") or "").strip(),
+            "bdu_id": _clean_bdu(v.get("bdu_id")),
+            "cve_id": _clean_cve(v.get("cve_id")),
+            "severity": _clean_severity(v.get("severity")),
+            "cvss_score": _clean_cvss(v.get("cvss_score")),
+            "cvss_version": (v.get("cvss_version") or "").strip(),
+            "recommendation": (v.get("recommendation") or "").strip(),
+        })
+    return blocks
+
+
 # --- fallback-план ---------------------------------------------------------
 
 def _fallback_plan(letter_type: str, blocks: list[dict], fragments: list[dict],
-                   addr_count: int = 1) -> dict:
-    """Детерминированный план по образцу response_generator."""
+                   addr_count: int = 1, library: list[dict] | None = None) -> dict:
+    """Детерминированный план по образцу response_generator (меры из единой библиотеки)."""
+    library = library or []
     if letter_type == "compromise" and not blocks:
         return {"template_key": "compromise", "llm": False, "blocks": [{
             "number": 1, "threat_id": None, "fragment_key": "", "intro": "",
             "threat_type": "compromise", "description": "", "fixed_header": True,
             "measures": [{"text": _inflect_measure(m, addr_count), "source": "library",
-                          "measure_id": None} for m in _FALLBACK_COMPROMISE],
+                          "measure_id": None} for m in _measures_for_tag(library, "compromise")],
             "new_measures": [],
         }]}
     plan_blocks = []
@@ -196,12 +250,12 @@ def _fallback_plan(letter_type: str, blocks: list[dict], fragments: list[dict],
         desc_low = (b.get("description") or "").lower()
         ttype = b.get("threat_type") or ""
         if letter_type == "compromise":
-            measures = list(_FALLBACK_COMPROMISE)
+            measures = _measures_for_tag(library, "compromise")
         elif ttype == "phishing" or "фишинг" in desc_low:
-            measures = list(_FALLBACK_PHISHING)
+            measures = _measures_for_tag(library, "phishing")
         else:
             minimal_idx += 1
-            measures = _vary_minimal_measures(minimal_idx)
+            measures = _vary_minimal_measures(library, minimal_idx)
 
         ctx = _extract_ctx(b)
         frags = _fragments_for_type(fragments, ttype if ttype != "phishing" else "phishing",
@@ -339,11 +393,32 @@ def _apply_llm_plan(llm_plan: dict | None, lib_by_id: dict, frag_by_key: dict,
                                  "source": "new", "note": (nm.get("note") or "")[:300]})
             measures.append({"text": _inflect_measure(text, addr_count),
                              "source": "new", "measure_id": None})
+        if src.get("threat_type") == "vulnerability":
+            # Для писем-уязвимостей: только базовые/«vulnerability» меры, максимум 2,
+            # чтобы не раздувать письмо (модель любит назначить все 10 мер сразу).
+            kept, kept_ids = [], set()
+            for mm in measures:
+                srcm = lib_by_id.get(mm.get("measure_id"))
+                tags = (srcm or {}).get("tags") or []
+                if mm["source"] == "new" or (srcm or {}).get("threat_type") == "vulnerability" \
+                        or "base" in tags:
+                    kept.append(mm)
+                    kept_ids.add(mm.get("measure_id"))
+                if len(kept) >= 2:
+                    break
+            measures = kept
+            new_measures = [nm for nm in new_measures
+                            if nm.get("measure_id") in kept_ids or nm["source"] == "new"][:1]
         out_blocks.append({
             "number": src.get("number") or int(n), "threat_id": src.get("id"),
             "fragment_key": frag_key, "intro": intro, "threat_type": src.get("threat_type", ""),
             "description": src.get("description", ""), "measures": measures,
             "new_measures": new_measures,
+            "software": src.get("software", ""),
+            "bdu_id": src.get("bdu_id", ""), "cve_id": src.get("cve_id", ""),
+            "severity": src.get("severity", ""), "cvss_score": src.get("cvss_score"),
+            "cvss_version": src.get("cvss_version", ""),
+            "recommendation": src.get("recommendation", ""),
         })
     if not out_blocks:
         return None
@@ -351,6 +426,28 @@ def _apply_llm_plan(llm_plan: dict | None, lib_by_id: dict, frag_by_key: dict,
 
 
 # --- главный планировщик ------------------------------------------------------
+
+def _backfill_empty_blocks(plan: dict, letter_type: str, addr_count: int = 1,
+                           library: list[dict] | None = None) -> None:
+    """Заполняет fallback-мерами блоки с пустым measures (после LLM-плана)."""
+    library = library or []
+    minimal_idx = 0
+    for blk in plan.get("blocks") or []:
+        if blk.get("measures"):
+            continue
+        desc_low = (blk.get("description") or "").lower()
+        ttype = blk.get("threat_type") or ""
+        if letter_type == "compromise":
+            measures = _measures_for_tag(library, "compromise")
+        elif ttype == "phishing" or "фишинг" in desc_low:
+            measures = _measures_for_tag(library, "phishing")
+        else:
+            minimal_idx += 1
+            measures = _vary_minimal_measures(library, minimal_idx)
+        blk["measures"] = [{"text": _inflect_measure(m, addr_count),
+                             "source": "library", "measure_id": None} for m in measures]
+        blk["new_measures"] = []
+
 
 def plan_reply(*, db, letter_type: str, blocks: list[dict], addr_count: int,
                use_llm: bool | None = None) -> dict:
@@ -363,7 +460,7 @@ def plan_reply(*, db, letter_type: str, blocks: list[dict], addr_count: int,
 
     explicit = {
         b.get("id"): [_inflect_measure(m.strip(), addr_count)
-                      for m in (b.get("explicit_measures") or []) if m.strip()]
+                       for m in (b.get("explicit_measures") or []) if m.strip()]
         for b in blocks if b.get("explicit_measures")
     }
 
@@ -376,7 +473,14 @@ def plan_reply(*, db, letter_type: str, blocks: list[dict], addr_count: int,
     if llm_plan:
         plan = _apply_llm_plan(llm_plan, lib_by_id, frag_by_key, blocks, addr_count)
     if plan is None:
-        plan = _fallback_plan(letter_type, blocks, fragments, addr_count)
+        if letter_type == "vulnerability":
+            # LLM недоступен/пусто → пустой план, рендер пойдёт по BDU-описаниям (_vuln_paragraph)
+            plan = {"template_key": "vulnerability", "blocks": [], "llm": False}
+        else:
+            plan = _fallback_plan(letter_type, blocks, fragments, addr_count, library)
+
+    if letter_type != "vulnerability":
+        _backfill_empty_blocks(plan, letter_type, addr_count, library)
 
     if explicit:
         for blk in plan.get("blocks") or []:
@@ -397,13 +501,14 @@ _SEV_RU = {"critical": "критический", "high": "высокий", "medi
 
 
 def _vuln_paragraph(v: dict) -> list[str]:
-    """Абзац про уязвимость по образцу эталона:
+    """Абзац про уязвимость по образцу эталона (BDU-fallback, LLM недоступен):
     «Уязвимость <продукт> (BDU:..., уровень опасности по CVSS 3.1 — критический),
-    связанная с <описание>. <статус/действие>.»"""
+    связанная с <первое предложение>. <статус/действие>.»"""
     desc = re.sub(r"\s+", " ", (v.get("description") or "")).strip().rstrip(".")
-    bdu = v.get("bdu_id") or ""
-    cve = v.get("cve_id") or ""
-    sev = _SEV_RU.get((v.get("severity") or "").lower(), v.get("severity") or "")
+    bdu = _clean_bdu(v.get("bdu_id"))
+    cve = _clean_cve(v.get("cve_id"))
+    sev_key = _clean_severity(v.get("severity"))
+    sev = _SEV_RU.get(sev_key, sev_key)
     fixed = v.get("fixed_version") or v.get("target_version") or ""
     software = (v.get("software") or "").strip()
 
@@ -411,14 +516,19 @@ def _vuln_paragraph(v: dict) -> list[str]:
     m = re.search(r"Уязвимость\s+(.+?)\s+связан[аы]?\s+с\s+(.+)", desc, re.I)
     if m:
         product = m.group(1).strip().rstrip(",")
-        tail = m.group(2).strip().rstrip(",")
+        tail = m.group(2).strip().rstrip(",").split(".", 1)[0].strip()
     if not product:
         product = software or "программного обеспечения"
     product = product[:220]
 
-    m_cvss = re.search(r"CVSS\s*(\d(?:\.\d)?)", desc, re.I)
-    cvss_ver = m_cvss.group(1) if m_cvss else ""
-    cvss = v.get("cvss_score")
+    cvss = _clean_cvss(v.get("cvss_score"))
+    cvss_ver = (v.get("cvss_version") or "").strip()
+    if not cvss_ver:
+        m_cvss = re.search(r"CVSS\s*(\d(?:\.\d)?)", desc, re.I)
+        cvss_ver = m_cvss.group(1) if m_cvss else ""
+    if not cvss_ver and sev and cvss is not None:
+        # BDU-карточки ФСТЭК используют CVSS 3.1; версия в данных отсутствует
+        cvss_ver = "3.1"
     parts = [bdu if str(bdu).upper().startswith("BDU") else f"BDU:{bdu}"] if bdu else []
     if cve:
         parts.append(cve)
@@ -426,13 +536,10 @@ def _vuln_paragraph(v: dict) -> list[str]:
     if sev:
         if cvss_ver:
             threat_line = f"уровень опасности по CVSS {cvss_ver} — {sev}"
+        elif cvss is not None:
+            threat_line = f"уровень опасности — {sev} (базовая оценка по CVSS — {cvss})"
         else:
             threat_line = f"уровень опасности — {sev}"
-    if cvss is not None and sev:
-        if cvss_ver:
-            threat_line += f", базовая оценка по CVSS {cvss_ver} — {cvss}"
-        else:
-            threat_line += f" (базовая оценка по CVSS — {cvss})"
     if threat_line:
         parts.append(threat_line)
 
@@ -467,6 +574,57 @@ def _vuln_paragraph(v: dict) -> list[str]:
     return lines
 
 
+def _vuln_block_lines(blk: dict, sender: str = "") -> list[str]:
+    """Абзац про уязвимость для LLM-плана (блок = уязвимость) + меры из плана."""
+    desc = re.sub(r"\s+", " ", (blk.get("description") or "")).strip().rstrip(".")
+    product = (blk.get("software") or "").strip()
+    tail = ""
+    m = re.search(r"Уязвимость\s+(.+?)\s+связан[аы]?\s+с\s+(.+)", desc, re.I)
+    if m:
+        product = m.group(1).strip().rstrip(",")
+        tail = m.group(2).strip().rstrip(",").split(".", 1)[0].strip()
+    if not product:
+        product = (blk.get("software") or "").strip() or "программного обеспечения"
+    product = product[:220]
+
+    bdu = _clean_bdu(blk.get("bdu_id"))
+    cve = _clean_cve(blk.get("cve_id"))
+    sev_key = _clean_severity(blk.get("severity"))
+    sev = _SEV_RU.get(sev_key, sev_key)
+    cvss_ver = (blk.get("cvss_version") or "").strip()
+    if not cvss_ver:
+        m_cvss = re.search(r"CVSS\s*(\d(?:\.\d)?)", desc, re.I)
+        cvss_ver = m_cvss.group(1) if m_cvss else ""
+    cvss = _clean_cvss(blk.get("cvss_score"))
+    if not cvss_ver and sev and cvss is not None:
+        cvss_ver = "3.1"
+    parts = []
+    if bdu:
+        parts.append(bdu if str(bdu).upper().startswith("BDU") else f"BDU:{bdu}")
+    if cve:
+        parts.append(cve)
+    if sev:
+        if cvss_ver:
+            parts.append(f"уровень опасности по CVSS {cvss_ver} — {sev}")
+        elif cvss is not None:
+            parts.append(f"уровень опасности — {sev} (базовая оценка по CVSS — {cvss})")
+        else:
+            parts.append(f"уровень опасности — {sev}")
+
+    first = f"Уязвимость {product}"
+    if parts:
+        first += " (" + ", ".join(parts) + ")"
+    first += (", связанная с " + tail + ".") if tail else "."
+    lines = [first]
+    measures = blk.get("measures") or []
+    if measures:
+        lines.append("Дополнительно приняты следующие меры:")
+        for mm in measures:
+            t = mm["text"].replace("{{sender}}", sender) if sender else mm["text"]
+            lines.append("  " + t)
+    return lines
+
+
 def render_reply(*, plan: dict, templates: dict | None = None, letter_number: str = "",
                  letter_date: str = "", org_name: str = ORG_NAME, addr_count: int = 1,
                  active_vulns: list[dict] | None = None,
@@ -489,14 +647,23 @@ def render_reply(*, plan: dict, templates: dict | None = None, letter_number: st
 
     if key == "vulnerability":
         vuln_lead = skel.get("vuln_lead") or "С учетом требований законодательства Российской Федерации в области безопасности информации сообщаем, что в информационной инфраструктуре выявлены уязвимости программного обеспечения, используемые при реализации компьютерных атак:"
-        active = active_vulns or []
-        if active:
+        plan_vulns = [b for b in (plan.get("blocks") or [])
+                      if b.get("threat_type") == "vulnerability"]
+        if plan_vulns:
             lines.append("")
             lines.append(vuln_lead)
-            for v in active:
+            sender = ", ".join(addresses[:8]) if addresses else ""
+            for blk in plan_vulns:
+                lines.append("")
+                lines.extend(_vuln_block_lines(blk, sender))
+        elif active_vulns:
+            lines.append("")
+            lines.append(vuln_lead)
+            for v in active_vulns:
                 lines.append("")
                 lines.extend(_vuln_paragraph(v))
         else:
+            lines.append("")
             lines.append(NO_RISK_TEXT_C)
     elif key == "other":
         lines.append("")
@@ -555,7 +722,10 @@ def generate_reply(db, doc_id: int, *, letter_type: str | None = None, blocks: l
         letter_number = letter_number or doc.letter_number
         letter_date = letter_date or doc.letter_date
 
-    plan = plan_reply(db=db, letter_type=letter_type or "hacker", blocks=blocks or [],
+    plan_in = blocks or []
+    if (letter_type or "hacker").lower() == "vulnerability" and active_vulns:
+        plan_in = _vulns_to_blocks(active_vulns)
+    plan = plan_reply(db=db, letter_type=letter_type or "hacker", blocks=plan_in,
                       addr_count=addr_count, use_llm=use_llm)
     templates = load_reply_resources(db)[2]
     text, meta = render_reply(plan=plan, templates=templates, letter_number=letter_number,
@@ -611,6 +781,13 @@ def build_annotated_preview(db, response_plan: dict, threats, addr_count: int = 
         measures = [m["text"] for m in blk.get("measures") or []]
         annotations = [{"text": m["text"], "source": m.get("source", "library"),
                         "candidate_id": m.get("candidate_id")} for m in blk.get("measures") or []]
+        from shared.generator.reply_preview import _base_measures_for_threat_type, _inflect
+        tt = blk.get("threat_type") or ""
+        base = _inflect(_base_measures_for_threat_type(db, tt) or [], addr_count)
+        measure_options = list(base)
+        for m in annotations:
+            if m["source"] == "new" and m["text"] not in measure_options:
+                measure_options.append(m["text"])
         if blk.get("fixed_header"):
             head = ("В целях предотвращения реализации угроз, связанных со случаем компрометации "
                     "(скомпрометированные интернет-ресурсы, веб-сайты и программное обеспечение), "
@@ -627,6 +804,8 @@ def build_annotated_preview(db, response_plan: dict, threats, addr_count: int = 
             "measures": measures,
             "measures_preview": measures,
             "measure_annotations": annotations,
+            "measure_options": measure_options,
+            "base_measures": base,
             "threat_type": blk.get("threat_type") or "",
             "intro_text": head,
             "section_text": head + "\n" + "\n".join(f"  {m}" for m in measures),

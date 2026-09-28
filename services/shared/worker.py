@@ -13,10 +13,19 @@ def register_handlers(bus: EventBus, handlers: Mapping[str, Handler]) -> None:
         bus.subscribe(topic, handler)
 
 
-async def serve_forever(bus: EventBus):
-    """Держит цикл событий после подписки (Kafka-режим). Для memory-режима не нужен."""
+async def serve_forever(bus: EventBus, heartbeat_name: str | None = None, heartbeat_s: float = 15.0):
+    """Бесконечный цикл воркера (Kafka/sqlite-шина). memory-шина не нуждается в цикле."""
     await bus.start()
     logger.info("Worker started on %s bus", type(bus).__name__)
+    if heartbeat_name:
+        from shared.registry import touch_service
+
+        async def _beat():
+            while True:
+                touch_service(heartbeat_name)
+                await asyncio.sleep(heartbeat_s)
+
+        asyncio.create_task(_beat())
     await asyncio.Event().wait()
 
 

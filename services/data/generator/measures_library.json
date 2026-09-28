@@ -42,27 +42,6 @@
     "source": "etalon"
   },
   {
-    "text": "ограничено получение электронных писем с адреса {{sender}};",
-    "threat_type": "phishing",
-    "tags": "phishing",
-    "addr_inflection": false,
-    "source": "etalon"
-  },
-  {
-    "text": "на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;",
-    "threat_type": "hacker",
-    "tags": "hacker,phishing,malware_attack,compromise,clickfix,vulnerability",
-    "addr_inflection": true,
-    "source": "etalon"
-  },
-  {
-    "text": "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям.",
-    "threat_type": "hacker",
-    "tags": "hacker,phishing,malware_attack,compromise,clickfix,vulnerability",
-    "addr_inflection": false,
-    "source": "etalon"
-  },
-  {
     "text": "регулярно производится контроль журналов DNS-серверов, прокси-серверов, средств межсетевого экранирования и средств обнаружения и реагирования уровня узла;",
     "threat_type": "compromise",
     "tags": "compromise",
@@ -70,9 +49,30 @@
     "source": "etalon"
   },
   {
+    "text": "на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;",
+    "threat_type": "hacker",
+    "tags": "hacker,phishing,malware_attack,compromise,clickfix,vulnerability,base",
+    "addr_inflection": true,
+    "source": "etalon"
+  },
+  {
     "text": "произведено внеплановое сканирование информационной инфраструктуры средствами антивирусной защиты;",
     "threat_type": "compromise",
-    "tags": "compromise",
+    "tags": "compromise,scan",
+    "addr_inflection": false,
+    "source": "etalon"
+  },
+  {
+    "text": "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям.",
+    "threat_type": "hacker",
+    "tags": "hacker,phishing,malware_attack,compromise,clickfix,vulnerability,base",
+    "addr_inflection": false,
+    "source": "etalon"
+  },
+  {
+    "text": "ограничено получение электронных писем с адреса {{sender}};",
+    "threat_type": "phishing",
+    "tags": "phishing",
     "addr_inflection": false,
     "source": "etalon"
   }

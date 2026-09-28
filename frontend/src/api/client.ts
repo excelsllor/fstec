@@ -279,14 +279,6 @@ export interface VulnMeasureTemplateResponse {
   updated_at: string;
 }
 
-export interface VulnTypeResponse {
-  id: number;
-  name: string;
-  key: string;
-  description: string;
-  created_at: string;
-}
-
 export const templatesApi = {
   listThreatTypes: () => api.get<ThreatTypeResponse[]>("/api/templates/threat-types"),
   createThreatType: (data: { name: string; key: string; description: string }) =>
@@ -303,18 +295,93 @@ export const templatesApi = {
     api.put<MeasureTemplateResponse>(`/api/templates/measure-templates/${id}`, data),
   deleteMeasureTemplate: (id: number) => api.delete(`/api/templates/measure-templates/${id}`),
 
-  listVulnTypes: () => api.get<VulnTypeResponse[]>("/api/templates/vuln-types"),
-  createVulnType: (data: { name: string; key: string; description: string }) =>
-    api.post<VulnTypeResponse>("/api/templates/vuln-types", data),
-  updateVulnType: (id: number, data: Partial<{ name: string; description: string }>) =>
-    api.put<VulnTypeResponse>(`/api/templates/vuln-types/${id}`, data),
-  deleteVulnType: (id: number) => api.delete(`/api/templates/vuln-types/${id}`),
-
-  listVulnTemplates: (vulnTypeId?: number) =>
-    api.get<VulnMeasureTemplateResponse[]>("/api/templates/vuln-templates", { params: vulnTypeId ? { vuln_type_id: vulnTypeId } : {} }),
-  createVulnTemplate: (data: { name: string; vuln_type_id: number | null; action_type: string; content: string; is_default: boolean }) =>
+  listVulnTemplates: () =>
+    api.get<VulnMeasureTemplateResponse[]>("/api/templates/vuln-templates"),
+  createVulnTemplate: (data: { name: string; action_type: string; content: string; is_default: boolean }) =>
     api.post<VulnMeasureTemplateResponse>("/api/templates/vuln-templates", data),
-  updateVulnTemplate: (id: number, data: Partial<{ name: string; vuln_type_id: number; action_type: string; content: string; is_default: boolean }>) =>
+  updateVulnTemplate: (id: number, data: Partial<{ name: string; action_type: string; content: string; is_default: boolean }>) =>
     api.put<VulnMeasureTemplateResponse>(`/api/templates/vuln-templates/${id}`, data),
   deleteVulnTemplate: (id: number) => api.delete(`/api/templates/vuln-templates/${id}`),
+};
+
+export interface MeasureCandidate {
+  id: number;
+  text: string;
+  note: string;
+  status: string;
+  document_id: number | null;
+  threat_id: number | null;
+  letter_number: string;
+  letter_date: string;
+  threat_theme: string;
+  created_at: string | null;
+  reviewed_at: string | null;
+}
+
+export const candidatesApi = {
+  list: (status: string = "pending") =>
+    api.get<MeasureCandidate[]>("/admin/measures/candidates", { params: { status } }),
+  accept: (id: number) =>
+    api.post<{ id: number; status: string; measure_id?: number }>(`/admin/measures/candidates/${id}/accept`),
+  reject: (id: number) =>
+    api.post<{ id: number; status: string }>(`/admin/measures/candidates/${id}/reject`),
+};
+
+export interface ServiceHealth {
+  name: string;
+  pid: number | null;
+  started: number | null;
+  last_seen: number | null;
+  alive: boolean;
+  pid_exists: boolean;
+  heartbeat_age_sec: number | null;
+}
+
+export interface ExternalProbe {
+  name: string;
+  url: string;
+  reachable: boolean;
+  http_status: number | null;
+  latency_ms: number;
+  error: string;
+}
+
+export interface DbHealth {
+  name: string;
+  reachable: boolean;
+  latency_ms: number;
+  error: string;
+}
+
+export interface LlmInfo {
+  provider: string;
+  base_url: string;
+  model: string;
+  reachable: boolean;
+  http_status: number | null;
+  latency_ms: number;
+  error: string;
+  note: string;
+}
+
+export interface DiagnosticsResponse {
+  services: ServiceHealth[];
+  external: ExternalProbe[];
+  db: DbHealth;
+  llm: LlmInfo;
+  gateway: ExternalProbe;
+  system: {
+    cpu_percent: number;
+    memory_mb: number;
+    memory_total_mb: number;
+    disk_free_gb: number;
+    gateway_proc_cpu_percent: number;
+    gateway_proc_memory_mb: number;
+    gateway_uptime_sec: number;
+  };
+}
+
+export const diagnosticsApi = {
+  get: () => api.get<DiagnosticsResponse>("/api/diagnostics"),
+  bus: () => api.get<{ total: number; topics: Array<{ topic: string; count: number; last_id: number }> }>("/api/diagnostics/bus"),
 };

@@ -1,7 +1,9 @@
 """JWT-аутентификация для сервисов (общая для всех микросервисов)."""
 import logging
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import bcrypt
@@ -11,11 +13,18 @@ from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from shared.config import (
-    SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, JWT_AUDIENCE,
-    BOOTSTRAP_USERNAME, BOOTSTRAP_FULL_NAME, MIN_PASSWORD_LENGTH,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    ALGORITHM,
+    BOOTSTRAP_FULL_NAME,
+    BOOTSTRAP_PASSWORD,
+    BOOTSTRAP_USERNAME,
+    DATA_DIR,
+    JWT_AUDIENCE,
+    MIN_PASSWORD_LENGTH,
+    SECRET_KEY,
 )
 from shared.db import get_db
-from shared.models import User, BootstrapSecret
+from shared.models import BootstrapSecret, User
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +86,16 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
 
 
 def ensure_bootstrap(db: Session) -> Optional[str]:
-    """Создаёт администратора при первом запуске; возвращает одноразовый пароль."""
+    """Создаёт администратора при первом запуске; возвращает одноразовый пароль.
+
+    Пароль берётся из FSTEC_BOOTSTRAP_PASSWORD, если задан (тогда в лог ничего не пишется);
+    иначе генерируется и сохраняется в файл DATA_DIR/bootstrap_password.txt с правами 0600.
+    Сам пароль в лог НЕ попадает.
+    """
     if db.query(User).filter(User.username == BOOTSTRAP_USERNAME).first():
         return None
-    password = secrets.token_urlsafe(12)
+    from_env = bool(BOOTSTRAP_PASSWORD)
+    password = BOOTSTRAP_PASSWORD or secrets.token_urlsafe(12)
     if len(password) < MIN_PASSWORD_LENGTH:
         password = secrets.token_urlsafe(14)
     db.add(User(
@@ -92,13 +107,39 @@ def ensure_bootstrap(db: Session) -> Optional[str]:
     ))
     db.add(BootstrapSecret(username=BOOTSTRAP_USERNAME, secret=hash_password(password), used=False))
     db.commit()
-    logger.warning(
-        "Bootstrap password for user '%s': %s — shown only once. "
-        "Delete bootstrap_secrets rows after first login.",
-        BOOTSTRAP_USERNAME, password,
-    )
+    if from_env:
+        logger.warning(
+            "Bootstrap admin '%s' создан; пароль взят из FSTEC_BOOTSTRAP_PASSWORD.",
+            BOOTSTRAP_USERNAME)
+    else:
+        try:
+            secret_path = Path(DATA_DIR) / "bootstrap_password.txt"
+            secret_path.write_text(password, encoding="utf-8")
+            os.chmod(secret_path, 0o600)
+            logger.warning(
+                "Bootstrap admin '%s' создан; одноразовый пароль записан в %s "
+                "(прочитайте и удалите файл после первого входа).",
+                BOOTSTRAP_USERNAME, secret_path)
+        except OSError as e:
+            logger.error("Bootstrap: не удалось сохранить пароль в файл: %s", e)
     return password
 
 
+def mark_bootstrap_used(db: Session) -> None:
+    """Помечает bootstrap-секрет использованным после первого успешного входа."""
+    rows = db.query(BootstrapSecret).filter(
+        BootstrapSecret.username == BOOTSTRAP_USERNAME,
+        BootstrapSecret.used.is_(False),
+    ).all()
+    for row in rows:
+        row.used = True
+    if rows:
+        db.commit()
+
+
 def needs_setup(db: Session) -> bool:
-    return db.query(BootstrapSecret).filter(BootstrapSecret.username == BOOTSTRAP_USERNAME).count() > 0
+    """True, пока bootstrap-администратор ни разу не вошёл в систему."""
+    return db.query(BootstrapSecret).filter(
+        BootstrapSecret.username == BOOTSTRAP_USERNAME,
+        BootstrapSecret.used.is_(False),
+    ).count() > 0

@@ -20,11 +20,6 @@ import {
   Tabs,
   Tab,
   Switch,
-  FormControl,
-  InputLabel,
-  Select,
-  Autocomplete,
-  MenuItem,
 } from "@mui/material";
 import {
   Add as AddIcon,
@@ -33,12 +28,12 @@ import {
   ArrowUpward as ArrowUpwardIcon,
   ArrowDownward as ArrowDownwardIcon,
   RemoveCircleOutlined as RemoveCircleOutlineIcon,
-} from "@mui/icons-material";import {
+} from "@mui/icons-material";
+import {
   templatesApi,
   type ThreatTypeResponse,
   type MeasureTemplateResponse,
   type VulnMeasureTemplateResponse,
-  type VulnTypeResponse,
 } from "../../api/client";
 
 export default function Templates() {
@@ -46,22 +41,19 @@ export default function Templates() {
   const [threatTypes, setThreatTypes] = useState<ThreatTypeResponse[]>([]);
   const [measureTemplates, setMeasureTemplates] = useState<MeasureTemplateResponse[]>([]);
   const [vulnTemplates, setVulnTemplates] = useState<VulnMeasureTemplateResponse[]>([]);
-  const [vulnTypes, setVulnTypes] = useState<VulnTypeResponse[]>([]);
   const [, setLoading] = useState(true);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [tt, mt, vt, vty] = await Promise.all([
+      const [tt, mt, vt] = await Promise.all([
         templatesApi.listThreatTypes(),
         templatesApi.listMeasureTemplates(),
         templatesApi.listVulnTemplates(),
-        templatesApi.listVulnTypes(),
       ]);
       setThreatTypes(tt.data);
       setMeasureTemplates(mt.data);
       setVulnTemplates(vt.data);
-      setVulnTypes(vty.data);
     } catch (err) {
       console.error((err as Error)?.message || "Error");
     } finally {
@@ -77,14 +69,12 @@ export default function Templates() {
       <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }}>
         <Tab label="Типы угроз" />
         <Tab label="Блоки мер" />
-        <Tab label="Типы уязвимостей" />
         <Tab label="Шаблоны уязвимостей" />
       </Tabs>
 
       {tab === 0 && <ThreatTypesTab items={threatTypes} onChanged={load} />}
       {tab === 1 && <MeasureTemplatesTab items={measureTemplates} threatTypes={threatTypes} onChanged={load} />}
-      {tab === 2 && <VulnTypesTab items={vulnTypes} onChanged={load} />}
-      {tab === 3 && <VulnTemplatesTab items={vulnTemplates} vulnTypes={vulnTypes} onChanged={load} />}
+      {tab === 2 && <VulnTemplatesTab items={vulnTemplates} onChanged={load} />}
     </Box>
   );
 }
@@ -340,13 +330,18 @@ function MeasureTemplatesTab({ items, threatTypes, onChanged }: { items: Measure
         <DialogTitle>{dialog === "create" ? "Новый блок мер" : "Редактировать блок мер"}</DialogTitle>
         <DialogContent>
           <TextField fullWidth label="Название" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} sx={{ mt: 1, mb: 2 }} />
-          <FormControl fullWidth sx={{ mb: 2 }}>
-            <InputLabel>Тип угрозы</InputLabel>
-            <Select value={form.threat_type_id ?? ""} label="Тип угрозы" onChange={(e) => setForm({ ...form, threat_type_id: e.target.value || null })}>
-              <MenuItem value="">—</MenuItem>
-              {threatTypes.map((t) => <MenuItem key={t.id} value={t.id}>{t.name}</MenuItem>)}
-            </Select>
-          </FormControl>
+          <TextField
+            fullWidth
+            select
+            label="Тип угрозы"
+            value={form.threat_type_id ?? ""}
+            onChange={(e) => setForm({ ...form, threat_type_id: e.target.value ? Number(e.target.value) : null })}
+            sx={{ mb: 2 }}
+            slotProps={{ select: { native: true } }}
+          >
+            <option value="">—</option>
+            {threatTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </TextField>
           <LinesEditor
             value={form.measures}
             onChange={(v) => setForm({ ...form, measures: v })}
@@ -376,128 +371,10 @@ function MeasureTemplatesTab({ items, threatTypes, onChanged }: { items: Measure
   );
 }
 
-function VulnTypesTab({ items, onChanged }: { items: VulnTypeResponse[]; onChanged: () => void }) {
-  const [dialog, setDialog] = useState<"create" | "edit" | "delete" | null>(null);
-  const [editing, setEditing] = useState<VulnTypeResponse | null>(null);
-  const [form, setForm] = useState({ name: "", key: "", description: "" });
-  const [error, setError] = useState("");
-
-  const handleCreate = async () => {
-    setError("");
-    try {
-      await templatesApi.createVulnType(form);
-      setDialog(null);
-      setForm({ name: "", key: "", description: "" });
-      onChanged();
-    } catch (err: any) {
-      setError(err.response?.data?.detail || "Ошибка");
-    }
-  };
-
-  const handleEdit = async () => {
-    if (!editing) return;
-    try {
-      await templatesApi.updateVulnType(editing.id, { name: form.name, description: form.description });
-      setDialog(null);
-      onChanged();
-    } catch (err: any) {
-      setError(err.response?.data?.detail || "Ошибка");
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!editing) return;
-    try {
-      await templatesApi.deleteVulnType(editing.id);
-      setDialog(null);
-      setEditing(null);
-      onChanged();
-    } catch (err: any) {
-      setError(err.response?.data?.detail || "Ошибка");
-    }
-  };
-
-  return (
-    <Box>
-      <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => { setForm({ name: "", key: "", description: "" }); setDialog("create"); }}>
-          Создать
-        </Button>
-      </Box>
-      {error && <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert>}
-      <TableContainer component={Paper}>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>ID</TableCell>
-              <TableCell>Название</TableCell>
-              <TableCell>Ключ</TableCell>
-              <TableCell>Описание</TableCell>
-              <TableCell align="center">Действия</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {items.map((t) => (
-              <TableRow key={t.id} hover>
-                <TableCell>{t.id}</TableCell>
-                <TableCell>{t.name}</TableCell>
-                <TableCell><code>{t.key}</code></TableCell>
-                <TableCell>{t.description}</TableCell>
-                <TableCell align="center">
-                  <IconButton size="small" onClick={() => { setEditing(t); setForm({ name: t.name, key: t.key, description: t.description }); setDialog("edit"); }}>
-                    <EditIcon fontSize="small" />
-                  </IconButton>
-                  <IconButton size="small" onClick={() => { setEditing(t); setDialog("delete"); }}>
-                    <DeleteIcon fontSize="small" />
-                  </IconButton>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
-
-      <Dialog open={dialog === "create"} onClose={() => setDialog(null)} maxWidth="sm" fullWidth>
-        <DialogTitle>Новый тип уязвимости</DialogTitle>
-        <DialogContent>
-          <TextField fullWidth label="Название" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} sx={{ mt: 1, mb: 2 }} />
-          <TextField fullWidth label="Ключ (англ)" value={form.key} onChange={(e) => setForm({ ...form, key: e.target.value })} sx={{ mb: 2 }} />
-          <TextField fullWidth label="Описание" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} multiline rows={2} />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDialog(null)}>Отмена</Button>
-          <Button variant="contained" onClick={handleCreate}>Создать</Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog open={dialog === "edit"} onClose={() => setDialog(null)} maxWidth="sm" fullWidth>
-        <DialogTitle>Редактировать: {editing?.key}</DialogTitle>
-        <DialogContent>
-          <TextField fullWidth label="Название" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} sx={{ mt: 1, mb: 2 }} />
-          <TextField fullWidth label="Описание" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} multiline rows={2} />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDialog(null)}>Отмена</Button>
-          <Button variant="contained" onClick={handleEdit}>Сохранить</Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog open={dialog === "delete"} onClose={() => setDialog(null)}>
-        <DialogTitle>Удалить тип уязвимости?</DialogTitle>
-        <DialogContent><Typography>«{editing?.name}» будет удалён со всеми связанными шаблонами.</Typography></DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDialog(null)}>Отмена</Button>
-          <Button color="error" onClick={handleDelete}>Удалить</Button>
-        </DialogActions>
-      </Dialog>
-    </Box>
-  );
-}
-
-function VulnTemplatesTab({ items, vulnTypes, onChanged }: { items: VulnMeasureTemplateResponse[]; vulnTypes: VulnTypeResponse[]; onChanged: () => void }) {
+function VulnTemplatesTab({ items, onChanged }: { items: VulnMeasureTemplateResponse[]; onChanged: () => void }) {
   const [dialog, setDialog] = useState<"create" | "edit" | "delete" | null>(null);
   const [editing, setEditing] = useState<VulnMeasureTemplateResponse | null>(null);
-  const [form, setForm] = useState({ name: "", vuln_type_id: null as number | null, action_type: "update", content: "", is_default: false });
+  const [form, setForm] = useState({ name: "", action_type: "update", content: "", is_default: false });
   const [error, setError] = useState("");
 
   const handleSave = async () => {
@@ -506,7 +383,7 @@ function VulnTemplatesTab({ items, vulnTypes, onChanged }: { items: VulnMeasureT
       if (dialog === "create") {
         await templatesApi.createVulnTemplate(form);
       } else if (dialog === "edit" && editing) {
-        await templatesApi.updateVulnTemplate(editing.id, { ...form, vuln_type_id: form.vuln_type_id ?? undefined });
+        await templatesApi.updateVulnTemplate(editing.id, form);
       }
       setDialog(null);
       onChanged();
@@ -530,7 +407,7 @@ function VulnTemplatesTab({ items, vulnTypes, onChanged }: { items: VulnMeasureT
   return (
     <Box>
       <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => { setForm({ name: "", vuln_type_id: null, action_type: "update", content: "", is_default: false }); setDialog("create"); }}>
+        <Button variant="contained" startIcon={<AddIcon />} onClick={() => { setForm({ name: "", action_type: "update", content: "", is_default: false }); setDialog("create"); }}>
           Создать
         </Button>
       </Box>
@@ -540,7 +417,6 @@ function VulnTemplatesTab({ items, vulnTypes, onChanged }: { items: VulnMeasureT
           <TableHead>
             <TableRow>
               <TableCell>Название</TableCell>
-              <TableCell>Тип уязвимости</TableCell>
               <TableCell>Действие</TableCell>
               <TableCell>По умолч.</TableCell>
               <TableCell align="center">Действия</TableCell>
@@ -550,11 +426,10 @@ function VulnTemplatesTab({ items, vulnTypes, onChanged }: { items: VulnMeasureT
             {items.map((t) => (
               <TableRow key={t.id} hover>
                 <TableCell>{t.name}</TableCell>
-                <TableCell>{vulnTypes.find(vt => vt.id === t.vuln_type_id)?.name || "—"}</TableCell>
                 <TableCell><code>{t.action_type}</code></TableCell>
                 <TableCell>{t.is_default ? "Да" : "—"}</TableCell>
                 <TableCell align="center">
-                  <IconButton size="small" onClick={() => { setEditing(t); setForm({ name: t.name, vuln_type_id: t.vuln_type_id, action_type: t.action_type, content: t.content, is_default: t.is_default }); setDialog("edit"); }}>
+                  <IconButton size="small" onClick={() => { setEditing(t); setForm({ name: t.name, action_type: t.action_type, content: t.content, is_default: t.is_default }); setDialog("edit"); }}>
                     <EditIcon fontSize="small" />
                   </IconButton>
                   <IconButton size="small" onClick={() => { setEditing(t); setDialog("delete"); }}>
@@ -571,26 +446,19 @@ function VulnTemplatesTab({ items, vulnTypes, onChanged }: { items: VulnMeasureT
         <DialogTitle>{dialog === "create" ? "Новый шаблон уязвимости" : "Редактировать шаблон"}</DialogTitle>
         <DialogContent>
           <TextField fullWidth label="Название" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} sx={{ mt: 1, mb: 2 }} />
-          <FormControl fullWidth sx={{ mb: 2 }}>
-            <InputLabel>Тип уязвимости</InputLabel>
-            <Select
-              value={form.vuln_type_id ?? ""}
-              label="Тип уязвимости"
-              onChange={(e) => setForm({ ...form, vuln_type_id: e.target.value || null })}
-            >
-              <MenuItem value="">—</MenuItem>
-              {vulnTypes.map((vt) => <MenuItem key={vt.id} value={vt.id}>{vt.name}</MenuItem>)}
-            </Select>
-          </FormControl>
-          <Autocomplete
-            freeSolo
+          <TextField
+            fullWidth
+            select
+            label="Действие"
             value={form.action_type}
-            onChange={(_, v) => setForm({ ...form, action_type: v || "" })}
-            options={["update", "compensate", "skip", "monitor", "isolate", "patch", "restrict", "audit"]}
-            getOptionLabel={(opt) => opt}
-            renderInput={(params) => <TextField {...params} label="Действие (можно ввести своё)" />}
+            onChange={(e) => setForm({ ...form, action_type: e.target.value })}
             sx={{ mb: 2 }}
-          />
+            slotProps={{ select: { native: true } }}
+          >
+            {["update", "compensate", "skip", "monitor", "isolate", "patch", "restrict", "audit"].map((a) => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </TextField>
           <TextField fullWidth label="Текст шаблона ({software} = название ПО)" value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} multiline rows={3} sx={{ mb: 2 }} />
           <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
             <Switch checked={form.is_default} onChange={(e) => setForm({ ...form, is_default: e.target.checked })} />

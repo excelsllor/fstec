@@ -24,6 +24,8 @@ import {
   People as PeopleIcon,
   Logout as LogoutIcon,
   Description as TemplateIcon,
+  FactCheck as DecisionIcon,
+  Speed as DiagnosticsIcon,
 } from "@mui/icons-material";
 import { useAuthStore } from "../store/auth";
 
@@ -40,7 +42,9 @@ export default function Layout() {
     { text: "Загрузить письмо", icon: <UploadIcon />, path: "/upload", roles: ["admin", "user"] },
     { text: "Письма", icon: <MailIcon />, path: "/letters", roles: ["admin", "user"] },
     { text: "Шаблоны", icon: <TemplateIcon />, path: "/admin/templates", roles: ["admin"] },
+    { text: "Меры на рассмотрении", icon: <DecisionIcon />, path: "/admin/measures", roles: ["admin"] },
     { text: "Пользователи", icon: <PeopleIcon />, path: "/admin/users", roles: ["admin"] },
+    { text: "Диагностика", icon: <DiagnosticsIcon />, path: "/diagnostics", roles: ["admin"] },
   ];
 
   const visibleItems = menuItems.filter((item) => user && item.roles.includes(user.role));

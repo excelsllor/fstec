@@ -68,8 +68,8 @@ export default function LetterList() {
   const [deleteIdState, setDeleteId] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const { data } = await lettersApi.list({
         letter_type: filterType || undefined,
@@ -82,11 +82,16 @@ export default function LetterList() {
     } catch (err: any) {
       setError(err.response?.data?.detail || (err as Error)?.message || "Не удалось загрузить письма");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   useEffect(() => { load(); }, [filterType, filterStatus, page]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => load(true), 5000);
+    return () => window.clearInterval(timer);
+  }, [filterType, filterStatus, page]);
 
   const filtered = letters.filter((l) => {
     if (search && !(l.letter_number || "").toLowerCase().includes(search.toLowerCase())) return false;

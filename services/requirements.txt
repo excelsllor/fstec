@@ -20,6 +20,10 @@ olefile==0.47
 openpyxl==3.1.5
 chardet==7.4.3
 striprtf==0.0.26
+pymupdf==1.28.2
+pytesseract==0.3.13
+pdf2image==1.17.0
+setuptools==84.2.1
 
 # OCR (опционально: ставить на машине с GPU или CPU; без них используется Tesseract)
 # GPU-вариант PaddleOCR — отдельный файл requirements-ocr.txt (build arg WITH_OCR=true)

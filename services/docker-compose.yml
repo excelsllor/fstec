@@ -147,15 +147,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args: { SERVICE: ingest_service, WITH_OCR: "true" }
+      args: { SERVICE: ingest_service, WITH_OCR: "false" }
     container_name: fstec-ingest
     restart: unless-stopped
     depends_on: [kafka, redis, postgres]
     environment:
       <<: *base-env
       FSTEC_OCR_ENABLED: ${FSTEC_OCR_ENABLED:-true}
-      FSTEC_OCR_ENGINE: ${FSTEC_OCR_ENGINE:-paddle}
-      FSTEC_OCR_DEVICE: ${FSTEC_OCR_DEVICE:-gpu}
+      FSTEC_OCR_ENGINE: ${FSTEC_OCR_ENGINE:-tesseract}
+      FSTEC_OCR_DEVICE: ${FSTEC_OCR_DEVICE:-cpu}
     # Разбор файлов и OCR — тяжёлые блокирующие операции; они выполняются в
     # пуле потоков (shared.concurrency.run_blocking), поэтому несколько писем
     # разбираются одновременно и не блокируют приём событий.

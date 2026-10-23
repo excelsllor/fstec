@@ -204,6 +204,62 @@ function RiskSummary({ summary }: { summary: { red: number; yellow: number; gree
   );
 }
 
+function TextTab({ letter }: { letter: LetterResponse }) {
+  const text = letter.all_text || letter.original_text || "";
+  const terms: { value: string; type: string }[] = [];
+  const add = (value: string | undefined, type: string) => {
+    const v = (value || "").trim();
+    if (!v || v.length < 3) return;
+    terms.push({ value: v, type });
+    if (v.includes(".") && !v.includes(" ")) {
+      terms.push({ value: v.replace(/\./g, "[.]"), type });
+      terms.push({ value: v.replace(/\./g, "(.)"), type });
+    }
+  };
+  for (const i of letter.iocs) add(i.value, i.ioc_type);
+  for (const v of letter.vulnerabilities) {
+    add(v.bdu_id, "bdu");
+    add(v.cve_id, "cve");
+  }
+  const unique = Array.from(
+    new Map(terms.sort((a, b) => b.value.length - a.value.length).map((t) => [t.value.toLowerCase(), t])).values(),
+  );
+  const colors: Record<string, string> = {
+    ip: "#dbeafe", domain: "#ede9fe", email: "#dcfce7", hash: "#fef3c7",
+    cve: "#fee2e2", bdu: "#ffedd5",
+  };
+  if (!text) {
+    return <Alert severity="info">Текст документа отсутствует.</Alert>;
+  }
+  const pattern = unique.length
+    ? new RegExp(`(${unique.map((t) => t.value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi")
+    : null;
+  const parts = pattern ? text.split(pattern) : [text];
+  const byValue = new Map(unique.map((t) => [t.value.toLowerCase(), t]));
+  return (
+    <Paper sx={{ p: 2 }}>
+      <Box sx={{ display: "flex", gap: 1, mb: 1, flexWrap: "wrap" }}>
+        {["ip", "domain", "email", "hash", "bdu", "cve"].map((t) => (
+          <Chip key={t} size="small" label={iocTypeLabels[t] || t.toUpperCase()}
+                sx={{ bgcolor: colors[t], fontSize: 11 }} />
+        ))}
+      </Box>
+      <Typography component="pre" sx={{ whiteSpace: "pre-wrap", fontFamily: "monospace", fontSize: 13 }}>
+        {parts.map((part, idx) => {
+          const hit = byValue.get(part.toLowerCase());
+          if (!hit) return <span key={idx}>{part}</span>;
+          return (
+            <Box component="mark" key={idx}
+                 sx={{ bgcolor: colors[hit.type] || "#fef3c7", px: 0.2, borderRadius: 0.4 }}>
+              {part}
+            </Box>
+          );
+        })}
+      </Typography>
+    </Paper>
+  );
+}
+
 export default function LetterDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -227,6 +283,19 @@ export default function LetterDetail() {
   };
 
   useEffect(() => { load(); }, [id]);
+
+  useEffect(() => {
+    if (!letter || ["completed", "failed", "error", "deleted"].includes(letter.status)) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const { data } = await lettersApi.get(Number(id));
+        setLetter(data);
+      } catch {
+        // временная ошибка сети — повторим на следующем тике
+      }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [id, letter?.status]);
 
   const handleGenerate = async () => {
     try {
@@ -360,6 +429,7 @@ export default function LetterDetail() {
         <Tab label={`Уязвимости (${letter.vulnerabilities.length})`} />
         <Tab label="Ответ" />
         <Tab label="Экспорт" />
+        <Tab label="Текст" />
       </Tabs>
 
       {tab === 0 && <InfoTab letter={letter} />}
@@ -368,6 +438,7 @@ export default function LetterDetail() {
       {tab === 3 && <VulnTab letter={letter} onSaved={load} />}
       {tab === 4 && <ResponseTab letter={letter} onGenerate={handleGenerate} />}
       {tab === 5 && <ExportTab onExport={handleExport} onExportDocx={handleExportDocx} counts={letter.iocs} />}
+      {tab === 6 && <TextTab letter={letter} />}
 
       <Snackbar
         open={!!snack}
@@ -445,8 +516,8 @@ function InfoTab({ letter }: { letter: LetterResponse }) {
                   <TableCell>{a.file_type}</TableCell>
                   <TableCell>
                     <Chip
-                      label={a.parse_status === "ok" ? "OK" : a.parse_status}
-                      color={a.parse_status === "ok" ? "success" : "warning"}
+        label={["ok", "done"].includes(a.parse_status) ? "OK" : a.parse_status}
+        color={["ok", "done"].includes(a.parse_status) ? "success" : "warning"}
                       size="small"
                     />
                   </TableCell>

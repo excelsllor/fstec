@@ -16,6 +16,8 @@ import {
   Menu,
   MenuItem,
   Divider,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 import {
   Dashboard as DashboardIcon,
@@ -26,6 +28,7 @@ import {
   Description as TemplateIcon,
   FactCheck as DecisionIcon,
   Speed as DiagnosticsIcon,
+  Menu as MenuIcon,
 } from "@mui/icons-material";
 import { useAuthStore } from "../store/auth";
 
@@ -36,6 +39,9 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("md"));
 
   const menuItems = [
     { text: "Панель", icon: <DashboardIcon />, path: "/", roles: ["admin", "user"] },
@@ -53,6 +59,17 @@ export default function Layout() {
     <Box sx={{ display: "flex" }}>
       <AppBar position="fixed" sx={{ zIndex: (theme) => theme.zIndex.drawer + 1 }}>
         <Toolbar>
+          {isMobile && (
+            <IconButton
+              edge="start"
+              color="inherit"
+              aria-label="Открыть меню"
+              onClick={() => setMobileOpen(true)}
+              sx={{ mr: 1 }}
+            >
+              <MenuIcon />
+            </IconButton>
+          )}
           <Box sx={{ flexGrow: 1 }} />
           <IconButton onClick={(e) => setAnchorEl(e.currentTarget)} color="inherit">
             <Avatar sx={{ width: 32, height: 32, bgcolor: "secondary.main", fontSize: 14 }}>
@@ -82,7 +99,10 @@ export default function Layout() {
       </AppBar>
 
       <Drawer
-        variant="permanent"
+        variant={isMobile ? "temporary" : "permanent"}
+        open={!isMobile || mobileOpen}
+        onClose={() => setMobileOpen(false)}
+        ModalProps={{ keepMounted: true }}
         sx={{
           width: drawerWidth,
           flexShrink: 0,
@@ -96,7 +116,10 @@ export default function Layout() {
               <ListItem key={item.path} disablePadding>
                 <ListItemButton
                   selected={location.pathname === item.path}
-                  onClick={() => navigate(item.path)}
+                  onClick={() => {
+                    navigate(item.path);
+                    if (isMobile) setMobileOpen(false);
+                  }}
                 >
                   <ListItemIcon>{item.icon}</ListItemIcon>
                   <ListItemText primary={item.text} />
@@ -107,7 +130,7 @@ export default function Layout() {
         </Box>
       </Drawer>
 
-      <Box component="main" sx={{ flexGrow: 1, p: 3 }}>
+      <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: { xs: 1.5, md: 3 } }}>
         <Toolbar />
         <Outlet />
       </Box>

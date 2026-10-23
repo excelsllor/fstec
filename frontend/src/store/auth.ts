@@ -38,13 +38,13 @@ export const useAuthStore = create<AuthState>((set) => ({
   logout: () => {
     localStorage.removeItem("fstec_token");
     localStorage.removeItem("fstec_user");
-    set({ user: null, token: null, initialized: false });
+    set({ user: null, token: null, initialized: true, bootstrap: null });
   },
 
   checkAuth: async () => {
     const token = localStorage.getItem("fstec_token");
     if (!token) {
-      set({ user: null, token: null });
+      set({ user: null, token: null, initialized: true });
       return;
     }
     try {
@@ -53,7 +53,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     } catch {
       localStorage.removeItem("fstec_token");
       localStorage.removeItem("fstec_user");
-      set({ user: null, token: null });
+      set({ user: null, token: null, initialized: true });
     }
   },
 

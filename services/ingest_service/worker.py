@@ -51,7 +51,7 @@ def _parse_document(doc_id: int) -> DocumentParsed | None:
                 continue
 
             text = result.text or ""
-            if text and len(text.strip()) < OCR_MIN_TEXT and OCR_ENABLED and att.file_type == ".pdf":
+            if OCR_ENABLED and att.file_type == ".pdf" and len(text.strip()) < OCR_MIN_TEXT:
                 try:
                     content = path.read_bytes()
                     text, ocr_errors = ocr_pdf_bytes(content, lang=OCR_LANG)

@@ -95,11 +95,11 @@ MAX_FILE_SIZE = 20 * 1024 * 1024          # ТЗ 2.1: 20 МБ
 MAX_FILES_PER_BATCH = 10                  # ТЗ 2.1: до 10 файлов
 
 # OCR (ТЗ 2.2)
-OCR_ENABLED = os.environ.get("FSTEC_OCR_ENABLED", "false").lower() in ("1", "true", "yes")
+OCR_ENABLED = os.environ.get("FSTEC_OCR_ENABLED", "true").lower() in ("1", "true", "yes")
 OCR_LANG = os.environ.get("FSTEC_OCR_LANG", "rus+eng")
 OCR_MIN_TEXT = int(os.environ.get("FSTEC_OCR_MIN_TEXT", "20"))
 # Провайдер: auto (paddle → tesseract) | paddle | tesseract
-OCR_ENGINE = os.environ.get("FSTEC_OCR_ENGINE", "auto").lower()
+OCR_ENGINE = os.environ.get("FSTEC_OCR_ENGINE", "tesseract").lower()
 # Устройство распознавания: gpu (CUDA) | cpu (в dev и <=4 ГБ видеопамяти)
 OCR_DEVICE = os.environ.get("FSTEC_OCR_DEVICE", "cpu").lower()
 OCR_GPU_IDS = [int(x) for x in os.environ.get("FSTEC_OCR_GPU_IDS", "0").split(",") if x.strip().isdigit()]

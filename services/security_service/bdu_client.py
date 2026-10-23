@@ -109,7 +109,7 @@ class BDUClient:
         else:
             client = get_client("bdu", timeout=10.0)
             resp = await client.get(url, params={"unid": bdu_id}, headers=headers)
-        if resp.status_code in (404, 500, 502, 503, 504):
+        if resp.status_code == 404:
             return None
         resp.raise_for_status()
         return resp.text

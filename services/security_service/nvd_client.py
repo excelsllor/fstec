@@ -83,7 +83,7 @@ class NVDClient:
         else:
             client = get_client("nvd", timeout=10.0, connect=5.0)
             resp = await client.get(url, params={"cveId": cve_id}, headers=headers)
-        if resp.status_code == 404 or resp.status_code >= 500:
+        if resp.status_code == 404:
             return None
         resp.raise_for_status()
         data = resp.json()

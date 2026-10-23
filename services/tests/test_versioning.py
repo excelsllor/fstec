@@ -18,7 +18,9 @@ def test_normalize_version():
 def test_compare_versions():
     assert compare_versions("2.15.0", "2.16.0") == -1
     assert compare_versions("2.17.0", "2.16.0") == 1
-    assert compare_versions("1.1.1k", "1.1.1") == 0
+    assert compare_versions("1.1.1k", "1.1.1") == 1
+    assert compare_versions("1.1.1k", "1.1.1w") == -1
+    assert compare_versions("1.1.1k", "1.1.1k") == 0
     assert compare_versions("2.15", "2.15.0") == -1
 
 

@@ -22,16 +22,34 @@ def normalize_version(v: str) -> tuple[int, ...] | None:
 
 
 def compare_versions(a: str, b: str) -> int:
-    """-1/0/1; неизвестные версии считаются равными (None)."""
-    ta, tb = normalize_version(a), normalize_version(b)
-    if ta is None or tb is None:
+    """-1/0/1; сравниваем числовые компоненты и буквенный суффикс (1.1.1k vs 1.1.1w)."""
+    pa, pb = _version_parts(a), _version_parts(b)
+    if not pa or not pb:
         return 0
-    for x, y in zip(ta, tb):
-        if x != y:
-            return -1 if x < y else 1
-    if len(ta) != len(tb):
-        return -1 if len(ta) < len(tb) else 1
+    for (na, sa), (nb, sb) in zip(pa, pb):
+        if na != nb:
+            return -1 if na < nb else 1
+        if sa != sb:
+            if not sa:
+                return -1
+            if not sb:
+                return 1
+            return -1 if sa < sb else 1
+    if len(pa) != len(pb):
+        return -1 if len(pa) < len(pb) else 1
     return 0
+
+
+def _version_parts(v: str) -> list[tuple[int, str]]:
+    """Числовые компоненты + буквенный суффикс: 1.1.1k -> (1,''),(1,''),(1,'k')."""
+    parts: list[tuple[int, str]] = []
+    for token in _SEP_RE.split((v or "").strip()):
+        m = re.match(r"(\d+)([A-Za-z][A-Za-z0-9]*)?", token)
+        if m:
+            parts.append((int(m.group(1)), (m.group(2) or "").lower()))
+        elif parts:
+            break
+    return parts
 
 
 def in_range(version: str, spec: RangeSpec) -> bool:

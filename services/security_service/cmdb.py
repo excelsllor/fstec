@@ -94,10 +94,12 @@ def _item_from_rest(r: dict) -> InventoryItem:
 
 
 def get_cmdb() -> InventoryClient:
-    """Фабрика по CMDB_PROVIDER: mock (dev) | rest (внешняя CMDB) | glpi (инвентарь ПО GLPI)."""
+    """Фабрика CMDB: mock (dev) | rest (внешняя CMDB) | glpi (инвентарь ПО GLPI)."""
     if CMDB_PROVIDER == "glpi":
-        from shared.config import GLPI_URL
+        from shared.config import GLPI_URL, IS_PROD
         if not GLPI_URL:
+            if IS_PROD:
+                raise RuntimeError("CMDB_PROVIDER=glpi, но GLPI_URL не задан (prod: fail-fast)")
             logger.warning("CMDB_PROVIDER=glpi, но GLPI_URL не задан — используется mock")
         else:
             from security_service.glpi import GlpiCMDB

@@ -545,23 +545,27 @@ def get_document(doc_id: int, db: Session = Depends(get_db), user: User = Depend
 # ---------------- Reports (ТЗ 2.6) ----------------
 
 @app.get("/reports/{doc_id}/download")
-def download_report(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def download_report(doc_id: int, request: Request, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
     _owned_document(db, user, doc_id)
     report = (db.query(Report).filter(Report.document_id == doc_id)
               .order_by(Report.generated_at.desc()).first())
     if not report:
         raise HTTPException(status_code=404, detail="Отчёт ещё не сформирован")
+    _audit(db, user, "download_report", "document", doc_id, report.filename, doc_id, request=request)
     return FileResponse(report.file_path, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         filename=report.filename)
 
 
 @app.get("/reports/{doc_id}/download_raw")
-def download_raw(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def download_raw(doc_id: int, request: Request, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
     doc = _owned_document(db, user, doc_id)
     main = (db.query(Attachment).filter(Attachment.document_id == doc_id, Attachment.is_main == True).first())
     path = main.file_path if main else (doc.file_path and os.path.join(doc.file_path, doc.source_filename))
     if not path or not Path(path).exists():
         raise HTTPException(status_code=404, detail="Исходный файл не найден")
+    _audit(db, user, "download_source", "document", doc_id, doc.source_filename, doc_id, request=request)
     return FileResponse(path, filename=doc.source_filename)
 
 

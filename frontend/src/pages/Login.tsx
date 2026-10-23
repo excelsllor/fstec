@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Box,
   Paper,
@@ -8,16 +8,27 @@ import {
   Alert,
   Container,
   CircularProgress,
+  Divider,
+  IconButton,
+  Tooltip,
 } from "@mui/material";
 import SecurityIcon from "@mui/icons-material/Security";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import { useAuthStore } from "../store/auth";
 
 export default function Login() {
-  const { login } = useAuthStore();
+  const { login, needsSetup, bootstrap } = useAuthStore();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (needsSetup && bootstrap) {
+      setUsername((u) => u || bootstrap.username);
+    }
+  }, [needsSetup, bootstrap]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,6 +40,18 @@ export default function Login() {
       setError(err.response?.data?.detail || "Ошибка входа");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const copyBootstrap = async () => {
+    if (!bootstrap || !bootstrap.password) return;
+    const text = `Логин: ${bootstrap.username}\nПароль: ${bootstrap.password}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError("Не удалось скопировать — скопируйте пароль вручную");
     }
   };
 
@@ -50,6 +73,48 @@ export default function Login() {
           <Typography variant="body2" color="text.secondary" align="center" sx={{ mb: 3 }}>
             Вход в систему
           </Typography>
+
+          {needsSetup && bootstrap && (
+            <Paper variant="outlined" sx={{ p: 2, mb: 2, bgcolor: "warning.light" }}>
+              <Typography variant="subtitle2" gutterBottom>Первичная инициализация</Typography>
+              {bootstrap.password ? (
+                <>
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    Одноразовые учётные данные администратора (показываются только до первого входа):
+                  </Typography>
+                  <Typography variant="body2">
+                    Логин: <strong>{bootstrap.username}</strong>
+                  </Typography>
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                    <Typography variant="body2">
+                      Пароль: <strong>{bootstrap.password}</strong>
+                    </Typography>
+                    <Tooltip title={copied ? "Скопировано" : "Скопировать"}>
+                      <IconButton size="small" onClick={copyBootstrap}>
+                        <ContentCopyIcon fontSize="inherit" />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                  <Button size="small" sx={{ mt: 1 }} onClick={() => {
+                    setUsername(bootstrap.username);
+                    setPassword(bootstrap.password || "");
+                  }}>
+                    Подставить в форму
+                  </Button>
+                </>
+              ) : (
+                <Typography variant="body2">
+                  Пароль администратора задан при развёртывании
+                  (переменная <code>FSTEC_BOOTSTRAP_PASSWORD</code>). После первого входа
+                  экран инициализации исчезнет.
+                </Typography>
+              )}
+              <Divider sx={{ my: 1 }} />
+              <Typography variant="caption" color="text.secondary">
+                Смените пароль администратора после первого входа (Пользователи → редактировать).
+              </Typography>
+            </Paper>
+          )}
 
           {error && (
             <Alert severity="error" sx={{ mb: 2 }}>
@@ -87,13 +152,11 @@ export default function Login() {
             </Button>
           </Box>
 
-          <Alert severity="info" sx={{ mt: 2 }}>
-            <Typography variant="body2">
-              <strong>Первичная настройка:</strong> при первом запуске пароль администратора
-              выводится в журнал systemd (<code>journalctl -u fstec-gateway</code>)
-              и в файл <code>backend.log</code>. Имя пользователя: <strong>admin</strong>.
+          {!needsSetup && (
+            <Typography variant="caption" color="text.secondary" align="center" sx={{ display: "block", mt: 2 }}>
+              Учётные записи создаёт администратор в разделе «Пользователи».
             </Typography>
-          </Alert>
+          )}
         </Paper>
       </Box>
     </Container>

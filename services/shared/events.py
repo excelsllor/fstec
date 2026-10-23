@@ -49,6 +49,8 @@ class AnalysisIocs(BaseModel):
     ipv4_cidr: list[str] = Field(default_factory=list)
     ipv6: list[str] = Field(default_factory=list)              # IPv6 (+CIDR)
     domains: list[str] = Field(default_factory=list)
+    hashes: list[str] = Field(default_factory=list)            # md5/sha1/sha256/...
+    urls: list[str] = Field(default_factory=list)
     emails: list[str] = Field(default_factory=list)
     cve: list[str] = Field(default_factory=list)
     bdu: list[str] = Field(default_factory=list)

@@ -6,7 +6,7 @@ from shared.extractor.patterns import (
     HASH_SHA256, HASH_MD5, HASH_SHA1, HASH_SHA384, HASH_SHA512,
     IP_OBFUSCATED, IP_OBFUSCATED_PAREN, IP_PLAIN, IPV4_CIDR, IPV6_PLAIN,
     DOMAIN_OBFUSCATED, DOMAIN_OBFUSCATED_PAREN, DOMAIN_PLAIN,
-    EMAIL_PATTERN, BDU_PATTERN, CVE_PATTERN, VDB_URL_PATTERN,
+    EMAIL_PATTERN, BDU_PATTERN, CVE_PATTERN, VDB_URL_PATTERN, normalize_vuln_ids,
 )
 
 INTERNAL_EMAILS = {
@@ -27,6 +27,14 @@ FP_EXTENSIONS = {
     ".html", ".htm", ".css",
     ".txt", ".csv", ".dotm", ".docm", ".dot", ".pptx", ".pptm",
     ".xlsm", ".msg", ".eml", ".tar", ".gz", ".tgz", ".bz2", ".xz",
+    ".dll", ".sys", ".so", ".dylib", ".lib", ".obj", ".class",
+    ".jar", ".war", ".ear", ".hta", ".url", ".reg",
+    ".h", ".hpp", ".cc", ".cxx", ".cs", ".fs", ".vb",
+    ".asp", ".aspx", ".jsp", ".jspx", ".cgi", ".pl", ".pm", ".lua",
+    ".swift", ".kt", ".kts", ".scala", ".jsx", ".tsx", ".vue", ".svelte",
+    ".yml", ".yaml", ".toml", ".log", ".md", ".tex",
+    ".service", ".plist", ".desktop", ".cnf", ".sqlite",
+    ".checkip", ".compile",
 }
 # .sh — легитимный ccTLD (Св. Елена); блокируем только типовые shell-скрипты
 FP_SHELL_SCRIPTS = {
@@ -64,7 +72,8 @@ class IoCResult:
 
 def extract_iocs(text: str, tables: list | None = None) -> IoCResult:
     result = IoCResult()
-    text = _normalize_dotted_whitespace(text.replace("\xa0", " "))
+    text = _normalize_dotted_whitespace(normalize_vuln_ids(text.replace("\xa0", " ")))
+    text_refanged = _refang_text(text)
     seen_ips, seen_cidr4, seen_ipv6 = set(), set(), set()
     seen_domains, seen_hashes, seen_emails, seen_bdu, seen_cve, seen_urls = set(), set(), set(), set(), set(), set()
 
@@ -130,7 +139,7 @@ def extract_iocs(text: str, tables: list | None = None) -> IoCResult:
                 result.hashes.append(h)
                 seen_hashes.add(h)
 
-    for m in EMAIL_PATTERN.finditer(text):
+    for m in EMAIL_PATTERN.finditer(text_refanged):
         email = m.group(0).lower()
         if email not in seen_emails and not _is_internal_email(email):
             result.emails.append(email)
@@ -181,6 +190,13 @@ def _extract_from_tables(tables, result: IoCResult):
 def _normalize_dotted_whitespace(text: str) -> str:
     """Склейка пробелов вокруг точек внутри IP/доменов: '104 .238' → '104.238'."""
     return re.sub(r"(?<=\d)\s*\.\s*(?=\d)", ".", text)
+
+
+def _refang_text(text: str) -> str:
+    """Раскрытие обфускации индикаторов: [.]/(.)/[dot], [:] и hxxp."""
+    t = (text.replace("[.]", ".").replace("(.)", ".").replace("[dot]", ".")
+         .replace("(dot)", ".").replace("[:]", ":").replace("[://]", "://"))
+    return re.sub(r"hxxps?", "http", t, flags=re.IGNORECASE)
 
 
 def _in_guillemets(text: str, index: int) -> bool:
@@ -282,10 +298,10 @@ def _valid_ipv4_cidr(cidr: str) -> bool:
 def _valid_ipv6(value: str) -> bool:
     try:
         if "/" in value:
-            ipaddress.ip_network(value, strict=False)
-            return True
-        ipaddress.ip_address(value)
-        return True
+            net = ipaddress.ip_network(value, strict=False)
+            return not net.is_unspecified
+        addr = ipaddress.ip_address(value)
+        return not addr.is_unspecified
     except ValueError:
         return False
 

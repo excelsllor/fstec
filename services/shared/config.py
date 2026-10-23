@@ -24,8 +24,20 @@ DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DB_PATH}")
 # Событийная шина: memory (тесты/один процесс) | sqlite (локальный мульти-процесс) | kafka (prod)
 EVENT_BUS = os.environ.get("FSTEC_EVENT_BUS", "memory").lower()
 BUS_POLL_S = float(os.environ.get("FSTEC_BUS_POLL_S", "0.25"))
+# Сколько сообщений топика шины обрабатывается одновременно (этап 4). 1 = прежнее
+# строго последовательное поведение; >1 включает перекрытие обработки (например,
+# ожидание vLLM не блокирует разбор следующего письма). Порядок внутри одного
+# сообщения (несколько подписчиков) сохраняется, курсор SQLite двигается только
+# после завершения всей пачки.
+BUS_CONCURRENCY = max(1, int(os.environ.get("FSTEC_BUS_CONCURRENCY", "1")))
+# Размер пачки, читаемой за один опрос шины.
+BUS_BATCH = max(1, int(os.environ.get("FSTEC_BUS_BATCH", "100")))
 
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+# Число партиций топика: максимальная параллельность консьюмера на топик.
+KAFKA_TOPIC_PARTITIONS = max(1, int(os.environ.get("FSTEC_KAFKA_PARTITIONS", "1")))
+KAFKA_REPLICATION_FACTOR = max(1, int(os.environ.get("FSTEC_KAFKA_REPLICATION", "1")))
+KAFKA_CONSUMER_GROUP = os.environ.get("FSTEC_KAFKA_GROUP", "fstec")
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
@@ -100,21 +112,51 @@ LLM_TIMEOUT_S = float(os.environ.get("FSTEC_LLM_TIMEOUT_S", "10"))
 VLLM_MAX_TOKENS = int(os.environ.get("FSTEC_VLLM_MAX_TOKENS", "900"))
 VLLM_TEMPERATURE = float(os.environ.get("FSTEC_VLLM_TEMPERATURE", "0.1"))
 VLLM_TOP_P = float(os.environ.get("FSTEC_VLLM_TOP_P", "0.9"))
+# Прогрев/keepalive vLLM: первый запрос после старта не должен быть холодным.
+LLM_WARMUP_ENABLED = os.environ.get("FSTEC_LLM_WARMUP_ENABLED", "1").lower() in ("1", "true", "yes")
+LLM_WARMUP_INTERVAL_S = max(30.0, float(os.environ.get("FSTEC_LLM_WARMUP_INTERVAL_S", "300")))
+LLM_WARMUP_TIMEOUT_S = max(5.0, float(os.environ.get("FSTEC_LLM_WARMUP_TIMEOUT_S", "60")))
+# Штрафы за повторы (борьба с зацикливанием Qwen3 при низкой temperature).
+VLLM_REPETITION_PENALTY = float(os.environ.get("FSTEC_VLLM_REPETITION_PENALTY", "1.08"))
+VLLM_FREQUENCY_PENALTY = float(os.environ.get("FSTEC_VLLM_FREQUENCY_PENALTY", "0.3"))
 # LLM-классификация типа письма (3 класса: hacker|vulnerability|other; compromise -> hacker).
 VLLM_CLASSIFY_MAX_CHARS = int(os.environ.get("FSTEC_VLLM_CLASSIFY_MAX_CHARS", "6000"))
 # LLM-извлечение IoC (гибрид с regex): вкл/выкл, лимит текста и бюджет генерации.
 VLLM_EXTRACT_IO = os.environ.get("FSTEC_LLM_EXTRACT", "1").lower() in ("1", "true", "yes")
 VLLM_EXTRACT_MAX_CHARS = int(os.environ.get("FSTEC_LLM_EXTRACT_MAX_CHARS", "12000"))
-VLLM_EXTRACT_MAX_TOKENS = int(os.environ.get("FSTEC_LLM_EXTRACT_MAX_TOKENS", "6000"))
+VLLM_EXTRACT_MAX_TOKENS = int(os.environ.get("FSTEC_LLM_EXTRACT_MAX_TOKENS", "2000"))
 # Режим «размышлений» Qwen3: enable_thinking в chat_template_kwargs (reasoning_content отдельно).
 # Thinking потребляет много токенов — при включении бюджеты ответа поднимаются
 # до VLLM_THINK_MAX_TOKENS, а контекст для analyze ужимается (бюджет = ctx - completion).
 LLM_ENABLE_THINKING = os.environ.get("FSTEC_LLM_ENABLE_THINKING", "0").lower() in ("1", "true", "yes")
+# Объединённый analyze+extract одним вызовом LLM. По умолчанию ВЫКЛ: замеры
+# (e_bench) показали, что на крупных письмах (9-148) merged уходит в runaway-
+# генерацию с обрывом схемы и ретраем (~320 с против ~17 с у двух отдельных
+# вызовов). Два раздельных вызова (analyze + extract_iocs) быстрее ~6x.
+LLM_MERGED_ANALYZE = os.environ.get("FSTEC_LLM_MERGED_ANALYZE", "0").lower() in ("1", "true", "yes")
+# Включать извлечение IoC в merged-ответ LLM. Выкл -> IoC берутся только
+# детерминированным regex-проходом (быстро, меньше gen-токенов -> ниже латентность).
+# Внешний сервис-классификатор IoC (EuroBERT token-classification). Если задан,
+# извлечение IoC уходит из 8B на него (быстро, CPU) -> LLM_MERGED_IOCS выкл.
+IOC_CLASSIFIER_URL = os.environ.get(
+    "FSTEC_IOC_CLASSIFIER_URL", "http://host.docker.internal:8002/extract").strip()
+LLM_MERGED_IOCS = (os.environ.get("FSTEC_LLM_MERGED_IOCS", "1").lower() in ("1", "true", "yes")
+                   and not IOC_CLASSIFIER_URL)
+# Полностью отключить guided_json (промптовый JSON). Нужно для экспериментов со
+# спекулятивным декодированием: guided+spec несовместимы на vLLM 0.8.5.
+LLM_DISABLE_GUIDED = os.environ.get("FSTEC_LLM_DISABLE_GUIDED", "0").lower() in ("1", "true", "yes")
 VLLM_THINK_MAX_TOKENS = int(os.environ.get("FSTEC_VLLM_THINK_MAX_TOKENS", "5000"))
 # Лимит токенов на «размышления» (thinking_budget у Qwen3): предупреждает бесконечный reasoning
 # и гарантирует переход к финальному JSON. Без лимита модель сжигает весь бюджет на reasoning
 # и возвращает пустой content (в интерфейсе llama-server context_length учитывается отдельно).
 VLLM_THINK_BUDGET = int(os.environ.get("FSTEC_VLLM_THINK_BUDGET", "2000"))
+# Этап 4: сколько запросов к vLLM держим одновременно и какого размера пул соединений.
+# Раньше вызов был синхронным urllib и блокировал event loop на всё время генерации,
+# поэтому воркер обрабатывал строго одно письмо. Значения по умолчанию совпадают с
+# измеренным рабочим режимом vLLM на T4 (concurrency 10-12); поднимать выше VRAM не позволяет.
+LLM_MAX_CONCURRENCY = max(1, int(os.environ.get("FSTEC_LLM_CONCURRENCY", "8")))
+LLM_POOL_MAX_CONNECTIONS = max(1, int(os.environ.get("FSTEC_LLM_POOL_MAX", "16")))
+LLM_POOL_KEEPALIVE = max(1, int(os.environ.get("FSTEC_LLM_POOL_KEEPALIVE", "8")))
 # Контекст llama-server -c 16384: на ЛЕВЫЙ промпт (после _fit_context) остаётся
 # 16384 - VLLM_MAX_TOKENS = 15484 токенов — достаточно для писем целиком (макс ~12665).
 CHUNK_MAX_TOKENS = int(os.environ.get("FSTEC_CHUNK_MAX_TOKENS", "15400"))
@@ -132,12 +174,27 @@ RUBERT_MAX_TOKENS = int(os.environ.get("FSTEC_RUBERT_MAX_TOKENS", "2048"))
 # Security (ТЗ 2.4)
 SECURITY_MODE = os.environ.get("FSTEC_SECURITY_MODE", "live")  # mock (оффлайн/dev) | live (внешние БД)
 SECURITY_RETRY_MAX = int(os.environ.get("FSTEC_SECURITY_RETRY_MAX", "3"))
+# Этап 4: параллельные запросы во внешние БД по уязвимостям одного письма и размер
+# пула соединений httpx. Раньше каждая уязвимость обогащалась строго последовательно.
+SECURITY_LOOKUP_CONCURRENCY = max(1, int(os.environ.get("FSTEC_SECURITY_CONCURRENCY", "8")))
+SECURITY_POOL_MAX_CONNECTIONS = max(1, int(os.environ.get("FSTEC_SECURITY_POOL_MAX", "16")))
+# Пул соединений SQLAlchemy: при параллельной обработке писем дефолтных 5 соединений
+# не хватает, запросы начинают упираться в таймаут очереди пула.
+DB_POOL_SIZE = max(1, int(os.environ.get("FSTEC_DB_POOL_SIZE", "10")))
+DB_MAX_OVERFLOW = max(0, int(os.environ.get("FSTEC_DB_MAX_OVERFLOW", "20")))
 SECURITY_CACHE_TTL_S = int(os.environ.get("FSTEC_SECURITY_CACHE_TTL_S", str(24 * 60 * 60)))
 NVD_API_KEY = os.environ.get("NVD_API_KEY", "")
 NVD_API_BASE = os.environ.get("NVD_API_BASE", "https://services.nvd.nist.gov")
 BDU_API_BASE = os.environ.get("BDU_API_BASE", "https://bdu.fstec.ru")
 # Включать fallback с verify=False при сбое TLS у BDU (только для dev/тест-стендов; в проде оставить 0)
 BDU_TLS_INSECURE_FALLBACK = os.environ.get("FSTEC_BDU_INSECURE_FALLBACK", "0") == "1"
+# bdu.fstec.ru отдаёт 403 на запросы с User-Agent клиента httpx ("python-httpx/..."),
+# поэтому нужен браузерный UA. Без него enrichment BDU не работает вовсе.
+BDU_USER_AGENT = os.environ.get(
+    "FSTEC_BDU_USER_AGENT",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36",
+)
 # CMDB Заказчика (Приложение 8): провайдер mock (dev, тот же протокол) | rest
 CMDB_PROVIDER = os.environ.get("CMDB_PROVIDER", "mock")
 CMDB_ENDPOINT = os.environ.get("CMDB_ENDPOINT", "http://localhost:9000/api/inventory/software")
@@ -146,6 +203,22 @@ CMDB_AUTH_TYPE = os.environ.get("CMDB_AUTH_TYPE", "none")  # none | bearer | bas
 # CMDB_TOKEN оставлен для обратной совместимости.
 CMDB_TOKEN = os.environ.get("CMDB_AUTH_TOKEN", os.environ.get("CMDB_TOKEN", ""))
 CMDB_TIMEOUT_S = float(os.environ.get("CMDB_TIMEOUT_S", "5"))
+
+# GLPI как CMDB Заказчика (CMDB_PROVIDER=glpi): инвентарь ПО Software/SoftwareVersion.
+# v1 — legacy REST apirest.php (Basic или user_token), v2 — HL API api.php (OAuth2 password grant).
+GLPI_URL = os.environ.get("GLPI_URL", "").rstrip("/")
+GLPI_API = os.environ.get("GLPI_API", "v1").strip().lower()          # v1 | v2
+GLPI_AUTH = os.environ.get("GLPI_AUTH", "basic").strip().lower()    # v1: basic | user_token
+GLPI_USERNAME = os.environ.get("GLPI_USERNAME", "")
+GLPI_PASSWORD = os.environ.get("GLPI_PASSWORD", "")
+GLPI_USER_TOKEN = os.environ.get("GLPI_USER_TOKEN", "")
+GLPI_CLIENT_ID = os.environ.get("GLPI_CLIENT_ID", "")
+GLPI_CLIENT_SECRET = os.environ.get("GLPI_CLIENT_SECRET", "")
+GLPI_SCOPE = os.environ.get("GLPI_SCOPE", "api")
+GLPI_APP_TOKEN = os.environ.get("GLPI_APP_TOKEN", "")
+GLPI_TIMEOUT_S = float(os.environ.get("GLPI_TIMEOUT_S", "8"))
+GLPI_MAX_SOFTWARE = max(1, int(os.environ.get("GLPI_MAX_SOFTWARE", "5")))
+GLPI_MAX_VERSIONS = max(1, int(os.environ.get("GLPI_MAX_VERSIONS", "25")))
 
 # Порт gateway
 GATEWAY_PORT = int(os.environ.get("FSTEC_GATEWAY_PORT", "8666"))

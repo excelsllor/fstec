@@ -48,7 +48,7 @@ export interface UserResponse {
 export interface StatsResponse {
   total_letters: number;
   hacker_letters: number;
-  compromise_letters: number;
+  compromise_letters?: number;
   vulnerability_letters: number;
   other_letters: number;
   total_threats: number;
@@ -130,6 +130,19 @@ export interface VulnerabilityUpdateData {
   software?: string;
 }
 
+export interface SummaryResponse {
+  id: number;
+  summary: string;
+  confidence: number;
+}
+
+export interface EntityResponse {
+  id: number;
+  entity_type: string;
+  value: string;
+  context?: string;
+}
+
 export interface LetterResponse {
   id: number;
   letter_number: string;
@@ -150,6 +163,8 @@ export interface LetterResponse {
   threats: ThreatResponse[];
   iocs: IoCResponse[];
   vulnerabilities: VulnerabilityResponse[];
+  entities?: EntityResponse[];
+  summaries?: SummaryResponse[];
   response?: { text: string; exists: boolean; id?: number };
 }
 
@@ -158,9 +173,12 @@ export const authApi = {
     api.post<TokenResponse>("/api/auth/login", { username, password }),
   me: () => api.get<UserResponse>("/api/auth/me"),
   status: () =>
-    api.get<{ needs_setup: boolean; user_count: number }>(
-      "/api/auth/status"
-    ),
+    api.get<{
+      needs_setup: boolean;
+      bootstrap_username?: string;
+      bootstrap_password?: string | null;
+      bootstrap_source?: string;
+    }>("/api/auth/status"),
 };
 
 export const lettersApi = {
@@ -247,7 +265,8 @@ export const usersApi = {
     api.post<UserResponse>("/api/users", data),
   update: (id: number, data: Partial<{ full_name: string; password: string; role: string; is_active: boolean }>) =>
     api.put<UserResponse>(`/api/users/${id}`, data),
-  delete: (id: number) => api.delete(`/api/users/${id}`),
+  delete: (id: number) =>
+    api.delete<{ id: number; deleted: boolean; deactivated: boolean; detail?: string }>(`/api/users/${id}`),
 };
 
 export interface ThreatTypeResponse {
@@ -310,7 +329,7 @@ export interface MeasureCandidate {
   note: string;
   status: string;
   document_id: number | null;
-  threat_id: number | null;
+  threat_id?: number | null;
   letter_number: string;
   letter_date: string;
   threat_theme: string;
@@ -383,5 +402,5 @@ export interface DiagnosticsResponse {
 
 export const diagnosticsApi = {
   get: () => api.get<DiagnosticsResponse>("/api/diagnostics"),
-  bus: () => api.get<{ total: number; topics: Array<{ topic: string; count: number; last_id: number }> }>("/api/diagnostics/bus"),
+  bus: () => api.get<{ backend?: string; total: number; topics: Array<{ topic: string; count: number; last_id: number }>; error?: string }>("/api/diagnostics/bus"),
 };

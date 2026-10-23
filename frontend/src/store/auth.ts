@@ -1,11 +1,18 @@
 import { create } from "zustand";
 import { authApi, type UserResponse } from "../api/client";
 
+interface BootstrapInfo {
+  username: string;
+  password: string | null;
+  source: string;
+}
+
 interface AuthState {
   user: UserResponse | null;
   token: string | null;
   isLoading: boolean;
   needsSetup: boolean;
+  bootstrap: BootstrapInfo | null;
   initialized: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
@@ -18,13 +25,14 @@ export const useAuthStore = create<AuthState>((set) => ({
   token: localStorage.getItem("fstec_token"),
   isLoading: false,
   needsSetup: false,
+  bootstrap: null,
   initialized: false,
 
   login: async (username, password) => {
     const { data } = await authApi.login(username, password);
     localStorage.setItem("fstec_token", data.access_token);
     const { data: user } = await authApi.me();
-    set({ token: data.access_token, user, needsSetup: false, initialized: true });
+    set({ token: data.access_token, user, needsSetup: false, bootstrap: null, initialized: true });
   },
 
   logout: () => {
@@ -53,12 +61,22 @@ export const useAuthStore = create<AuthState>((set) => ({
     for (let i = 0; i < 30; i++) {
       try {
         const { data } = await authApi.status();
-        set({ needsSetup: data.needs_setup, initialized: true });
+        set({
+          needsSetup: data.needs_setup,
+          bootstrap: data.needs_setup
+            ? {
+                username: data.bootstrap_username || "admin",
+                password: data.bootstrap_password ?? null,
+                source: data.bootstrap_source || "file",
+              }
+            : null,
+          initialized: true,
+        });
         return;
       } catch {
         await new Promise((r) => setTimeout(r, 1000));
       }
     }
-    set({ needsSetup: false, initialized: true });
+    set({ needsSetup: false, bootstrap: null, initialized: true });
   },
 }));

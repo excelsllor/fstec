@@ -3,13 +3,19 @@ import logging
 from pathlib import Path
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, declarative_base
-from shared.config import DATABASE_URL, DATA_DIR
+from shared.config import (DATABASE_URL, DATA_DIR, DB_MAX_OVERFLOW, DB_POOL_SIZE)
 
 logger = logging.getLogger(__name__)
 
 _is_sqlite = DATABASE_URL.startswith("sqlite")
 
 _kwargs = {"connect_args": {"check_same_thread": False, "timeout": 30}} if _is_sqlite else {}
+# Этап 4: обработчики держат сессию в том числе во время ожидания vLLM, поэтому
+# соединений нужно не меньше, чем максимальная конкурентность воркера. Иначе
+# запросы встают в очередь пула и падают по таймауту. Для файловой SQLite
+# SQLAlchemy 2.0 уже использует QueuePool.
+_kwargs["pool_size"] = DB_POOL_SIZE
+_kwargs["max_overflow"] = DB_MAX_OVERFLOW
 engine = create_engine(DATABASE_URL, **_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -36,11 +42,33 @@ def init_db(create_all: bool = True):
     from shared import models  # noqa: F401  (регистрация ORM-схемы в Base.metadata)
     if _is_sqlite:
         _migrate_sqlite()
+    else:
+        _migrate_postgres()
     if create_all:
         Base.metadata.create_all(bind=engine)
     if _is_sqlite:
         _enable_foreign_keys()
     _seed_defaults()
+
+
+def _migrate_postgres():
+    """Лёгкие миграции PostgreSQL (create_all не меняет существующие колонки)."""
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name='vulnerabilities' AND column_name='affected_range'"
+            )).fetchone()
+            if row and row[0] not in ("text", "character varying"):
+                conn.execute(text("ALTER TABLE vulnerabilities ALTER COLUMN affected_range TYPE TEXT"))
+                conn.commit()
+                logger.info("PostgreSQL migration: vulnerabilities.affected_range -> TEXT")
+            elif row and row[0] == "character varying":
+                conn.execute(text("ALTER TABLE vulnerabilities ALTER COLUMN affected_range TYPE TEXT"))
+                conn.commit()
+                logger.info("PostgreSQL migration: vulnerabilities.affected_range widened to TEXT")
+    except Exception as e:
+        logger.error("PostgreSQL migration failed: %s", e)
 
 
 def _migrate_sqlite():

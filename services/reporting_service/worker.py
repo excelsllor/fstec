@@ -35,7 +35,7 @@ async def handle_assessed(topic: str, key: str, payload: dict) -> None:
             return
 
         ioc = db.query(IoC).filter(IoC.document_id == doc_id).all()
-        ips = [i.value for i in ioc if i.ioc_type == "ip"]
+        ips = [i.value for i in ioc if i.ioc_type in ("ip", "ip_cidr")]
         ipv6 = [i.value for i in ioc if i.ioc_type == "ipv6"]
         domains = [i.value for i in ioc if i.ioc_type == "domain"]
         emails = [i.value for i in ioc if i.ioc_type == "email"]
@@ -87,8 +87,11 @@ async def handle_assessed(topic: str, key: str, payload: dict) -> None:
             "group_name": t.group_name, "archive_name": t.archive_name, "exe_name": t.exe_name,
             "malware_type": t.malware_type, "description": t.description,
         } for t in threat_rows]
-        from shared.generator.templated_reply import generate_reply, persist_candidates
-        rep = generate_reply(
+        from shared.generator.templated_reply import generate_reply_async, persist_candidates
+        # Сессия БД переживает await: план и measure library читаются из неё же.
+        # Поэтому DB_POOL_SIZE должен быть >= BUS_CONCURRENCY reporting-воркера,
+        # иначе обработчики упрутся в очередь пула (см. shared/db.py).
+        rep = await generate_reply_async(
             db=db, doc_id=doc.id, letter_type=doc.letter_type, blocks=blocks,
             addr_count=len(domains) + len(ips), active_vulns=[v for v in vulns],
             addresses=sorted({*domains, *ips}),
@@ -131,7 +134,11 @@ def main():
         init_db()
         bus = get_event_bus()
         register_handlers(bus, {"security.assessed": handle_assessed})
-        await serve_forever(bus, heartbeat_name="reporting")
+        try:
+            await serve_forever(bus, heartbeat_name="reporting")
+        finally:
+            from llm_service.provider import close_provider_clients
+            await close_provider_clients()
     asyncio.run(_run())
 
 

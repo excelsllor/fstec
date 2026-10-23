@@ -3,7 +3,7 @@
 from llm_service.analyze import analyze, persist_analysis
 from llm_service.provider import LLMResult
 from shared.db import SessionLocal
-from shared.models import Document, Summary
+from shared.models import Document, IoC, Summary
 
 from conftest import create_uploaded_document
 
@@ -13,6 +13,8 @@ SAMPLE = (
     "фишинговых писем с архивом doc.zip с адресов evil[.]com и 203.0.113.10.\n"
     "Необходимо обновить антивирусные базы в течение 3 дней.\n"
 )
+
+SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
 class _FakeVLLM:
@@ -55,3 +57,16 @@ def test_vllm_summary_persisted_with_confidence_09(tmp_path):
     assert row is not None
     assert row.confidence == 0.9
     assert row.summary.startswith("Саммари от LLM")
+
+
+def test_hash_iocs_persisted(tmp_path):
+    """SHA256 из письма обязан попасть в iocs (раньше терялся на этапе события)."""
+    doc_id = create_uploaded_document(tmp_path)
+    text = SAMPLE + f"\nХэш-сумма вредоносного файла: {SHA256}\n"
+    with SessionLocal() as db:
+        doc = db.query(Document).filter(Document.id == doc_id).first()
+        from llm_service.provider import get_provider
+        event, _ = analyze(get_provider(), text)
+        persist_analysis(db, doc, event)
+        rows = db.query(IoC).filter(IoC.document_id == doc_id, IoC.ioc_type == "hash").all()
+    assert any(r.value == SHA256 for r in rows)

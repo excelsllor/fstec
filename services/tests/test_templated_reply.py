@@ -3,8 +3,9 @@ import pytest
 
 from shared.db import SessionLocal
 from shared.generator.templated_reply import (
-    _backfill_empty_blocks, _vulns_to_blocks, build_annotated_preview, generate_reply,
-    load_reply_resources, persist_candidates, plan_reply, render_reply,
+    _backfill_empty_blocks, _extract_ctx, _inflect_measure, _vulns_to_blocks,
+    build_annotated_preview, generate_reply, load_reply_resources,
+    persist_candidates, plan_reply, render_reply,
 )
 from shared.models import (
     Document, IntroFragment, Measure, MeasureCandidate,
@@ -58,7 +59,7 @@ def test_fallback_plan_phishing(doc_db):
     assert plan["llm"] is False
     assert len(plan["blocks"]) == 1
     blk = plan["blocks"][0]
-    assert "деятельностью хакерской группировки Vortex Werewolf" in blk["intro"]
+    assert "деятельностью хакерской группировки «Vortex Werewolf»" in blk["intro"]
     assert blk["measures"], "должны быть выбраны меры из библиотеки"
 
 
@@ -79,7 +80,7 @@ def test_render_no_double_number_no_duplicate(doc_db):
     assert "связанных с связанных с" not in text
     assert "Ответ на письмо 9/85 от 29.04.2026" in text
     assert "Правительства Липецкой области" in text
-    assert "С уважением," in text and "Ответственное должностное лицо" in text
+    assert "С уважением" not in text
     assert text.count("\n1. В целях") >= 1
     assert "\n2. В целях" in text
 
@@ -109,7 +110,7 @@ def test_compromise_empty_blocks_fixed_header(doc_db):
                       use_llm=False)
     assert plan["blocks"]
     text, _ = render_reply(plan=plan, templates=load_reply_resources(db)[2],
-                           letter_number="9/77", letter_date="2026-05-13",
+                           letter_number="9/999", letter_date="2026-05-13",
                            org_name="Правительства Липецкой области", addr_count=1)
     assert "не подвержено риску" not in text
     assert "со случаем компрометации" in text
@@ -248,7 +249,7 @@ def test_vuln_exploit_priority_9_70(doc_db):
     blocks = [{"id": 0, "number": 2, "threat_type": "malware_attack", "description": desc}]
     plan = plan_reply(db=db, letter_type="hacker", blocks=blocks, addr_count=1, use_llm=False)
     blk = plan["blocks"][0]
-    assert blk["fragment_key"] == "vuln_exploit"
+    assert blk["fragment_key"] == ""
     assert "requireModule()" in blk["intro"]
     assert "BDU:2025-15156" in blk["intro"]
     assert "критический" in blk["intro"]
@@ -263,8 +264,8 @@ def test_vuln_block_patch_tail(doc_db):
     blocks = [{"id": 0, "number": 1, "threat_type": "vulnerability", "description": desc}]
     plan = plan_reply(db=db, letter_type="hacker", blocks=blocks, addr_count=1, use_llm=False)
     intro = plan["blocks"][0]["intro"]
-    assert "обновление до версии 2.17.0" in intro
     assert "BDU:2024-12345" in intro
+    assert "обновление до версии" not in intro
 
 
 def test_measure_variance_repetitive_blocks(doc_db):
@@ -274,8 +275,51 @@ def test_measure_variance_repetitive_blocks(doc_db):
     blocks = [{"id": 0, "number": i, "threat_type": "malware_attack", "description": desc}
               for i in range(1, 5)]
     plan = plan_reply(db=db, letter_type="hacker", blocks=blocks, addr_count=1, use_llm=False)
-    counts = [len(b["measures"]) for b in plan["blocks"]]
-    assert len({tuple(sorted(m["text"] for m in b["measures"])) for b in plan["blocks"]}) >= 3
+    from shared.generator.templated_reply import load_reply_resources
+    core_n = len([m for m in load_reply_resources(db)[0]
+                  if "core" in (m.get("tags") or "")])
+    assert core_n >= 8, "ядровый набор мер должен быть собран"
+    assert len(plan["blocks"][0]["measures"]) == core_n, "полный core — в первом блоке"
+    assert len(plan["blocks"][1]["measures"]) < core_n, "повторы не дублируют весь core"
+    unique = {m["text"] for b in plan["blocks"] for m in b["measures"]}
+    assert unique, "уникальные меры не должны потеряться"
+
+
+def test_vuln_not_in_cmdb_says_not_used(doc_db):
+    """ПО отсутствует в БД заказчика (cmdb_match=False) → «не используется»."""
+    db, doc, _ = doc_db
+    vulns = [{
+        "bdu_id": "BDU:2026-10166",
+        "description": ("Уязвимость компонента WebView HTTP Server программного средства "
+                        "управления и запуска OCI-контейнеров Podman связана с неконтролируемым "
+                        "расходом ресурсов."),
+        "software": "управления и запуска OCI-контейнеров Podman",
+        "severity": "critical", "cvss_score": 9.8, "cmdb_match": False,
+    }]
+    text, _ = render_reply(plan={"template_key": "vulnerability", "blocks": [], "llm": False},
+                           templates=load_reply_resources(db)[2],
+                           letter_number="9/999", letter_date="2026-07-24",
+                           org_name="Правительства Липецкой области", active_vulns=vulns)
+    assert "Программное средство управления и запуска OCI-контейнеров Podman не используется." in text
+    assert "ведутся работы по обновлению" not in text
+
+
+def test_vuln_in_cmdb_uses_update(doc_db):
+    db, doc, _ = doc_db
+    vulns = [{
+        "bdu_id": "BDU:2026-10166",
+        "description": ("Уязвимость компонента WebView HTTP Server программного средства "
+                        "управления и запуска OCI-контейнеров Podman связана с неконтролируемым "
+                        "расходом ресурсов."),
+        "software": "управления и запуска OCI-контейнеров Podman",
+        "severity": "critical", "cvss_score": 9.8, "cmdb_match": True,
+    }]
+    text, _ = render_reply(plan={"template_key": "vulnerability", "blocks": [], "llm": False},
+                           templates=load_reply_resources(db)[2],
+                           letter_number="9/999", letter_date="2026-07-24",
+                           org_name="Правительства Липецкой области", active_vulns=vulns)
+    assert "ведутся работы по обновлению" in text
+    assert "не используется" not in text
 
 
 def test_vuln_render_paragraph(doc_db):
@@ -303,9 +347,10 @@ def test_vuln_render_paragraph(doc_db):
                            org_name="Правительства Липецкой области", active_vulns=vulns)
     assert "Уязвимость подсистемы печати (printing subsystem) программ сетевого" in text
     assert "BDU:2026-07317" in text
+    assert "CVE-2026-1111" not in text
     assert "уровень опасности по CVSS 3.1 — критический" in text
     assert ", связанная с непринятием мер" in text
-    assert "С уважением," in text
+    assert "С уважением" not in text
 
 
 def test_vuln_letter_llm_plan_blocks(doc_db):
@@ -331,25 +376,30 @@ def test_vuln_letter_llm_plan_blocks(doc_db):
     library, fragments, tpl = load_reply_resources(db)
     lib_by_id = {m["id"]: m for m in library}
     frag_by_key = {f["key"]: f for f in fragments}
+    # id мер не хардкодим: библиотека пересобирается из эталонов, порядок/id меняются.
+    base_id = next(m["id"] for m in library if "base" in (m["tags"] or ""))
+    phish_id = next(m["id"] for m in library if m["threat_type"] == "phishing")
     llm_plan = {"template_key": "vulnerability", "blocks": [
-        {"n": 1, "fragment_id": "", "measure_ids": [1, 10], "new_measures": [
+        {"n": 1, "fragment_id": "", "measure_ids": [phish_id, base_id], "new_measures": [
             {"text": "Контроль применения обновлений Samba;", "note": ""}]}]}
     plan = _apply_llm_plan(llm_plan, lib_by_id, frag_by_key, blocks, addr_count=1)
     assert plan and plan["llm"] is True
     blk = plan["blocks"][0]
     assert blk["software"] == "Samba"  # cvss_version из описания подставляется на рендере
-    assert len(blk["measures"]) == 2  # мера 10 (base) + new_measure; мера 1 (phishing) отсечена
-    assert blk["measures"][0]["measure_id"] == 10
+    assert len(blk["measures"]) == 2  # base-мера + new_measure; phishing-мера отсечена
+    assert blk["measures"][0]["measure_id"] == base_id
     text, _ = render_reply(plan=plan, templates=tpl, letter_number="9/114",
                            letter_date="2026-06-10",
                            org_name="Правительства Липецкой области",
                            active_vulns=vulns, addr_count=1)
     assert "Эксплуатация уязвимости может позволить" not in text
+    assert "CVE-2026-4480" not in text
     assert "уровень опасности по CVSS 3.1 — критический" in text
     assert "Уязвимость подсистемы печати (printing subsystem)" in text
     assert "связанная с непринятием мер" in text
-    assert "Дополнительно приняты следующие меры:" in text
-    assert "Контроль применения обновлений Samba;" in text
+    assert "Дополнительно приняты следующие меры:" not in text
+    assert "Контроль применения обновлений Samba;" not in text
+    assert "ведутся работы по обновлению" in text
 
 
 def test_vuln_letter_fallback_still_bdu(doc_db):
@@ -397,3 +447,43 @@ def test_backfill_empty_llm_measures(doc_db):
     assert any("песочниц" in m["text"] for m in blk0["measures"])
     assert blk1["measures"], "не-фишинг блок обязан получить базовые меры"
     assert all(m["source"] == "library" for m in blk0["measures"] + blk1["measures"])
+
+def test_software_placeholder_substituted():
+    """Шаблон «{{software}} не применяется» -> продукт из блока уязвимости."""
+    blk = {"threat_type": "vulnerability", "software": "Samba",
+           "description": "Уязвимость подсистемы печати Samba (BDU:2026-07317)"}
+    assert _extract_ctx(blk)["software"] == "Samba"
+    out = _inflect_measure("{{software}} не применяется", 1, "Samba")
+    assert out == "Samba не применяется"
+    assert "{{" not in out
+
+
+def test_software_placeholder_fallback_without_product():
+    """Без продукта подставляем нейтральную формулировку, а не оставляем {{...}}:
+    неразрешённые плейсхолдеры вырезаются из письма фильтром ниже по коду."""
+    out = _inflect_measure("{{software}} не применяется", 1, "")
+    assert "{{" not in out
+    assert "не применяется" in out
+
+
+def test_software_placeholder_in_llm_plan(doc_db):
+    """Мера из библиотеки с плейсхолдером доходит до плана уже с продуктом."""
+    db, doc, _ = doc_db
+    library, _, _ = load_reply_resources(db)
+    tpl = next((m for m in library
+                if "{{software}}" in (m["text"] or "")
+                and (m.get("threat_type") == "vulnerability")), None)
+    if tpl is None:
+        pytest.skip("в библиотеке нет шаблонных vulnerability-мер")
+    blocks = [{"id": 0, "n": 1, "threat_type": "vulnerability",
+               "software": "OpenSSL",
+               "description": "Уязвимость библиотеки OpenSSL (BDU:2021-00364)"}]
+    lib_by_id = {m["id"]: m for m in library}
+    llm_plan = {"template_key": "vulnerability", "blocks": [
+        {"n": 1, "fragment_id": "", "measure_ids": [tpl["id"]], "new_measures": []}]}
+    from shared.generator.templated_reply import _apply_llm_plan
+    out = _apply_llm_plan(llm_plan, lib_by_id, {}, blocks, 1)
+    texts = [m["text"] for m in out["blocks"][0]["measures"]]
+    assert texts, "LLM-выбранная шаблонная мера должна попасть в план"
+    assert all("{{" not in t for t in texts)
+    assert any("OpenSSL" in t for t in texts)

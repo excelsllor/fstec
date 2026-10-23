@@ -39,21 +39,26 @@ function fmtUptime(sec: number): string {
 
 export default function Diagnostics() {
   const [data, setData] = useState<DiagnosticsResponse | null>(null);
-  const [bus, setBus] = useState<{ total: number; topics: Array<{ topic: string; count: number; last_id: number }> } | null>(null);
+  const [bus, setBus] = useState<{ backend?: string; total: number; topics: Array<{ topic: string; count: number; last_id: number }>; error?: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const [d, b] = await Promise.all([diagnosticsApi.get(), diagnosticsApi.bus()]);
+      const d = await diagnosticsApi.get();
       setData(d.data);
-      setBus(b.data);
       setError("");
     } catch (err: any) {
       setError(err.response?.data?.detail || (err as Error)?.message || "Ошибка диагностики");
     } finally {
       if (!silent) setLoading(false);
+    }
+    try {
+      const b = await diagnosticsApi.bus();
+      setBus(b.data);
+    } catch (err: any) {
+      setBus({ total: 0, topics: [], error: err.response?.data?.detail || (err as Error)?.message || "очередь недоступна" });
     }
   }, []);
 
@@ -174,7 +179,13 @@ export default function Diagnostics() {
                 </Table>
               </TableContainer>
 
-              <Typography variant="h6" gutterBottom>Очередь сообщений</Typography>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
+                <Typography variant="h6">Очередь сообщений</Typography>
+                {bus?.backend && <Chip size="small" variant="outlined" label={`шина: ${bus.backend}`} />}
+              </Box>
+              {bus?.error && (
+                <Alert severity="warning" sx={{ mb: 2 }}>{bus.error}</Alert>
+              )}
               <TableContainer component={Paper}>
                 <Table size="small">
                   <TableHead>
@@ -197,8 +208,9 @@ export default function Diagnostics() {
                       <TableRow><TableCell colSpan={3} align="center">Нет сообщений</TableCell></TableRow>
                     )}
                     <TableRow>
-                      <TableCell colSpan={2}><b>Всего</b></TableCell>
+                      <TableCell><b>Всего</b></TableCell>
                       <TableCell><b>{bus?.total ?? 0}</b></TableCell>
+                      <TableCell>—</TableCell>
                     </TableRow>
                   </TableBody>
                 </Table>

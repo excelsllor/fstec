@@ -6,6 +6,7 @@ frontend/dist/
 __pycache__/
 *.pyc
 *.pyo
+*.bak_*
 .venv/
 backend/dist/
 backend/build/

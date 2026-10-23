@@ -22,6 +22,10 @@ import {
   MenuItem,
   IconButton,
   Alert,
+  Snackbar,
+  FormControlLabel,
+  Switch,
+  CircularProgress,
 } from "@mui/material";
 import {
   Add as AddIcon,
@@ -29,20 +33,28 @@ import {
   Delete as DeleteIcon,
 } from "@mui/icons-material";
 import { usersApi, type UserResponse } from "../../api/client";
+import { useAuthStore } from "../../store/auth";
 
 export default function Users() {
+  const currentUser = useAuthStore((s) => s.user);
   const [users, setUsers] = useState<UserResponse[]>([]);
   const [dialog, setDialog] = useState<"create" | "edit" | "delete" | null>(null);
   const [editing, setEditing] = useState<UserResponse | null>(null);
-  const [form, setForm] = useState({ username: "", password: "", role: "user", full_name: "" });
+  const [form, setForm] = useState({ username: "", password: "", role: "user", full_name: "", is_active: true });
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(true);
 
   const load = async () => {
+    setLoading(true);
     try {
       const { data } = await usersApi.list();
       setUsers(data);
-    } catch (err) {
-      console.error((err as Error)?.message || "Error");
+      setError("");
+    } catch (err: any) {
+      setError(err.response?.data?.detail || (err as Error)?.message || "Не удалось загрузить пользователей");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -51,9 +63,10 @@ export default function Users() {
   const handleCreate = async () => {
     setError("");
     try {
-      await usersApi.create(form);
+      await usersApi.create({ username: form.username, password: form.password,
+                              role: form.role, full_name: form.full_name });
       setDialog(null);
-      setForm({ username: "", password: "", role: "user", full_name: "" });
+      setForm({ username: "", password: "", role: "user", full_name: "", is_active: true });
       load();
     } catch (err: any) {
       setError(err.response?.data?.detail || "Ошибка");
@@ -65,9 +78,10 @@ export default function Users() {
     setError("");
     try {
       await usersApi.update(editing.id, {
-        full_name: form.full_name || undefined,
+        full_name: form.full_name,
         password: form.password || undefined,
         role: form.role || undefined,
+        is_active: form.is_active,
       });
       setDialog(null);
       load();
@@ -78,14 +92,25 @@ export default function Users() {
 
   const handleDelete = async () => {
     if (!editing) return;
+    setError("");
     try {
-      await usersApi.delete(editing.id);
+      const { data } = await usersApi.delete(editing.id);
       setDialog(null);
       setEditing(null);
+      if (data?.deactivated) {
+        setNotice(data.detail || "У пользователя есть письма — учётная запись отключена");
+      }
       load();
     } catch (err: any) {
       setError(err.response?.data?.detail || "Ошибка");
+      setDialog(null);
     }
+  };
+
+  const openEdit = (u: UserResponse) => {
+    setEditing(u);
+    setForm({ username: u.username, password: "", role: u.role, full_name: u.full_name, is_active: u.is_active });
+    setDialog("edit");
   };
 
   return (
@@ -95,13 +120,15 @@ export default function Users() {
         <Button
           variant="contained"
           startIcon={<AddIcon />}
-          onClick={() => { setForm({ username: "", password: "", role: "user", full_name: "" }); setDialog("create"); }}
+          onClick={() => { setForm({ username: "", password: "", role: "user", full_name: "", is_active: true }); setDialog("create"); }}
         >
           Создать
         </Button>
       </Box>
 
-      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+      {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>{error}</Alert>}
+      <Snackbar open={Boolean(notice)} autoHideDuration={6000} onClose={() => setNotice("")}
+                message={notice} anchorOrigin={{ vertical: "bottom", horizontal: "center" }} />
 
       <TableContainer component={Paper}>
         <Table>
@@ -117,10 +144,20 @@ export default function Users() {
             </TableRow>
           </TableHead>
           <TableBody>
+            {loading && (
+              <TableRow>
+                <TableCell colSpan={7} align="center"><CircularProgress size={24} sx={{ my: 1 }} /></TableCell>
+              </TableRow>
+            )}
+            {!loading && users.length === 0 && !error && (
+              <TableRow>
+                <TableCell colSpan={7} align="center">Нет пользователей</TableCell>
+              </TableRow>
+            )}
             {users.map((u) => (
               <TableRow key={u.id} hover>
                 <TableCell>{u.id}</TableCell>
-                <TableCell>{u.username}</TableCell>
+                <TableCell>{u.username}{u.id === currentUser?.id ? " (вы)" : ""}</TableCell>
                 <TableCell>{u.full_name || "—"}</TableCell>
                 <TableCell>
                   <Chip
@@ -136,16 +173,13 @@ export default function Users() {
                     size="small"
                   />
                 </TableCell>
-                <TableCell>{new Date(u.created_at).toLocaleDateString("ru-RU")}</TableCell>
+                <TableCell>{u.created_at ? new Date(u.created_at).toLocaleDateString("ru-RU") : "—"}</TableCell>
                 <TableCell align="center">
-                  <IconButton size="small" onClick={() => {
-                    setEditing(u);
-                    setForm({ username: u.username, password: "", role: u.role, full_name: u.full_name });
-                    setDialog("edit");
-                  }}>
+                  <IconButton size="small" onClick={() => openEdit(u)}>
                     <EditIcon fontSize="small" />
                   </IconButton>
-                  <IconButton size="small" onClick={() => { setEditing(u); setDialog("delete"); }}>
+                  <IconButton size="small" disabled={u.id === currentUser?.id}
+                              onClick={() => { setEditing(u); setDialog("delete"); }}>
                     <DeleteIcon fontSize="small" />
                   </IconButton>
                 </TableCell>
@@ -187,6 +221,13 @@ export default function Users() {
               <MenuItem value="admin">Администратор</MenuItem>
             </Select>
           </FormControl>
+          <FormControlLabel
+            sx={{ mt: 2 }}
+            control={<Switch checked={form.is_active}
+                             onChange={(e) => setForm({ ...form, is_active: e.target.checked })}
+                             disabled={editing?.id === currentUser?.id} />}
+            label="Учётная запись активна"
+          />
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDialog(null)}>Отмена</Button>

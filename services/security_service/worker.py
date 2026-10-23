@@ -7,6 +7,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from shared.bus import get_event_bus
+from shared.concurrency import run_blocking
 from shared.config import SECURITY_MODE
 from shared.db import SessionLocal, init_db
 from shared.events import AuditEvent, SecurityAssessed, VulnerabilityAssessed
@@ -64,29 +65,62 @@ def _get_bdu() -> BDUClient | None:
     return _bdu
 
 
+def _clip(value, limit: int) -> str:
+    """Защитное усечение строки под длину колонки (NVD/BDU могут вернуть больше)."""
+    s = "" if value is None else str(value)
+    return s if len(s) <= limit else s[:limit]
+
+
+_VULN_LIMITS = {
+    "cve_id": 50, "bdu_id": 50, "software": 500, "severity": 30,
+    "cvss_version": 20, "cpe": 500, "fixed_version": 100, "patch_url": 1000,
+    "current_version": 100, "target_version": 100, "source": 20,
+    "affected_range": 10000, "action_type": 30,
+}
+
+
 def _store_assessments(db: Session, doc: Document, assessed: list[dict]) -> None:
     db.query(Vulnerability).filter(Vulnerability.document_id == doc.id).delete()
     templates = {t.action_type: t.content for t in db.query(VulnActionTemplate).all()}
     for a in assessed:
         rec = Vulnerability(
             document_id=doc.id,
-            cve_id=a.get("cve_id", ""),
-            bdu_id=a.get("bdu_id", ""),
+            cve_id=_clip(a.get("cve_id", ""), _VULN_LIMITS["cve_id"]),
+            bdu_id=_clip(a.get("bdu_id", ""), _VULN_LIMITS["bdu_id"]),
             description=a.get("description", ""),
-            software=a.get("software", ""),
-            severity=a.get("severity", "unknown"),
+            software=_clip(a.get("software", ""), _VULN_LIMITS["software"]),
+            severity=_clip(a.get("severity", "unknown"), _VULN_LIMITS["severity"]),
             cvss_score=a.get("cvss_score"),
-            cpe=a.get("cpe", ""),
-            affected_range=a.get("affected_range", ""),
-            fixed_version=a.get("fixed_version", ""),
-            patch_url=a.get("patch_url", ""),
+            cpe=_clip(a.get("cpe", ""), _VULN_LIMITS["cpe"]),
+            affected_range=_clip(a.get("affected_range", ""), _VULN_LIMITS["affected_range"]),
+            fixed_version=_clip(a.get("fixed_version", ""), _VULN_LIMITS["fixed_version"]),
+            patch_url=_clip(a.get("patch_url", ""), _VULN_LIMITS["patch_url"]),
             cmdb_match=a.get("cmdb_match", False),
-            current_version=a.get("current_version", ""),
-            target_version=a.get("target_version", ""),
-            source=a.get("source", "manual"),
+            current_version=_clip(a.get("current_version", ""), _VULN_LIMITS["current_version"]),
+            target_version=_clip(a.get("target_version", ""), _VULN_LIMITS["target_version"]),
+            source=_clip(a.get("source", "manual"), _VULN_LIMITS["source"]),
             recommendation=a.get("recommendation", templates.get("update", "")),
+            action_type=_clip(a.get("action_type", ""), _VULN_LIMITS["action_type"]),
         )
         db.add(rec)
+
+
+def _persist_assessment(doc_id: int, assessment) -> None:
+    """Синхронная запись — выполняется в потоке (этап 4), чтобы ожидание NVD/BDU/CMDB
+    других писем продолжалось, пока этот документ пишется в БД."""
+    with SessionLocal() as db:
+        doc = db.query(Document).filter(Document.id == doc_id).first()
+        if not doc:
+            logger.warning("Document %s not found, skip security", doc_id)
+            return
+        sla, routing = assessment.sla, assessment.routing
+        _store_assessments(db, doc, assessment.assessed)
+        doc.sla, doc.routing = sla, routing
+        doc.processing_stage = "assessed"
+        doc.status = "assessed"
+        db.add(SLABase(document_id=doc_id, sla=sla, routing=routing,
+                       reason=f"cmdb_matches={sum(1 for a in assessment.assessed if a['cmdb_match'])}"))
+        db.commit()
 
 
 async def handle_analyzed(topic: str, key: str, payload: dict) -> None:
@@ -101,18 +135,7 @@ async def handle_analyzed(topic: str, key: str, payload: dict) -> None:
     assessment = await assess_document(vulns_raw, cmdb=cmdb, enrich=enrich, nvd=nvd, bdu=bdu)
     sla, routing = assessment.sla, assessment.routing
 
-    with SessionLocal() as db:
-        doc = db.query(Document).filter(Document.id == doc_id).first()
-        if not doc:
-            logger.warning("Document %s not found, skip security", doc_id)
-            return
-        _store_assessments(db, doc, assessment.assessed)
-        doc.sla, doc.routing = sla, routing
-        doc.processing_stage = "assessed"
-        doc.status = "assessed"
-        db.add(SLABase(document_id=doc_id, sla=sla, routing=routing,
-                       reason=f"cmdb_matches={sum(1 for a in assessment.assessed if a['cmdb_match'])}"))
-        db.commit()
+    await run_blocking(_persist_assessment, doc_id, assessment)
 
     bus = get_event_bus()
     if assessment.external_errors:
@@ -153,7 +176,11 @@ def main():
         init_db()
         bus = get_event_bus()
         register_handlers(bus, {"document.analyzed": handle_analyzed})
-        await serve_forever(bus, heartbeat_name="security")
+        try:
+            await serve_forever(bus, heartbeat_name="security")
+        finally:
+            from security_service.http_pool import close_clients
+            await close_clients()
     asyncio.run(_run())
 
 

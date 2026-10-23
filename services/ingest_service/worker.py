@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from shared.bus import get_event_bus
+from shared.concurrency import run_blocking
 from shared.config import OCR_ENABLED, OCR_MIN_TEXT, OCR_LANG
 from shared.db import SessionLocal
 from shared.events import DocumentParsed
@@ -15,20 +16,23 @@ from shared.worker import configure_logging, register_handlers
 logger = logging.getLogger("fstec.ingest")
 
 
-async def handle_uploaded(topic: str, key: str, payload: dict) -> None:
-    doc_id = int(payload["document_id"])
+def _parse_document(doc_id: int) -> DocumentParsed | None:
+    """Разбор вложений + OCR + запись в БД. Полностью синхронная и тяжёлая
+    функция — вызывается через run_blocking, чтобы event loop воркера продолжал
+    принимать события (этап 4). Сессия БД живёт только здесь и закрывается до
+    публикации события. None — документа/вложений нет."""
     with SessionLocal() as db:
         doc = db.query(Document).filter(Document.id == doc_id).first()
         if not doc:
             logger.warning("Document %s not found, skip ingest", doc_id)
-            return
+            return None
         attachments = (db.query(Attachment)
                        .filter(Attachment.document_id == doc_id)
                        .order_by(Attachment.is_main.desc())
                        .order_by(Attachment.id).all())
         if not attachments:
             logger.warning("No attachments for doc %s", doc_id)
-            return
+            return None
 
         main_text = ""
         all_texts: list[str] = []
@@ -72,16 +76,23 @@ async def handle_uploaded(topic: str, key: str, payload: dict) -> None:
         doc.parse_errors = "; ".join(parse_errors)
         db.commit()
 
-    event = DocumentParsed(
-        document_id=doc_id,
-        text=main_text or (all_texts[0] if all_texts else ""),
-        all_text="\n\n".join(t for t in all_texts if t.strip()),
-        ocr_used=ocr_used,
-        parse_errors=parse_errors,
-        attachments=att_meta,
-    )
+        return DocumentParsed(
+            document_id=doc_id,
+            text=main_text or (all_texts[0] if all_texts else ""),
+            all_text="\n\n".join(t for t in all_texts if t.strip()),
+            ocr_used=ocr_used,
+            parse_errors=parse_errors,
+            attachments=att_meta,
+        )
+
+
+async def handle_uploaded(topic: str, key: str, payload: dict) -> None:
+    doc_id = int(payload["document_id"])
+    event = await run_blocking(_parse_document, doc_id)
+    if event is None:
+        return
     await get_event_bus().publish("document.parsed", str(doc_id), event.model_dump(mode="json"))
-    logger.info("Parsed doc %s: %d attachments, %d chars", doc_id, len(att_meta),
+    logger.info("Parsed doc %s: %d attachments, %d chars", doc_id, len(event.attachments),
                 len(event.all_text))
 
 

@@ -112,52 +112,76 @@ class Assessment:
     routing: str = "default"
 
 
+async def _assess_one(v: dict, *, cmdb, enrich: bool, nvd, bdu) -> tuple[dict, str]:
+    """Обогащение + сопоставление с CMDB для одной уязвимости."""
+    raw = dict(v or {})
+    software = raw.get("software") or ""
+    enriched: EnrichedVuln | None = None
+    if enrich and (raw.get("cve_id") or raw.get("bdu_id")) and nvd and bdu:
+        enriched, errs = await _enrich(raw, nvd, bdu)
+        err_text = errs
+    else:
+        err_text = ""
+
+    item, matched = None, False
+    try:
+        candidates = await cmdb.find_many(software)
+        item, matched = _match_cmdb(enriched, candidates, software)
+    except Exception as exc:  # noqa: BLE001 — CMDB недоступна (ТЗ 4.2)
+        logger.warning("cmdb lookup failed for %r: %s", software, exc)
+        err_text = "; ".join(x for x in (err_text, f"cmdb:{software}:{exc}") if x)
+
+    fixed = derive_fixed_version(enriched, raw.get("description", ""))
+    current_version = item.version if item else ""
+    rec = (f"Обновить {item.name if item else software} с {current_version} до {fixed}"
+           if matched and fixed else UPDATE_TEMPLATE)
+    return {
+        "cve_id": enriched.cve_id if enriched and enriched.cve_id else raw.get("cve_id", ""),
+        "bdu_id": enriched.bdu_id if enriched and enriched.bdu_id else raw.get("bdu_id", ""),
+        "description": enriched.description if enriched and enriched.description else raw.get("description", ""),
+        "software": software,
+        "severity": _severity(enriched, raw),
+        "cvss_score": enriched.cvss_score if enriched else raw.get("cvss_score"),
+        "cvss_version": enriched.cvss_version if enriched else raw.get("cvss_version", ""),
+        "cpe": enriched.cpes[0] if enriched and enriched.cpes else (raw.get("cpe") or ""),
+        "affected_range": enriched.affected_range if enriched else (raw.get("affected_range") or ""),
+        "fixed_version": fixed,
+        "patch_url": enriched.patch_url if enriched else (raw.get("patch_url") or ""),
+        "cmdb_match": matched,
+        "current_version": current_version,
+        "target_version": fixed,
+        "recommendation": rec,
+        "source": enriched.source if enriched else "manual",
+    }, err_text
+
+
 async def assess_document(vulns_raw: list[dict], *, cmdb: InventoryClient,
                           enrich: bool | None = None, nvd=None, bdu=None) -> Assessment:
-    """Полный цикл ТЗ 2.4. enrich=False → без внешних вызовов (mock/dev-режим)."""
+    """Полный цикл ТЗ 2.4. enrich=False → без внешних вызовов (mock/dev-режим).
+
+    Этап 4: уязвимости одного письма обрабатываются параллельно (ранее строго
+    последовательно), но не более SECURITY_LOOKUP_CONCURRENCY одновременно —
+    это ограничивает давление на NVD/BDU/CMDB. Порядок результата совпадает с
+    порядком во входном списке."""
+    from shared.concurrency import bounded_gather
+    from shared.config import SECURITY_LOOKUP_CONCURRENCY
+
     enrich = SECURITY_MODE == "live" if enrich is None else enrich
+    vulns = list(vulns_raw or [])
+    if not vulns:
+        return Assessment(assessed=[], external_errors=[], sla="normal", routing="default")
+
+    results = await bounded_gather(
+        [_assess_one(v, cmdb=cmdb, enrich=enrich, nvd=nvd, bdu=bdu) for v in vulns],
+        SECURITY_LOOKUP_CONCURRENCY,
+        name="security",
+    )
     out: list[dict] = []
     external_errors: list[str] = []
-
-    for v in vulns_raw or []:
-        raw = dict(v or {})
-        software = raw.get("software") or ""
-        enriched: EnrichedVuln | None = None
-        if enrich and (raw.get("cve_id") or raw.get("bdu_id")) and nvd and bdu:
-            enriched, errs = await _enrich(raw, nvd, bdu)
-            if errs:
-                external_errors.append(errs)
-
-        item, matched = None, False
-        try:
-            candidates = await cmdb.find_many(software)
-            item, matched = _match_cmdb(enriched, candidates, software)
-        except Exception as exc:  # noqa: BLE001 — CMDB недоступна (ТЗ 4.2)
-            logger.warning("cmdb lookup failed for %r: %s", software, exc)
-            external_errors.append(f"cmdb:{software}:{exc}")
-
-        fixed = derive_fixed_version(enriched, raw.get("description", ""))
-        current_version = item.version if item else ""
-        rec = (f"Обновить {item.name if item else software} с {current_version} до {fixed}"
-               if matched and fixed else UPDATE_TEMPLATE)
-        out.append({
-            "cve_id": enriched.cve_id if enriched and enriched.cve_id else raw.get("cve_id", ""),
-            "bdu_id": enriched.bdu_id if enriched and enriched.bdu_id else raw.get("bdu_id", ""),
-            "description": enriched.description if enriched and enriched.description else raw.get("description", ""),
-            "software": software,
-            "severity": _severity(enriched, raw),
-            "cvss_score": enriched.cvss_score if enriched else raw.get("cvss_score"),
-            "cvss_version": enriched.cvss_version if enriched else raw.get("cvss_version", ""),
-            "cpe": enriched.cpes[0] if enriched and enriched.cpes else (raw.get("cpe") or ""),
-            "affected_range": enriched.affected_range if enriched else (raw.get("affected_range") or ""),
-            "fixed_version": fixed,
-            "patch_url": enriched.patch_url if enriched else (raw.get("patch_url") or ""),
-            "cmdb_match": matched,
-            "current_version": current_version,
-            "target_version": fixed,
-            "recommendation": rec,
-            "source": enriched.source if enriched else "manual",
-        })
+    for rec, err_text in results:
+        out.append(rec)
+        if err_text:
+            external_errors.append(err_text)
 
     sla_score = "critical" if any(a["cmdb_match"] for a in out) else "normal"
     routing = "infosec" if sla_score == "critical" else "default"

@@ -28,6 +28,13 @@ COPY .env.example ./
 ARG SERVICE
 COPY ${SERVICE} ./${SERVICE}
 
+# llm_service кладём во все образы: он лёгкий (чистый Python + httpx из requirements.txt),
+# но нужен сервисам, которые сами планируют ответ — api-gateway (/reply/generate) и
+# reporting-service вызывают shared/generator/templated_reply.py, а тот импортирует
+# llm_service.provider.get_provider(). Раньше пакет попадал только в образ llm-service,
+# импорт падал, и plan_reply молча уходил на детерминированный шаблон (plan_json.llm = false).
+COPY llm_service ./llm_service
+
 # Непривилегированный пользователь; каталоги данных готовим заранее (named volume
 # наследует владельца при первой инициализации).
 RUN useradd --create-home --uid 10001 appuser \

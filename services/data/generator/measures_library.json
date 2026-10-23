@@ -1,79 +1,352 @@
 [
-  {
-    "text": "производится автоматическая проверка вложений с использованием имеющейся «песочницы» («sandbox») для выявления вредоносной активности на этапе приема письма почтовым сервером;",
-    "threat_type": "phishing",
-    "tags": "phishing",
-    "addr_inflection": false,
-    "source": "etalon"
-  },
-  {
-    "text": "производится проверка почтовых вложений с использованием сертифицированного средства антивирусной защиты с использованием функции «Защита от почтовых угроз»;",
-    "threat_type": "phishing",
-    "tags": "phishing",
-    "addr_inflection": false,
-    "source": "etalon"
-  },
-  {
-    "text": "осуществляется автоматическая проверка указанных в письмах URL-адресов, содержащихся в электронных письмах, с использованием механизмов анализа ссылок;",
-    "threat_type": "phishing",
-    "tags": "phishing",
-    "addr_inflection": false,
-    "source": "etalon"
-  },
-  {
-    "text": "в целях идентификации отправителя производится проверка имени домена отправителя электронного письма;",
-    "threat_type": "phishing",
-    "tags": "phishing",
-    "addr_inflection": false,
-    "source": "etalon"
-  },
-  {
-    "text": "сотрудники проинструктированы о запрете открывать и загружать почтовые вложения писем с тематикой, не относящейся к рабочей деятельности;",
-    "threat_type": "phishing",
-    "tags": "phishing",
-    "addr_inflection": false,
-    "source": "etalon"
-  },
-  {
-    "text": "работы с электронной почтой производятся только с учетных записей пользователей операционной системы с минимальными возможными привилегиями;",
-    "threat_type": "phishing",
-    "tags": "phishing",
-    "addr_inflection": false,
-    "source": "etalon"
-  },
-  {
-    "text": "регулярно производится контроль журналов DNS-серверов, прокси-серверов, средств межсетевого экранирования и средств обнаружения и реагирования уровня узла;",
-    "threat_type": "compromise",
-    "tags": "compromise",
-    "addr_inflection": false,
-    "source": "etalon"
-  },
-  {
-    "text": "на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;",
-    "threat_type": "hacker",
-    "tags": "hacker,phishing,malware_attack,compromise,clickfix,vulnerability,base",
-    "addr_inflection": true,
-    "source": "etalon"
-  },
-  {
-    "text": "произведено внеплановое сканирование информационной инфраструктуры средствами антивирусной защиты;",
-    "threat_type": "compromise",
-    "tags": "compromise,scan",
-    "addr_inflection": false,
-    "source": "etalon"
-  },
-  {
-    "text": "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям.",
-    "threat_type": "hacker",
-    "tags": "hacker,phishing,malware_attack,compromise,clickfix,vulnerability,base",
-    "addr_inflection": false,
-    "source": "etalon"
-  },
-  {
-    "text": "ограничено получение электронных писем с адреса {{sender}};",
-    "threat_type": "phishing",
-    "tags": "phishing",
-    "addr_inflection": false,
-    "source": "etalon"
-  }
+ {
+  "text": "{{software}} не применяется",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": true,
+  "source": "etalon"
+ },
+ {
+  "text": "В целях предотвращения возможности эксплуатации данной уязвимости ведутся работы по обновлению {{software}} до неуязвимой версии",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": true,
+  "source": "etalon"
+ },
+ {
+  "text": "В целях предотвращения возможности эксплуатации данной уязвимости ведутся работы по реализации компенсирующих мер",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "В целях предотвращения возможности эксплуатации данной уязвимости ведутся работы по переходу на отечественные сертифицированные операционные системы. Применены рекомендации производителя",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "В целях предотвращения возможности эксплуатации данной уязвимости ведутся работы по применению рекомендаций производителя",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "Используемая версия {{software}} не подвержена данной уязвимости",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": true,
+  "source": "etalon"
+ },
+ {
+  "text": "{{software}} не используется",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": true,
+  "source": "etalon"
+ },
+ {
+  "text": "Ограничено использование {{software}}",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": true,
+  "source": "etalon"
+ },
+ {
+  "text": "Производится регулярное обновление {{software}} с предварительным тестированием обновлений",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": true,
+  "source": "etalon"
+ },
+ {
+  "text": "ограничен доступ к командной строке для недоверенных пользователей",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "создание файлов вне домашней директории пользователя запрещено",
+  "threat_type": "hacker",
+  "tags": "hacker,base",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "В целях предотвращения возможности эксплуатации данной уязвимости ведутся работы по переходу на альтернативные Ingress-контроллеры",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "В целях предотвращения возможности эксплуатации данной уязвимости ведутся работы по переходу на отечественные сертифицированные операционные системы",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "пользовательские привилегии минимизированы",
+  "threat_type": "hacker",
+  "tags": "hacker,base",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "неиспользуемые учётные записи пользователей отключены",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "регулярно проводится контроль журналов аудита кластера для отслеживания попыток эксплуатации уязвимости",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "для ограничения доступа к уязвимому программному обеспечению сеть сегментирована",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "используется SIEM-система для отслеживания попыток эксплуатации уязвимости",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "используется виртуальная частная сеть для организации удаленного доступа (VPN)",
+  "threat_type": "hacker",
+  "tags": "hacker,base",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "ограничен доступ из внешних сетей (Интернет)",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "В целях предотвращения возможности эксплуатации данной уязвимости ведутся работы по переходу на отечественные сертифицированные операционные системы. Дополнительно приняты следующие меры:",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "Установлены обновления {{software}}",
+  "threat_type": "vulnerability",
+  "tags": "vulnerability,patch",
+  "addr_inflection": true,
+  "source": "etalon"
+ },
+ {
+  "text": "производится автоматическая проверка вложений с использованием имеющейся «песочницы» («sandbox») для выявления вредоносной активности на этапе приема письма почтовым сервером;",
+  "threat_type": "phishing",
+  "tags": "phishing",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "производится проверка почтовых вложений с использованием сертифицированного средства антивирусной защиты с использованием функции «Защита от почтовых угроз»;",
+  "threat_type": "phishing",
+  "tags": "phishing",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "осуществляется автоматическая проверка указанных в письмах URL-адресов, содержащихся в электронных письмах, с использованием механизмов анализа ссылок;",
+  "threat_type": "phishing",
+  "tags": "phishing",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "в целях идентификации отправителя производится проверка имени домена отправителя электронного письма;",
+  "threat_type": "phishing",
+  "tags": "phishing",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "сотрудники проинструктированы о запрете открывать и загружать почтовые вложения писем с тематикой, не относящейся к рабочей деятельности;",
+  "threat_type": "phishing",
+  "tags": "phishing,core",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "работы с электронной почтой производятся только с учетных записей пользователей операционной системы с минимальными возможными привилегиями;",
+  "threat_type": "phishing",
+  "tags": "phishing",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "регулярно производится контроль журналов DNS-серверов, прокси-серверов, средств межсетевого экранирования и средств обнаружения и реагирования уровня узла;",
+  "threat_type": "compromise",
+  "tags": "compromise",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;",
+  "threat_type": "hacker",
+  "tags": "hacker,phishing,malware_attack,compromise,clickfix,vulnerability,base",
+  "addr_inflection": true,
+  "source": "etalon"
+ },
+ {
+  "text": "произведено внеплановое сканирование информационной инфраструктуры средствами антивирусной защиты;",
+  "threat_type": "compromise",
+  "tags": "compromise,scan",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям.",
+  "threat_type": "hacker",
+  "tags": "hacker,phishing,malware_attack,compromise,clickfix,vulnerability,base",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "ограничено получение электронных писем с адреса {{sender}};",
+  "threat_type": "phishing",
+  "tags": "phishing",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "производится автоматическая проверка вложений с использованием имеющейся «песочницы» («sandbox») для выявления вредоносной активности на этапе приема письма почтовым сервером;",
+  "threat_type": "malware_attack",
+  "tags": "malware_attack,core",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "Производить проверку почтовых вложений с использованием средств антивирусной защиты: для антивирусного средства Kaspersky Endpoint Security необходимо использовать функцию «Защита от почтовых угроз». Для того чтобы включить указанную функцию, необходимо перейти в настройки приложения и в разделе «Базовая защита» активировать функцию «Защита от почтовых угроз»; для антивирусного средства Dr.Web Security Space необходимо использовать утилиту SpIDer Mail. Для того чтобы задействовать указанную утилиту, необходимо перейти в настройки приложения и в разделе «Компоненты защиты» выбрать и активировать утилиту SpIDer Mail.",
+  "threat_type": "hacker",
+  "tags": "hacker",
+  "addr_inflection": true,
+  "source": "etalon"
+ },
+ {
+  "text": "осуществляется автоматическая проверка указанных в письмах URL-адресов, содержащихся в электронных письмах, с использованием механизмов анализа ссылок;",
+  "threat_type": "hacker",
+  "tags": "hacker,core",
+  "addr_inflection": true,
+  "source": "etalon"
+ },
+ {
+  "text": "Проверять имя домена отправителя электронного письма в целях идентификации отправителя. Для этого необходимо обращать внимание на наименование почтового адреса (домена), указанного после символа «@», и сопоставлять его с адресами (доменами) органов (организаций), с которыми осуществляется служебная переписка.",
+  "threat_type": "hacker",
+  "tags": "hacker",
+  "addr_inflection": true,
+  "source": "etalon"
+ },
+ {
+  "text": "Организовать получение почтовых вложений только от известных отправителей. Для этого необходимо организовать ведение списков адресов электронной почты органов (организаций), с которыми осуществляется взаимодействие.",
+  "threat_type": "hacker",
+  "tags": "hacker",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "Не открывать и не загружать почтовые вложения писем с тематикой, не относящейся к деятельности органа (организации).",
+  "threat_type": "hacker",
+  "tags": "hacker",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "Осуществлять работу с электронной почтой под учетными записями пользователей операционной системы с минимальными возможными привилегиями: для операционных систем семейства Microsoft Windows ограничение привилегий можно осуществить через «Панель управления» - «Учетные записи пользователей» - «Управление учетными записями»; для операционных систем семейства Linux исключить работу под учетной записью root, при необходимости осуществить настройку необходимого перечня команд в файле конфигураций sudoers. Использовать для разграничения прав доступа к файлам и директориям как отдельных пользователей, так и групп пользователей команды chmod, chown, chgrp.",
+  "threat_type": "hacker",
+  "tags": "hacker",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "Осуществить настройку правил системы мониторинга событий информационной безопасности (при ее наличии) путем внесения в правила корреляции событий следующих индикаторов компрометации (sha256):",
+  "threat_type": "compromise",
+  "tags": "compromise",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "Обеспечить на уровне сетевых средств защиты информации ограничение обращений к следующим адресам, используя схему доступа по «черным» или «белым» спискам:",
+  "threat_type": "hacker",
+  "tags": "hacker",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "Осуществлять автоматическую проверку указанных в письмах URL-адресов, содержащихся в электронных письмах, с использованием механизмов анализа ссылок.",
+  "threat_type": "hacker",
+  "tags": "hacker",
+  "addr_inflection": true,
+  "source": "etalon"
+ },
+ {
+  "text": "Обеспечить на уровне сетевых средств защиты информации ограничение обращений к следующим адресам, используя схему доступа по «черным» или «белым» спискам: realty-visual[.]ru; ministerstvo-inostrannykh-del[.]ru;",
+  "threat_type": "hacker",
+  "tags": "hacker",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "производится проверка почтовых вложений с использованием сертифицированного средства антивирусной защиты с использованием функции «Защита от почтовых угроз»;",
+  "threat_type": "phishing",
+  "tags": "phishing,core",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "в целях идентификации отправителя производится проверка имени домена отправителя электронного письма;",
+  "threat_type": "phishing",
+  "tags": "phishing,core",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "Организовать получение почтовых вложений только от известных отправителей",
+  "threat_type": "phishing",
+  "tags": "phishing",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "работы с электронной почтой производятся только с учетных записей пользователей операционной системы с минимальными возможными привилегиями;",
+  "threat_type": "phishing",
+  "tags": "phishing,core",
+  "addr_inflection": false,
+  "source": "etalon"
+ },
+ {
+  "text": "на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;",
+  "threat_type": "phishing",
+  "tags": "phishing,core",
+  "addr_inflection": true,
+  "source": "etalon"
+ },
+ {
+  "text": "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям.",
+  "threat_type": "phishing",
+  "tags": "phishing,core",
+  "addr_inflection": false,
+  "source": "etalon"
+ }
 ]

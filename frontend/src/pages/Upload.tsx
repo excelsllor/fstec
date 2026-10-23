@@ -21,6 +21,8 @@ import { useNavigate } from "react-router-dom";
 import { lettersApi } from "../api/client";
 
 const MAX_FILES = 10;
+const MAX_FILE_MB = 20;
+const ALLOWED_EXT = [".pdf", ".doc", ".docx", ".odt", ".xlsx", ".rtf", ".txt"];
 
 export default function Upload() {
   const navigate = useNavigate();
@@ -34,11 +36,21 @@ export default function Upload() {
     if (!incoming || incoming.length === 0) return;
     setError("");
     const arr = Array.from(incoming);
-    const next = [...files, ...arr].slice(-MAX_FILES);
-    setFiles(next);
-    if (files.length + arr.length > MAX_FILES) {
-      setError(`Максимум ${MAX_FILES} файлов за раз`);
+    const badExt = arr.filter((f) => !ALLOWED_EXT.some((e) => f.name.toLowerCase().endsWith(e)));
+    const tooBig = arr.filter((f) => f.size > MAX_FILE_MB * 1024 * 1024);
+    if (badExt.length) {
+      setError(`Недопустимый формат: ${badExt.map((f) => f.name).join(", ")}. Разрешены: ${ALLOWED_EXT.join(", ")}`);
+      return;
     }
+    if (tooBig.length) {
+      setError(`Файл больше ${MAX_FILE_MB} МБ: ${tooBig.map((f) => f.name).join(", ")}`);
+      return;
+    }
+    const next = [...files, ...arr];
+    if (next.length > MAX_FILES) {
+      setError(`Максимум ${MAX_FILES} файлов за раз — лишние не добавлены`);
+    }
+    setFiles(next.slice(0, MAX_FILES));
   }, [files]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -101,7 +113,7 @@ export default function Upload() {
               Перетащите файлы сюда или нажмите для выбора
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              PDF, DOC, DOCX, XLSX, TXT, EML, HTML, RTF и другие форматы · до {MAX_FILES} файлов · до 20 МБ каждый
+              {ALLOWED_EXT.join(", ").toUpperCase()} · до {MAX_FILES} файлов · до {MAX_FILE_MB} МБ каждый
             </Typography>
           </Paper>
 

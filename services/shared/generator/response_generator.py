@@ -120,9 +120,6 @@ def generate_reply_text(
         lines.append("")
         lines.append(NO_RISK_TEXT)
 
-    lines.append("")
-    lines.append("С уважением,")
-    lines.append("Ответственное должностное лицо")
     return "\n".join(lines)
 
 

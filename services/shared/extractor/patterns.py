@@ -38,12 +38,23 @@ DOMAIN_OBFUSCATED = re.compile(
 DOMAIN_OBFUSCATED_PAREN = re.compile(
     r"([a-zA-Z0-9][a-zA-Z0-9\-]*(?:\(\.\)[a-zA-Z0-9][a-zA-Z0-9\-]*)+)"
 )
-DOMAIN_PLAIN = re.compile(r"\b((?:[a-zA-Z0-9][a-zA-Z0-9\-]*\.)+[a-zA-Z]{2,10})\b")
+DOMAIN_PLAIN = re.compile(r"(?<![-\w.])((?:[a-zA-Z0-9][a-zA-Z0-9\-]*\.)+[a-zA-Z]{2,10})(?![-\w])")
 
 EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
 BDU_PATTERN = re.compile(r"(?:BDU|БДУ)[:\s]*\s*(\d{4}-\d{3,6})", re.IGNORECASE)
 CVE_PATTERN = re.compile(r"\b(CVE-\d{4}-\d{4,7})\b", re.IGNORECASE)
+
+_ID_BDU_SPLIT = re.compile(r"(?i)((?:BDU|БДУ)[:\s]*\d{4})\s*[-–]\s*(\d{3,6})")
+_ID_CVE_SPLIT = re.compile(r"(?i)\b(CVE)\s*[-–]?\s*(\d{4})\s*[-–]?\s*(\d{4,7})\b")
+
+
+def normalize_vuln_ids(text: str) -> str:
+    """Склеивает идентификаторы, разорванные переносом строки/пробелом:
+    «BDU:2026-\\n10606» → «BDU:2026-10606», «CVE-2024-\\n1234» → «CVE-2024-1234»."""
+    text = _ID_BDU_SPLIT.sub(r"\1-\2", text)
+    text = _ID_CVE_SPLIT.sub(r"\1-\2-\3", text)
+    return text
 
 VDB_URL_PATTERN = re.compile(
     r"(?:https?://)?(?:www\.)?"

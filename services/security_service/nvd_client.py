@@ -1,10 +1,12 @@
-"""Клиент NVD API v2 (ТЗ 2.4): CVSS (v3.1 → v3.0 → v2), CPE + уязвимые диапазоны, references.
+﻿"""Клиент NVD API v2 (ТЗ 2.4): CVSS (v3.1 → v3.0 → v2), CPE + уязвимые диапазоны, references.
 Ретраи ≤3 (resilience), кэш Redis→memory (cache), суммарный таймаут ≤15 с (KPI ТЗ 1.4)."""
 import logging
 
 import httpx
 
-from security_service.cache import Cache, MemoryCache
+from security_service.http_pool import get_client
+
+from security_service.cache import EMPTY, Cache, MemoryCache
 from security_service.enriched import EnrichedVuln
 from security_service.resilience import retry_async
 from security_service.versioning import build_range
@@ -74,10 +76,12 @@ class NVDClient:
     async def _fetch(self, cve_id: str) -> dict | None:
         headers = {"X-Api-Key": self.api_key} if self.api_key else {}
         url = f"{self.base_url}/rest/json/cves/2.0"
-        kwargs = {"timeout": httpx.Timeout(10.0, connect=5.0)}
         if self.transport is not None:
-            kwargs["transport"] = self.transport
-        async with httpx.AsyncClient(**kwargs) as client:
+            kwargs = {"timeout": httpx.Timeout(10.0, connect=5.0), "transport": self.transport}
+            async with httpx.AsyncClient(**kwargs) as client:
+                resp = await client.get(url, params={"cveId": cve_id}, headers=headers)
+        else:
+            client = get_client("nvd", timeout=10.0, connect=5.0)
             resp = await client.get(url, params={"cveId": cve_id}, headers=headers)
         if resp.status_code == 404 or resp.status_code >= 500:
             return None
@@ -93,7 +97,7 @@ class NVDClient:
         key = f"nvd:{cve_id}"
         cached = await self.cache.get(key)
         if cached is not None:
-            if not cached:
+            if cached is EMPTY or not cached:
                 return None
             return EnrichedVuln(**{k: cached[k] for k in cached if k in EnrichedVuln.__dataclass_fields__})
 

@@ -13,6 +13,12 @@ services:
       - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
       - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_CFG_NUM_PARTITIONS=${FSTEC_KAFKA_PARTITIONS:-12}
+      - KAFKA_CFG_DEFAULT_REPLICATION_FACTOR=${FSTEC_KAFKA_REPLICATION_FACTOR:-1}
+      - KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=1
       - ALLOW_PLAINTEXT_LISTENER=yes
     ports:
       - "127.0.0.1:9092:9092"
@@ -104,6 +110,26 @@ services:
       FSTEC_DISABLE_DOCS: "1"
       FSTEC_DATA_DIR: /app/data
       FSTEC_GATEWAY_PORT: "8666"
+      # LLM-план ответа: /reply/generate вызывает plan_reply -> llm_service.provider.get_provider().
+      # Без vllm-провайдера план молча деградирует до шаблона (plan_json.llm = false).
+      FSTEC_LLM_PROVIDER: ${FSTEC_LLM_PROVIDER:-vllm}
+      VLLM_BASE_URL: ${VLLM_BASE_URL:-http://vllm:8000/v1}
+      VLLM_MODEL: ${VLLM_MODEL:-Qwen3.5-9B}
+      FSTEC_LLM_TIMEOUT_S: ${FSTEC_LLM_TIMEOUT_S:-300}
+      # Этап 4 — bounded concurrency. Один консьюмер читает столько партиций,
+      # сколько ему назначено, поэтому реальный параллелизм упирается в число
+      # партиций (FSTEC_KAFKA_PARTITIONS), а BUS_CONCURRENCY — жёсткий потолок.
+      FSTEC_BUS_CONCURRENCY: ${FSTEC_BUS_CONCURRENCY:-8}
+      FSTEC_BUS_BATCH: ${FSTEC_BUS_BATCH:-100}
+      FSTEC_KAFKA_PARTITIONS: ${FSTEC_KAFKA_PARTITIONS:-12}
+      FSTEC_KAFKA_GROUP: ${FSTEC_KAFKA_GROUP:-fstec}
+      # Пул БД: обработчики держат сессию во время ожидания vLLM.
+      FSTEC_DB_POOL_SIZE: ${FSTEC_DB_POOL_SIZE:-10}
+      FSTEC_DB_MAX_OVERFLOW: ${FSTEC_DB_MAX_OVERFLOW:-20}
+      # CMDB/GLPI: gateway использует для вкладки «Диагностика», security — для инвентаря ПО
+      CMDB_PROVIDER: ${CMDB_PROVIDER:-rest}
+      GLPI_URL: ${GLPI_URL:-}
+      GLPI_API: ${GLPI_API:-v1}
     volumes:
       - data:/app/data
     ports:
@@ -130,6 +156,9 @@ services:
       FSTEC_OCR_ENABLED: ${FSTEC_OCR_ENABLED:-true}
       FSTEC_OCR_ENGINE: ${FSTEC_OCR_ENGINE:-paddle}
       FSTEC_OCR_DEVICE: ${FSTEC_OCR_DEVICE:-gpu}
+    # Разбор файлов и OCR — тяжёлые блокирующие операции; они выполняются в
+    # пуле потоков (shared.concurrency.run_blocking), поэтому несколько писем
+    # разбираются одновременно и не блокируют приём событий.
     command: ["python", "-m", "ingest_service.worker"]
     volumes:
       - data:/app/data
@@ -153,6 +182,17 @@ services:
       VLLM_MODEL: ${VLLM_MODEL:-Qwen3.5-9B}
       FSTEC_RUBERT_MODEL: ${FSTEC_RUBERT_MODEL:-DeepPavlov/rubert-base-cased-conversational}
       FSTEC_RUBERT_DEVICE: ${FSTEC_RUBERT_DEVICE:-cpu}
+      # Потолок одновременных запросов в vLLM. Держим его на уровне, который
+      # реально переваривает T4 (measured AWQ: concurrency 10-12), иначе
+      # очередь запросов в vLLM растёт и p99 взлетает.
+      FSTEC_LLM_CONCURRENCY: ${FSTEC_LLM_CONCURRENCY:-8}
+      FSTEC_LLM_POOL_MAX: ${FSTEC_LLM_POOL_MAX:-16}
+      FSTEC_LLM_WARMUP_ENABLED: ${FSTEC_LLM_WARMUP_ENABLED:-1}
+      FSTEC_LLM_WARMUP_INTERVAL_S: ${FSTEC_LLM_WARMUP_INTERVAL_S:-300}
+      FSTEC_LLM_WARMUP_TIMEOUT_S: ${FSTEC_LLM_WARMUP_TIMEOUT_S:-60}
+      FSTEC_BUS_CONCURRENCY: ${FSTEC_LLM_BUS_CONCURRENCY:-10}
+      FSTEC_DB_POOL_SIZE: ${FSTEC_LLM_DB_POOL_SIZE:-12}
+      FSTEC_DB_MAX_OVERFLOW: ${FSTEC_LLM_DB_MAX_OVERFLOW:-20}
     command: ["python", "-m", "llm_service.worker"]
     volumes:
       - data:/app/data
@@ -176,6 +216,24 @@ services:
       CMDB_AUTH_TYPE: ${CMDB_AUTH_TYPE:-none}
       CMDB_AUTH_TOKEN: ${CMDB_AUTH_TOKEN:-}
       CMDB_TIMEOUT_S: ${CMDB_TIMEOUT_S:-5}
+      # GLPI как CMDB (CMDB_PROVIDER=glpi)
+      GLPI_AUTH: ${GLPI_AUTH:-basic}
+      GLPI_USERNAME: ${GLPI_USERNAME:-}
+      GLPI_PASSWORD: ${GLPI_PASSWORD:-}
+      GLPI_USER_TOKEN: ${GLPI_USER_TOKEN:-}
+      GLPI_CLIENT_ID: ${GLPI_CLIENT_ID:-}
+      GLPI_CLIENT_SECRET: ${GLPI_CLIENT_SECRET:-}
+      GLPI_SCOPE: ${GLPI_SCOPE:-api}
+      GLPI_APP_TOKEN: ${GLPI_APP_TOKEN:-}
+      GLPI_TIMEOUT_S: ${GLPI_TIMEOUT_S:-8}
+      GLPI_MAX_SOFTWARE: ${GLPI_MAX_SOFTWARE:-5}
+      GLPI_MAX_VERSIONS: ${GLPI_MAX_VERSIONS:-25}
+      # Воркер обрабатывает несколько писем одновременно; внутри каждого письма
+      # уязвимости обогащаются пачками по этому лимиту, чтобы не ловить 429 от NVD.
+      FSTEC_SECURITY_CONCURRENCY: ${FSTEC_SECURITY_CONCURRENCY:-6}
+      FSTEC_SECURITY_POOL_MAX: ${FSTEC_SECURITY_POOL_MAX:-12}
+      FSTEC_BUS_CONCURRENCY: ${FSTEC_SECURITY_BUS_CONCURRENCY:-6}
+      FSTEC_DB_POOL_SIZE: ${FSTEC_SECURITY_DB_POOL_SIZE:-10}
     command: ["python", "-m", "security_service.worker"]
     volumes:
       - data:/app/data
@@ -188,6 +246,19 @@ services:
     environment:
       <<: *base-env
       FSTEC_ORG_NAME: ${FSTEC_ORG_NAME:-Правительства Липецкой области}
+      # Тот же LLM-план, что и в gateway: worker строит проект ответа через
+      # templated_reply.generate_reply -> plan_reply. Без провайдера — шаблон.
+      FSTEC_LLM_PROVIDER: ${FSTEC_LLM_PROVIDER:-vllm}
+      VLLM_BASE_URL: ${VLLM_BASE_URL:-http://vllm:8000/v1}
+      VLLM_MODEL: ${VLLM_MODEL:-Qwen3.5-9B}
+      FSTEC_LLM_TIMEOUT_S: ${FSTEC_LLM_TIMEOUT_S:-300}
+      # Планирование ответа держит и сессию БД, и ожидание vLLM — пул и
+      # конкурентность согласованы с llm-service, иначе reporting станет узким
+      # местом пайплайна.
+      FSTEC_LLM_CONCURRENCY: ${FSTEC_LLM_CONCURRENCY:-8}
+      FSTEC_BUS_CONCURRENCY: ${FSTEC_REPORTING_BUS_CONCURRENCY:-10}
+      FSTEC_DB_POOL_SIZE: ${FSTEC_REPORTING_DB_POOL_SIZE:-12}
+      FSTEC_DB_MAX_OVERFLOW: ${FSTEC_REPORTING_DB_MAX_OVERFLOW:-20}
     command: ["python", "-m", "reporting_service.worker"]
     volumes:
       - data:/app/data

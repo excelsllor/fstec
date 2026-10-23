@@ -19,6 +19,8 @@ import {
   DialogContent,
   DialogActions,
   Typography,
+  Alert,
+  Snackbar,
 } from "@mui/material";
 import {
   Visibility as ViewIcon,
@@ -47,12 +49,16 @@ const statusLabels: Record<string, string> = {
   analyzed: "Проанализирован",
   assessed: "Оценён",
   completed: "Отчёт сформирован",
+  failed: "Ошибка обработки",
+  deleted: "Удалено",
 };
 
 export default function LetterList() {
   const navigate = useNavigate();
   const [letters, setLetters] = useState<LetterListItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [filterType, setFilterType] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
   const [search, setSearch] = useState("");
@@ -60,6 +66,7 @@ export default function LetterList() {
 
   const PAGE_SIZE = 25;
   const [deleteIdState, setDeleteId] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -71,8 +78,9 @@ export default function LetterList() {
         limit: PAGE_SIZE,
       });
       setLetters(data);
-    } catch (err) {
-      console.error((err as Error)?.message || "Error");
+      setError("");
+    } catch (err: any) {
+      setError(err.response?.data?.detail || (err as Error)?.message || "Не удалось загрузить письма");
     } finally {
       setLoading(false);
     }
@@ -81,18 +89,23 @@ export default function LetterList() {
   useEffect(() => { load(); }, [filterType, filterStatus, page]);
 
   const filtered = letters.filter((l) => {
-    if (search && !l.letter_number.includes(search)) return false;
+    if (search && !(l.letter_number || "").toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
 
   const handleDelete = async () => {
     if (deleteIdState === null) return;
+    setDeleting(true);
     try {
       await lettersApi.delete(deleteIdState);
       setDeleteId(null);
+      setNotice("Письмо удалено из списков (данные сохранены для аудита)");
       load();
-    } catch (err) {
-      console.error((err as Error)?.message || "Error");
+    } catch (err: any) {
+      setDeleteId(null);
+      setError(err.response?.data?.detail || (err as Error)?.message || "Не удалось удалить письмо");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -141,6 +154,7 @@ export default function LetterList() {
           <MenuItem value="analyzed">Проанализирован</MenuItem>
           <MenuItem value="assessed">Оценён</MenuItem>
           <MenuItem value="completed">Отчёт сформирован</MenuItem>
+          <MenuItem value="failed">Ошибка обработки</MenuItem>
         </TextField>
         <Box sx={{ ml: "auto", display: "flex", alignItems: "center", gap: 1 }}>
           <Button size="small" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
@@ -152,6 +166,10 @@ export default function LetterList() {
           </Button>
         </Box>
       </Box>
+
+      {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>{error}</Alert>}
+      <Snackbar open={Boolean(notice)} autoHideDuration={5000} onClose={() => setNotice("")}
+                message={notice} anchorOrigin={{ vertical: "bottom", horizontal: "center" }} />
 
       <TableContainer component={Paper}>
         <Table>
@@ -218,11 +236,14 @@ export default function LetterList() {
       <Dialog open={deleteIdState !== null} onClose={() => setDeleteId(null)}>
         <DialogTitle>Удалить письмо?</DialogTitle>
         <DialogContent>
-          <Typography>Письмо и все связанные данные будут удалены безвозвратно.</Typography>
+          <Typography>
+            Письмо будет скрыто из списков и статистики. Файлы и данные сохраняются
+            для аудита (мягкое удаление).
+          </Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDeleteId(null)}>Отмена</Button>
-          <Button color="error" onClick={handleDelete}>Удалить</Button>
+          <Button color="error" onClick={handleDelete} disabled={deleting}>Удалить</Button>
         </DialogActions>
       </Dialog>
     </Box>

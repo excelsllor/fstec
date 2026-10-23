@@ -28,6 +28,10 @@ import {
   AccordionDetails,
   TextField,
   Divider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from "@mui/material";
 import {
   ArrowBack as BackIcon,
@@ -41,6 +45,7 @@ import {
   documentsApi,
   type LetterResponse,
   type IoCResponse,
+  type ThreatResponse,
   type VulnerabilityResponse,
 } from "../api/client";
 
@@ -92,6 +97,35 @@ const sourceLabels: Record<string, string> = {
   manual: "Вручную",
 };
 
+const letterTypeLabels: Record<string, string> = {
+  hacker: "Хакерская группировка",
+  compromise: "Компрометация",
+  vulnerability: "Уязвимости",
+  other: "Прочее",
+};
+
+const letterStatusLabels: Record<string, string> = {
+  uploaded: "Загружен",
+  parsed: "Текст извлечён",
+  analyzed: "Проанализирован",
+  assessed: "Оценён",
+  completed: "Отчёт сформирован",
+  failed: "Ошибка обработки",
+  deleted: "Удалено",
+};
+
+const entityTypeLabels: Record<string, string> = {
+  organization: "Организация",
+  deadline: "Срок",
+  contact: "Контакт",
+};
+
+const applicabilityOptions = [
+  { value: "", label: "Не задано" },
+  { value: "true", label: "Применимо" },
+  { value: "false", label: "Не применимо" },
+];
+
 const actionTypeOptions = [
   {
     value: "",
@@ -100,8 +134,13 @@ const actionTypeOptions = [
   },
   {
     value: "update",
-    label: "Обновление",
+    label: "Обновление ПО",
     desc: "Форсировать фразу об обновлении программного обеспечения до неуязвимой версии.",
+  },
+  {
+    value: "compensate",
+    label: "Компенсирующие меры",
+    desc: "Указать применение компенсирующих мер вместо обновления ПО.",
   },
   {
     value: "skip",
@@ -110,7 +149,7 @@ const actionTypeOptions = [
   },
   {
     value: "exclude",
-    label: "Исключить",
+    label: "Исключить из ответа",
     desc: "Полностью исключить уязвимость из ответа (BDU не упоминается).",
   },
 ];
@@ -172,14 +211,16 @@ export default function LetterDetail() {
   const [tab, setTab] = useState(0);
   const [loading, setLoading] = useState(true);
   const [snack, setSnack] = useState("");
+  const [loadError, setLoadError] = useState("");
 
   const load = async () => {
     setLoading(true);
     try {
       const { data } = await lettersApi.get(Number(id));
       setLetter(data);
-    } catch (err) {
-      console.error((err as Error)?.message || "Error");
+      setLoadError("");
+    } catch (err: any) {
+      setLoadError(err.response?.data?.detail || (err as Error)?.message || "Не удалось загрузить письмо");
     } finally {
       setLoading(false);
     }
@@ -272,7 +313,7 @@ export default function LetterDetail() {
   };
 
   if (loading) return <Typography>Загрузка...</Typography>;
-  if (!letter) return <Alert severity="error">Письмо не найдено</Alert>;
+  if (!letter) return <Alert severity="error">{loadError || "Письмо не найдено"}</Alert>;
 
   const riskSummary = categorizeRisks(letter.vulnerabilities);
 
@@ -322,7 +363,7 @@ export default function LetterDetail() {
       </Tabs>
 
       {tab === 0 && <InfoTab letter={letter} />}
-      {tab === 1 && <ThreatsTab letter={letter} />}
+      {tab === 1 && <ThreatsTab letter={letter} onSaved={load} />}
       {tab === 2 && <IocTab iocs={letter.iocs} onCopy={copyToClipboard} />}
       {tab === 3 && <VulnTab letter={letter} onSaved={load} />}
       {tab === 4 && <ResponseTab letter={letter} onGenerate={handleGenerate} />}
@@ -339,6 +380,8 @@ export default function LetterDetail() {
 }
 
 function InfoTab({ letter }: { letter: LetterResponse }) {
+  const summary = letter.summaries?.[0];
+  const entities = letter.entities || [];
   return (
     <Grid container spacing={2}>
       <Grid size={{ xs: 12, md: 6 }}>
@@ -348,11 +391,39 @@ function InfoTab({ letter }: { letter: LetterResponse }) {
             <TableBody>
               <TableRow><TableCell>Номер</TableCell><TableCell>{letter.letter_number || "—"}</TableCell></TableRow>
               <TableRow><TableCell>Дата</TableCell><TableCell>{letter.letter_date || "—"}</TableCell></TableRow>
-              <TableRow><TableCell>Тип</TableCell><TableCell>{letter.letter_type}</TableCell></TableRow>
-              <TableRow><TableCell>Статус</TableCell><TableCell>{letter.status}</TableCell></TableRow>
+              <TableRow>
+                <TableCell>Тип</TableCell>
+                <TableCell>{letterTypeLabels[letter.letter_type] || letter.letter_type}</TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell>Статус</TableCell>
+                <TableCell>
+                  <Chip size="small" variant="outlined"
+                        label={letterStatusLabels[letter.status] || letter.status} />
+                </TableCell>
+              </TableRow>
+              <TableRow><TableCell>SLA</TableCell><TableCell>{letter.sla === "critical" ? "Критичный" : "Обычный"}</TableCell></TableRow>
+              <TableRow><TableCell>Маршрут</TableCell><TableCell>{letter.routing === "infosec" ? "ИБ-подразделение" : "Общий"}</TableCell></TableRow>
               <TableRow><TableCell>Создано</TableCell><TableCell>{new Date(letter.created_at).toLocaleString("ru-RU")}</TableCell></TableRow>
             </TableBody>
           </Table>
+          {summary && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>Саммари (ТЗ 2.3)</Typography>
+              <Typography variant="body2">{summary.summary}</Typography>
+            </Box>
+          )}
+          {entities.length > 0 && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>Сущности (ТЗ 2.3.2)</Typography>
+              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+                {entities.map((e) => (
+                  <Chip key={e.id} size="small"
+                        label={`${entityTypeLabels[e.entity_type] || e.entity_type}: ${e.value}`} />
+                ))}
+              </Box>
+            </Box>
+          )}
         </Paper>
       </Grid>
       <Grid size={{ xs: 12, md: 6 }}>
@@ -400,17 +471,45 @@ function InfoTab({ letter }: { letter: LetterResponse }) {
   );
 }
 
-function ThreatsTab({ letter }: { letter: LetterResponse }) {
+function ThreatsTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => void }) {
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [editing, setEditing] = useState<ThreatResponse | null>(null);
+  const [measuresText, setMeasuresText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
   if (letter.threats.length === 0) {
     return <Alert severity="info">Угрозы не обнаружены</Alert>;
   }
+
+  const openMeasures = (t: ThreatResponse) => {
+    setEditing(t);
+    setMeasuresText(t.measures || "");
+    setError("");
+  };
+
+  const saveMeasures = async () => {
+    if (!editing) return;
+    setSaving(true);
+    try {
+      const measures = measuresText.split("\n").map((m) => m.trim()).filter(Boolean);
+      await lettersApi.updateThreatMeasures(letter.id, editing.id, measures);
+      setEditing(null);
+      if (onSaved) onSaved();
+    } catch (err: any) {
+      setError(err.response?.data?.detail || (err as Error)?.message || "Ошибка сохранения");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <Box>
       {letter.threats.map((t) => {
         const isExpanded = expanded === t.id;
         const threatText = threatOnlyText(t.description);
         const isLong = threatText.length > 500;
+        const measures = (t.measures || "").split("\n").map((m) => m.trim()).filter(Boolean);
         return (
         <Card key={t.id} sx={{ mb: 2 }}>
           <CardContent>
@@ -430,7 +529,7 @@ function ThreatsTab({ letter }: { letter: LetterResponse }) {
                 {isExpanded ? "Свернуть" : "Показать полностью"}
               </Button>
             )}
-            <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+            <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap", mb: 1 }}>
               {t.archive_name && (
                 <Typography variant="caption" color="text.secondary">
                   Архив: {t.archive_name}
@@ -442,10 +541,49 @@ function ThreatsTab({ letter }: { letter: LetterResponse }) {
                 </Typography>
               )}
             </Box>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
+              <Typography variant="subtitle2">Меры защиты ({measures.length})</Typography>
+              <Button size="small" onClick={() => openMeasures(t)}>Редактировать</Button>
+            </Box>
+            {measures.length > 0 ? (
+              <Box component="ul" sx={{ m: 0, pl: 3 }}>
+                {measures.map((m, i) => (
+                  <li key={i}><Typography variant="body2">{m}</Typography></li>
+                ))}
+              </Box>
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                Меры не заданы — будут подобраны при генерации ответа
+              </Typography>
+            )}
           </CardContent>
         </Card>
         );
       })}
+
+      <Dialog open={editing !== null} onClose={() => setEditing(null)} maxWidth="md" fullWidth>
+        <DialogTitle>Меры защиты — угроза #{editing?.number}</DialogTitle>
+        <DialogContent>
+          {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            По одной мере в строке. Пустой список — меры подбираются автоматически.
+          </Typography>
+          <TextField
+            multiline
+            minRows={8}
+            fullWidth
+            value={measuresText}
+            onChange={(e) => setMeasuresText(e.target.value)}
+            placeholder={"на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;"}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditing(null)}>Отмена</Button>
+          <Button variant="contained" onClick={saveMeasures} disabled={saving}>
+            {saving ? "Сохранение..." : "Сохранить"}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
@@ -496,14 +634,23 @@ function IocTab({ iocs, onCopy }: { iocs: IoCResponse[]; onCopy: (text: string) 
 }
 
 function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => void }) {
-  const [drafts, setDrafts] = useState<Record<number, { action_type: string; software: string }>>({});
+  const [drafts, setDrafts] = useState<Record<number, {
+    action_type: string; software: string;
+    applicability: string; applicability_notes: string; action_details: string;
+  }>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
   const [snack, setSnack] = useState("");
 
   useEffect(() => {
-    const initial: Record<number, { action_type: string; software: string }> = {};
+    const initial: typeof drafts = {};
     for (const v of letter.vulnerabilities) {
-      initial[v.id] = { action_type: v.action_type, software: v.software };
+      initial[v.id] = {
+        action_type: v.action_type,
+        software: v.software,
+        applicability: v.is_applicable === true ? "true" : v.is_applicable === false ? "false" : "",
+        applicability_notes: v.applicability_notes || "",
+        action_details: v.action_details || "",
+      };
     }
     setDrafts(initial);
   }, [letter]);
@@ -512,8 +659,14 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
     return <Alert severity="info">Уязвимости не обнаружены</Alert>;
   }
 
-  const updateDraft = (id: number, patch: Partial<{ action_type: string; software: string }>) => {
-    setDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] || { action_type: "", software: "" }), ...patch } }));
+  const updateDraft = (id: number, patch: Partial<{
+    action_type: string; software: string;
+    applicability: string; applicability_notes: string; action_details: string;
+  }>) => {
+    setDrafts((prev) => ({
+      ...prev,
+      [id]: { ...(prev[id] || { action_type: "", software: "", applicability: "", applicability_notes: "", action_details: "" }), ...patch },
+    }));
   };
 
   const handleSave = async (id: number) => {
@@ -524,6 +677,9 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
       await lettersApi.updateVulnerability(letter.id, id, {
         action_type: d.action_type,
         software: d.software,
+        is_applicable: d.applicability === "" ? null : d.applicability === "true",
+        applicability_notes: d.applicability_notes,
+        action_details: d.action_details,
       });
       setSnack("Уязвимость сохранена");
       if (onSaved) onSaved();
@@ -540,7 +696,10 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
         Настройки применяются при генерации DOCX («Сгенерировать заново» на вкладке «Ответ»).
       </Alert>
       {letter.vulnerabilities.map((v) => {
-        const d = drafts[v.id] || { action_type: v.action_type, software: v.software };
+        const d = drafts[v.id] || {
+          action_type: v.action_type, software: v.software,
+          applicability: "", applicability_notes: "", action_details: "",
+        };
         const opt = actionTypeOptions.find((o) => o.value === d.action_type);
         return (
           <Card key={v.id} sx={{ mb: 2 }}>
@@ -598,6 +757,25 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
                 </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <FormControl fullWidth size="small">
+                    <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5 }}>
+                      Применимость (ТЗ 2.4)
+                    </Typography>
+                    <Select
+                      value={d.applicability}
+                      onChange={(e) => updateDraft(v.id, { applicability: e.target.value })}
+                      displayEmpty
+                    >
+                      {applicabilityOptions.map((o) => (
+                        <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <FormControl fullWidth size="small">
+                    <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5 }}>
+                      Действие по уязвимости
+                    </Typography>
                     <Select
                       value={d.action_type}
                       onChange={(e) => updateDraft(v.id, { action_type: e.target.value })}
@@ -614,6 +792,28 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
                       </Typography>
                     )}
                   </FormControl>
+                </Grid>
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <TextField
+                    label="Детали действия"
+                    value={d.action_details}
+                    onChange={(e) => updateDraft(v.id, { action_details: e.target.value })}
+                    size="small"
+                    fullWidth
+                    placeholder="Например: обновить до версии 2.17.0 до 01.06.2026"
+                  />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <TextField
+                    label="Примечания по применимости"
+                    value={d.applicability_notes}
+                    onChange={(e) => updateDraft(v.id, { applicability_notes: e.target.value })}
+                    size="small"
+                    fullWidth
+                    multiline
+                    minRows={1}
+                    placeholder="Почему уязвимость применима/не применима (версия, конфигурация и т.п.)"
+                  />
                 </Grid>
               </Grid>
               <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 2 }}>
@@ -759,9 +959,21 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
     try {
       const { data } = await lettersApi.getResponsePreview(letter.id);
       setPreview(data);
-      setEditText(buildText(data));
-    } catch (err) {
-      console.error((err as Error)?.message || "Error");
+      let savedText = "";
+      try {
+        const saved = await lettersApi.getResponseText(letter.id);
+        if (saved.data?.exists && saved.data.text) {
+          savedText = saved.data.text;
+        }
+      } catch {
+        savedText = "";
+      }
+      setEditText(savedText || buildText(data));
+      if (savedText) {
+        setSnack("Загружена сохранённая версия ответа");
+      }
+    } catch (err: any) {
+      setSnack("Ошибка: " + (err.response?.data?.detail || "не удалось загрузить ответ"));
     } finally {
       setLoading(false);
     }

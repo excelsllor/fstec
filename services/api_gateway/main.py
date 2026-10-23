@@ -28,8 +28,9 @@ from shared.auth import (
     hash_password, mark_bootstrap_used, needs_setup, require_admin, verify_password,
 )
 from shared.config import (
-    ALLOWED_EXTENSIONS, BOOTSTRAP_USERNAME, CORS_ORIGINS, DISABLE_DOCS,
-    MAX_FILE_SIZE, MAX_FILES_PER_BATCH, ORG_NAME, UPLOAD_DIR,
+    ALLOWED_EXTENSIONS, BOOTSTRAP_PASSWORD, BOOTSTRAP_USERNAME, CORS_ORIGINS,
+    DATA_DIR, DISABLE_DOCS, MAX_FILE_SIZE, MAX_FILES_PER_BATCH,
+    MIN_PASSWORD_LENGTH, ORG_NAME, UPLOAD_DIR,
 )
 from shared.db import SessionLocal, get_db, init_db
 from shared.events import DocumentsUploaded
@@ -171,8 +172,11 @@ def _owned_document(db: Session, user: User, doc_id: int,
 
 
 def _scoped_documents(db: Session, user: User):
-    """Базовый запрос документов с учётом объектной авторизации."""
-    query = db.query(Document)
+    """Базовый запрос документов с учётом объектной авторизации.
+
+    Удалённые письма (status='deleted') не попадают в списки и статистику.
+    """
+    query = db.query(Document).filter(Document.status != "deleted")
     if user.role != "admin":
         query = query.filter(Document.created_by == user.id)
     return query
@@ -190,6 +194,8 @@ def login(body: dict, request: Request, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == username).first()
     if not user or not verify_password(password, user.password_hash):
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+    if not user.is_active:
+        raise HTTPException(status_code=401, detail="Учётная запись отключена")
     if user.username == BOOTSTRAP_USERNAME:
         mark_bootstrap_used(db)
     _audit(db, user, "login", "user", user.id, request=request)
@@ -200,14 +206,136 @@ def login(body: dict, request: Request, db: Session = Depends(get_db)):
 
 @app.get("/api/auth/status")
 def auth_status(db: Session = Depends(get_db)):
+    """Статус первичной инициализации. Пока bootstrap-админ не вошёл ни разу,
+    экран входа показывает его одноразовые учётные данные (ТЗ: доступ один раз)."""
     setup = needs_setup(db)
-    return {"needs_setup": setup}
+    payload = {"needs_setup": setup}
+    if setup:
+        password = None
+        source = "file"
+        if BOOTSTRAP_PASSWORD:
+            source = "env"
+        else:
+            try:
+                path = Path(DATA_DIR) / "bootstrap_password.txt"
+                if path.exists():
+                    password = path.read_text(encoding="utf-8").strip() or None
+            except OSError:
+                password = None
+        payload.update({"bootstrap_username": BOOTSTRAP_USERNAME,
+                        "bootstrap_password": password,
+                        "bootstrap_source": source})
+    return payload
 
 
 @app.get("/api/auth/me")
 def auth_me(user: User = Depends(get_current_user)):
     return {"id": user.id, "username": user.username, "role": user.role,
-            "full_name": user.full_name, "is_active": user.is_active}
+            "full_name": user.full_name, "is_active": user.is_active,
+            "created_at": user.created_at}
+
+
+# ---------------- Users (admin, ТЗ 5: управление доступом) ----------------
+
+def _serialize_user(u: User) -> dict:
+    return {"id": u.id, "username": u.username, "role": u.role,
+            "full_name": u.full_name, "is_active": u.is_active,
+            "created_at": u.created_at}
+
+
+def _other_active_admins(db: Session, exclude_id: int) -> int:
+    return db.query(User).filter(
+        User.role == "admin", User.is_active.is_(True), User.id != exclude_id).count()
+
+
+def _validate_new_password(password: str) -> str:
+    pw = (password or "").strip()
+    if len(pw) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(status_code=400,
+                            detail=f"Пароль должен быть не короче {MIN_PASSWORD_LENGTH} символов")
+    return pw
+
+
+@app.get("/api/users")
+def users_list(db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    return [_serialize_user(u) for u in db.query(User).order_by(User.id).all()]
+
+
+@app.post("/api/users", status_code=201)
+def users_create(body: dict, request: Request, db: Session = Depends(get_db),
+                 user: User = Depends(require_admin)):
+    username = (body.get("username") or "").strip()
+    role = (body.get("role") or "user").strip()
+    full_name = (body.get("full_name") or "").strip()
+    if not username or len(username) > 100:
+        raise HTTPException(status_code=400, detail="Логин обязателен (до 100 символов)")
+    if role not in ("admin", "user"):
+        raise HTTPException(status_code=400, detail="Роль должна быть admin или user")
+    password = _validate_new_password(body.get("password") or "")
+    if db.query(User).filter(User.username == username).first():
+        raise HTTPException(status_code=409, detail="Пользователь с таким логином уже существует")
+    rec = User(username=username, password_hash=hash_password(password),
+               role=role, full_name=full_name[:200], is_active=True)
+    db.add(rec)
+    db.flush()
+    _audit(db, user, "create_user", "user", rec.id, request=request)
+    db.commit()
+    return _serialize_user(rec)
+
+
+@app.put("/api/users/{user_id}")
+def users_update(user_id: int, body: dict, request: Request,
+                 db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if body.get("full_name") is not None:
+        target.full_name = str(body["full_name"])[:200]
+    if body.get("role") is not None:
+        role = str(body["role"])
+        if role not in ("admin", "user"):
+            raise HTTPException(status_code=400, detail="Роль должна быть admin или user")
+        if (target.role == "admin" and role != "admin"
+                and target.is_active and _other_active_admins(db, target.id) == 0):
+            raise HTTPException(status_code=400, detail="Нельзя понизить последнего администратора")
+        target.role = role
+    if body.get("is_active") is not None:
+        active = bool(body["is_active"])
+        if (target.role == "admin" and not active
+                and _other_active_admins(db, target.id) == 0):
+            raise HTTPException(status_code=400, detail="Нельзя отключить последнего администратора")
+        if not active and target.id == user.id:
+            raise HTTPException(status_code=400, detail="Нельзя отключить собственную учётную запись")
+        target.is_active = active
+    if body.get("password"):
+        target.password_hash = hash_password(_validate_new_password(str(body["password"])))
+    _audit(db, user, "update_user", "user", target.id, request=request)
+    db.commit()
+    return _serialize_user(target)
+
+
+@app.delete("/api/users/{user_id}")
+def users_delete(user_id: int, request: Request, db: Session = Depends(get_db),
+                 user: User = Depends(require_admin)):
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if target.id == user.id:
+        raise HTTPException(status_code=400, detail="Нельзя удалить собственную учётную запись")
+    if (target.role == "admin" and target.is_active
+            and _other_active_admins(db, target.id) == 0):
+        raise HTTPException(status_code=400, detail="Нельзя удалить последнего администратора")
+    owned = db.query(Document).filter(Document.created_by == target.id).count()
+    if owned:
+        target.is_active = False
+        _audit(db, user, "deactivate_user", "user", target.id, request=request)
+        db.commit()
+        return {"id": target.id, "deleted": False, "deactivated": True,
+                "detail": f"У пользователя {owned} писем — учётная запись отключена"}
+    _audit(db, user, "delete_user", "user", target.id, request=request)
+    db.delete(target)
+    db.commit()
+    return {"id": user_id, "deleted": True, "deactivated": False}
 
 
 @app.get("/api/health")
@@ -620,6 +748,19 @@ def legacy_stats(db: Session = Depends(get_db), user: User = Depends(get_current
 def legacy_detail(letter_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
     return _serialize_document(db, doc)
+
+
+@app.delete("/api/letters/{letter_id}")
+def legacy_delete(letter_id: int, request: Request, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """Мягкое удаление письма: скрывается из списков/статистики, данные и файлы
+    сохраняются для аудита. Отозвать нельзя через API (только администратором БД)."""
+    doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
+    doc.status = "deleted"
+    doc.processing_stage = "deleted"
+    _audit(db, user, "delete_letter", "document", doc.id, document_id=doc.id, request=request)
+    db.commit()
+    return {"id": doc.id, "status": "deleted"}
 
 
 @app.get("/api/letters/{letter_id}/response/text")
@@ -1037,7 +1178,12 @@ def diagnostics(db: Session = Depends(get_db), user: User = Depends(require_admi
     # NVD отдаёт большой JSON; проверяем доступность корня API
     external.append({"name": "NVD (NIST)", "url": f"{NVD_API_BASE}/rest/json/cves/2.0?resultsPerPage=1",
                      **_probe_http(f"{NVD_API_BASE}/rest/json/cves/2.0?resultsPerPage=1", timeout=4.0)})
-    if CMDB_PROVIDER != "mock":
+    if CMDB_PROVIDER == "glpi":
+        from shared.config import GLPI_API, GLPI_URL
+        probe = (_probe_http(f"{GLPI_URL}/apirest.php/", timeout=4.0)
+                 if GLPI_API == "v1" else _probe_http(f"{GLPI_URL}/api.php/token", timeout=4.0))
+        external.append({"name": "GLPI (CMDB ПО)", "url": f"{GLPI_URL}/", **probe})
+    elif CMDB_PROVIDER != "mock":
         external.append({"name": "CMDB (rest)", "url": CMDB_ENDPOINT,
                          **_probe_http(CMDB_ENDPOINT, timeout=4.0)})
     else:
@@ -1109,18 +1255,63 @@ def diagnostics_ping(name: str | None = Query(default=None, max_length=64),
                         "error": gw["error"]}}
 
 
+def _bus_sqlite(db: Session) -> dict:
+    from sqlalchemy import text
+    total = db.execute(text("SELECT COUNT(*) FROM bus_message")).scalar() or 0
+    topics = db.execute(text(
+        "SELECT topic, COUNT(*) AS c, MAX(id) AS last_id FROM bus_message GROUP BY topic")).fetchall()
+    rows = [{"topic": t[0], "count": t[1], "last_id": t[2]} for t in topics]
+    return {"backend": "sqlite", "total": total, "topics": rows}
+
+
+def _bus_kafka() -> dict:
+    """Счётчики топиков Kafka: число сообщений (end offsets) и последний offset.
+
+    Лёгкий consumer без подписки — только метаданные и end offsets. Партиции
+    одной темы суммируются; служебные топики («__consumer_offsets») скрываются.
+    """
+    import asyncio
+
+    from shared.config import KAFKA_BOOTSTRAP
+
+    async def _collect() -> list:
+        from aiokafka import AIOKafkaConsumer, TopicPartition
+        consumer = AIOKafkaConsumer(bootstrap_servers=KAFKA_BOOTSTRAP,
+                                    client_id="fstec-diagnostics")
+        await consumer.start()
+        try:
+            topics = sorted(t for t in await consumer.topics() if not t.startswith("__"))
+            rows = []
+            for t in topics:
+                parts = consumer.partitions_for_topic(t) or set()
+                if not parts:
+                    continue
+                tps = [TopicPartition(t, p) for p in sorted(parts)]
+                ends = await consumer.end_offsets(tps)
+                vals = [int(v) for v in ends.values()]
+                rows.append({"topic": t, "count": sum(vals),
+                             "last_id": max(vals, default=0)})
+            return rows
+        finally:
+            await consumer.stop()
+
+    rows = asyncio.run(asyncio.wait_for(_collect(), timeout=6))
+    return {"backend": "kafka", "total": sum(r["count"] for r in rows), "topics": rows}
+
+
 @app.get("/api/diagnostics/bus")
 def diagnostics_bus(db: Session = Depends(get_db), user: User = Depends(require_admin)):
-    """Краткий статус очереди сообщений (dev: SQLite-таблица bus_message)."""
-    from sqlalchemy import text
+    """Статус очереди сообщений: Kafka (prod) / SQLite (dev-шина)."""
+    from shared.config import EVENT_BUS
     try:
-        total = db.execute(text("SELECT COUNT(*) FROM bus_message")).scalar() or 0
-        topics = db.execute(text(
-            "SELECT topic, COUNT(*) AS c, MAX(id) AS last_id FROM bus_message GROUP BY topic")).fetchall()
-        rows = [{"topic": t[0], "count": t[1], "last_id": t[2]} for t in topics]
-        return {"total": total, "topics": rows}
+        if EVENT_BUS == "kafka":
+            return _bus_kafka()
+        if EVENT_BUS == "sqlite":
+            return _bus_sqlite(db)
+        return {"backend": EVENT_BUS, "total": 0, "topics": [],
+                "error": "шина в памяти: счётчики не сохраняются"}
     except Exception as e:  # noqa: BLE001
-        return {"total": 0, "topics": [], "error": str(e)[:160]}
+        return {"backend": EVENT_BUS, "total": 0, "topics": [], "error": str(e)[:160]}
 
 
 if __name__ == "__main__":

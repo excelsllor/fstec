@@ -155,7 +155,7 @@ class Vulnerability(Base):
     cvss_score = Column(Float, nullable=True)
     cvss_version = Column(String(20), default="")
     cpe = Column(String(500), default="")
-    affected_range = Column(String(200), default="")
+    affected_range = Column(Text, default="")
     fixed_version = Column(String(100), default="")
     patch_url = Column(String(1000), default="")
     cmdb_match = Column(Boolean, default=False)

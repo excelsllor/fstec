@@ -1,4 +1,4 @@
-"""Клиент BDU ФСТЭК (bdu.fstec.ru, ТЗ 2.4). Публичного стабильного JSON-API нет.
+﻿"""Клиент BDU ФСТЭК (bdu.fstec.ru, ТЗ 2.4). Публичного стабильного JSON-API нет.
 
 Живая интеграция (проверено вручную, 2026):
 - GET /vul/print/{id} -- серверный рендер страницы уязвимости; 404 для несуществующих id.
@@ -16,11 +16,12 @@ import re
 
 import httpx
 
-from security_service.cache import Cache, MemoryCache
+from security_service.cache import EMPTY, Cache, MemoryCache
 from security_service.enriched import EnrichedVuln
+from security_service.http_pool import get_client
 from security_service.resilience import retry_async
 from security_service.versioning import build_range
-from shared.config import BDU_API_BASE, BDU_TLS_INSECURE_FALLBACK, SECURITY_CACHE_TTL_S
+from shared.config import BDU_API_BASE, BDU_TLS_INSECURE_FALLBACK, BDU_USER_AGENT, SECURITY_CACHE_TTL_S
 
 logger = logging.getLogger("fstec.security.bdu")
 
@@ -91,13 +92,23 @@ class BDUClient:
         return None
 
     async def _fetch_once(self, url: str, bdu_id: str, verify: bool) -> str | None:
-        kwargs: dict = {"timeout": httpx.Timeout(10.0, connect=5.0), "follow_redirects": True}
-        if not verify:
-            kwargs["verify"] = False
-        if self.transport is not None:
-            kwargs["transport"] = self.transport
-        async with httpx.AsyncClient(**kwargs) as client:
-            resp = await client.get(url, params={"unid": bdu_id})
+        # Без браузерного User-Agent bdu.fstec.ru отвечает 403.
+        headers = {"User-Agent": BDU_USER_AGENT}
+        if self.transport is not None or not verify:
+            # verify задаётся на уровне клиента, поэтому менять его per-request
+            # нельзя: для оффлайн-тестов (transport) и небезопасного fallback
+            # оставляем одноразовый клиент. Основной защищённый путь — pooled.
+            kwargs: dict = {"timeout": httpx.Timeout(10.0, connect=5.0),
+                            "follow_redirects": True}
+            if not verify:
+                kwargs["verify"] = False
+            if self.transport is not None:
+                kwargs["transport"] = self.transport
+            async with httpx.AsyncClient(**kwargs) as client:
+                resp = await client.get(url, params={"unid": bdu_id}, headers=headers)
+        else:
+            client = get_client("bdu", timeout=10.0)
+            resp = await client.get(url, params={"unid": bdu_id}, headers=headers)
         if resp.status_code in (404, 500, 502, 503, 504):
             return None
         resp.raise_for_status()
@@ -159,7 +170,7 @@ class BDUClient:
         key = f"bdu:{bdu_id}"
         cached = await self.cache.get(key)
         if cached is not None:
-            if not cached:
+            if cached is EMPTY or not cached:
                 return None
             return EnrichedVuln(**{k: cached[k] for k in cached if k in EnrichedVuln.__dataclass_fields__})
 

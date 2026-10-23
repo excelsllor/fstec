@@ -73,7 +73,8 @@ def test_full_pipeline(tmp_path):
         resp = db.query(GeneratedResponse).filter(GeneratedResponse.document_id == doc_id) \
             .order_by(GeneratedResponse.id.desc()).first()
         assert resp is not None
-        assert "обновление" in resp.content.lower()
+        assert "BDU:2024-12345" in resp.content
+        assert "С уважением" not in resp.content
 
 
 def test_no_threat_document(tmp_path):

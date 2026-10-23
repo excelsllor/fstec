@@ -51,6 +51,11 @@ def test_ipv6_full():
     assert r.ips == []
 
 
+def test_ipv6_unspecified_ignored():
+    r = extract_iocs('Сокет "::" в конфигурации')
+    assert "::" not in r.ipv6
+
+
 def test_obfuscated_domain():
     r = extract_iocs("C2 server: evil[.]com")
     assert "evil.com" in r.domains
@@ -60,6 +65,11 @@ def test_email_and_domain():
     r = extract_iocs("Contact: bad@evil.com")
     assert "bad@evil.com" in r.emails
     assert "evil.com" in r.domains
+
+
+def test_obfuscated_email():
+    r = extract_iocs("Письма с адреса info@fsb[.]msk[.]su необходимо ограничить")
+    assert "info@fsb.msk.su" in r.emails
 
 
 def test_cve_bdu():

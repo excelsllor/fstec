@@ -13,7 +13,9 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from shared.config import BUS_POLL_S, DB_PATH, EVENT_BUS, KAFKA_BOOTSTRAP
+from shared.config import (BUS_BATCH, BUS_CONCURRENCY, BUS_POLL_S, DB_PATH,
+                            EVENT_BUS, KAFKA_BOOTSTRAP, KAFKA_CONSUMER_GROUP)
+from shared.concurrency import gate
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,11 @@ class SqliteEventBus(EventBus):
     подписке как INSERT OR IGNORE на максимальный id → рестарт воркера не
     переигрывает уже обработанное, а сообщения, пришедшие пока воркер был
     остановлен, доставляются после его перезапуска.
+
+    Этап 4: BUS_CONCURRENCY > 1 обрабатывает сообщения пачки параллельно, но
+    курсор по-прежнему сдвигается только после завершения ВСЕЙ пачки — при
+    перезапуске непрогнанное сообщение не теряется. Внутри одного сообщения
+    подписчики вызываются строго по порядку.
     """
 
     _SCHEMA = [
@@ -92,9 +99,12 @@ class SqliteEventBus(EventBus):
             last_id INTEGER NOT NULL DEFAULT 0)""",
     ]
 
-    def __init__(self, db_path: str | Path | None = None, poll_s: float | None = None):
+    def __init__(self, db_path: str | Path | None = None, poll_s: float | None = None,
+                 concurrency: int | None = None, batch: int | None = None):
         self._db_path = str(db_path or DB_PATH)
         self._poll_s = poll_s if poll_s is not None else BUS_POLL_S
+        self._concurrency = max(1, concurrency if concurrency is not None else BUS_CONCURRENCY)
+        self._batch = max(1, batch if batch is not None else BUS_BATCH)
         self._subscribers: dict[str, list[Handler]] = {}
         self._tasks: list[asyncio.Task] = []
         self._conn: sqlite3.Connection | None = None
@@ -159,13 +169,32 @@ class SqliteEventBus(EventBus):
             (topic, key, encoded, now))
         conn.commit()
 
-    async def _poll(self, topic: str, batch: int = 100) -> None:
+    async def _poll(self, topic: str, batch: int | None = None) -> None:
         while True:
             try:
-                await self._deliver(topic, batch)
+                await self._deliver(topic, batch or self._batch)
             except Exception:
                 logger.exception("sqlite bus poll failed topic=%s", topic)
             await asyncio.sleep(self._poll_s)
+
+    async def _dispatch(self, sem: asyncio.Semaphore | None, topic: str,
+                        key: str, data: dict) -> None:
+        """Одно сообщение: подписчики строго последовательно, но разные сообщения
+        могут идти одновременно (ограничение — семафор sem)."""
+        handlers = list(self._subscribers.get(topic, []))
+        if sem is None:
+            for handler in handlers:
+                try:
+                    await handler(topic, key, data)
+                except Exception:
+                    logger.exception("sqlite bus handler failed on %s key=%s", topic, key)
+            return
+        async with sem:
+            for handler in handlers:
+                try:
+                    await handler(topic, key, data)
+                except Exception:
+                    logger.exception("sqlite bus handler failed on %s key=%s", topic, key)
 
     async def _deliver(self, topic: str, batch: int) -> None:
         def _fetch():
@@ -188,17 +217,25 @@ class SqliteEventBus(EventBus):
         if not rows:
             return
         max_id = last
+        decoded = []
         for rid, key, payload in rows:
             max_id = max(max_id, rid)
             try:
                 data = json.loads(payload) if payload else {}
             except Exception:
                 data = {}
-            for handler in list(self._subscribers.get(topic, [])):
-                try:
-                    await handler(topic, key or "", data)
-                except Exception:
-                    logger.exception("sqlite bus handler failed on %s key=%s", topic, key)
+            decoded.append((key or "", data))
+
+        # Курсор двигаем только после того, как вся пачка доставлена: иначе
+        # перезапуск воркера потерял бы сообщения, которые уже вычитали,
+        # но не успели обработать.
+        if self._concurrency <= 1:
+            for key, data in decoded:
+                await self._dispatch(None, topic, key, data)
+        else:
+            sem = gate(f"bus:{topic}", self._concurrency)
+            await asyncio.gather(*(self._dispatch(sem, topic, key, data)
+                                   for key, data in decoded))
         await self._loop.run_in_executor(None, _advance, max_id)
 
 
@@ -208,12 +245,24 @@ def datetime_now_iso() -> str:
 
 
 class KafkaEventBus(EventBus):
-    """Kafka-шина через aiokafka. Сообщения сериализуются в JSON."""
+    """Kafka-шина через aiokafka. Сообщения сериализуются в JSON.
 
-    def __init__(self, bootstrap: str = KAFKA_BOOTSTRAP):
+    Этап 4: BUS_CONCURRENCY ограничивает число одновременно обрабатываемых
+    сообщений топика. Реальная параллельность набирается за счёт партиций
+    (FSTEC_KAFKA_PARTITIONS): один консьюмер в группе получает столько партиций,
+    сколько ему назначено, и обрабатывает их батчами. Ключ сообщения —
+    document_id, поэтому все события одного документа попадают в одну партицию
+    и сохраняют порядок, а разные документы идут вразнобой.
+    """
+
+    def __init__(self, bootstrap: str = KAFKA_BOOTSTRAP, concurrency: int | None = None,
+                 group: str | None = None):
         self._bootstrap = bootstrap
+        self._concurrency = max(1, concurrency if concurrency is not None else BUS_CONCURRENCY)
+        self._group = group or KAFKA_CONSUMER_GROUP
         self._producer = None
         self._consumers: list[asyncio.Task] = []
+        self._subscribed: set[str] = set()
         self._started = False
 
     async def start(self):
@@ -239,36 +288,212 @@ class KafkaEventBus(EventBus):
             self._producer = None
 
     def subscribe(self, topic: str, handler: Handler) -> None:
+        # Один топик = ровно один консьюмер на процесс. Дублирующая подписка
+        # (повторный register_handlers/повторный вызов subscribe) создавала
+        # второго члена группы на тот же топик: группа получала 2 члена при
+        # 1 партиции, партиция уходила «пустому» консьюмеру -> обработка
+        # вставала навсегда.
+        if topic in self._subscribed:
+            logger.warning("already subscribed to %s; ignoring duplicate", topic)
+            return
+        self._subscribed.add(topic)
         loop = asyncio.get_event_loop()
         task = loop.create_task(self._run_consumer(topic, handler))
         self._consumers.append(task)
 
-    async def _run_consumer(self, topic: str, handler: Handler):
-        from aiokafka import AIOKafkaConsumer
-        consumer = AIOKafkaConsumer(
-            topic,
-            bootstrap_servers=self._bootstrap,
-            auto_offset_reset="earliest",
-            enable_auto_commit=True,
-            group_id=f"fstec-{topic}-consumer",
-            value_deserializer=lambda b: json.loads(b.decode("utf-8")),
-        )
-        await consumer.start()
+    async def _handle(self, sem: asyncio.Semaphore | None, handler: Handler, topic: str,
+                      key: str, value: dict) -> bool:
+        """True — обработка успешна (offset можно коммитить), False — нет."""
         try:
-            async for msg in consumer:
+            if sem is None:
+                await handler(topic, key, value)
+            else:
+                async with sem:
+                    await handler(topic, key, value)
+            return True
+        except Exception:
+            logger.exception("Kafka handler failed topic=%s", topic)
+            return False
+
+    async def _handle_and_commit(self, consumer, sem, handler: Handler, topic: str, msg) -> None:
+        from aiokafka import TopicPartition
+        key = msg.key.decode("utf-8") if isinstance(msg.key, bytes) else str(msg.key)
+        ok = await self._handle(sem, handler, topic, key, msg.value or {})
+        if not ok:
+            # НЕ коммитим offset: сообщение будет переобработано после
+            # ребалансировки/рестарта, вместо того чтобы потеряться.
+            logger.warning("offset not committed topic=%s key=%s (handler failed)", topic, key)
+            return
+        await consumer.commit({TopicPartition(msg.topic, msg.partition): msg.offset + 1})
+
+    async def _run_consumer(self, topic: str, handler: Handler):
+        from aiokafka import AIOKafkaConsumer, TopicPartition
+        import time
+        # Устойчивая схема: отдельный reader ТОЛЬКО опрашивает Kafka и кладёт
+        # сообщения в очередь, а фиксированный пул воркеров обрабатывает их и
+        # коммитит offset (контигуально). Раньше обработка шла в том же цикле,
+        # что и poll, и при медленных хендлерах poll «замирал» дольше
+        # max_poll_interval_ms -> CommitFailedError и вечные простои. Теперь poll
+        # никогда не блокируется обработкой.
+        while True:
+            consumer = AIOKafkaConsumer(
+                topic,
+                bootstrap_servers=self._bootstrap,
+                auto_offset_reset="earliest",
+                enable_auto_commit=False,
+                # Короткий session timeout: «зависшие»/убитые консьюмеры быстрее
+                # покидают группу, и PreparingRebalance не тянется бесконечно.
+                session_timeout_ms=30000,
+                heartbeat_interval_ms=3000,
+                max_poll_interval_ms=1800000,
+                group_id=f"{self._group}-{topic}-consumer",
+                value_deserializer=lambda b: json.loads(b.decode("utf-8")),
+            )
+            try:
+                await asyncio.wait_for(consumer.start(), timeout=60)
+            except asyncio.CancelledError:
+                # Обязательно закрываем: иначе частично стартовавший консьюмер
+                # остаётся живым членом группы (утечка) -> второй член при
+                # 1 партиции -> партиция уходит «пустому» -> вечный простой.
                 try:
-                    key = msg.key.decode("utf-8") if isinstance(msg.key, bytes) else str(msg.key)
-                    await handler(topic, key, msg.value or {})
+                    await asyncio.wait_for(consumer.stop(), timeout=10)
                 except Exception:
-                    logger.exception("Kafka handler failed topic=%s", topic)
-        finally:
-            await consumer.stop()
+                    pass
+                raise
+            except Exception:
+                logger.exception("Kafka consumer start failed for %s; retry in 3s", topic)
+                try:
+                    await asyncio.wait_for(consumer.stop(), timeout=10)
+                except Exception:
+                    logger.debug("cleanup after failed start timed out", exc_info=True)
+                await asyncio.sleep(3)
+                continue
+
+            queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
+            commit_lock = asyncio.Lock()
+            state: dict = {}  # tp -> {"next": int|None, "done": set[int]}
+
+            async def worker():
+                while True:
+                    msg = await queue.get()
+                    try:
+                        key = (msg.key.decode("utf-8") if isinstance(msg.key, bytes)
+                               else str(msg.key))
+                        ok = await self._handle(None, handler, topic, key, msg.value or {})
+                        if not ok:
+                            logger.warning("handler failed; offset not committed "
+                                           "topic=%s key=%s", topic, key)
+                            continue
+                        tp = TopicPartition(msg.topic, msg.partition)
+                        async with commit_lock:
+                            st = state.setdefault(tp, {"next": None, "done": set()})
+                            if st["next"] is None:
+                                st["next"] = msg.offset
+                            st["done"].add(msg.offset)
+                            advanced = False
+                            while st["next"] in st["done"]:
+                                st["done"].discard(st["next"])
+                                st["next"] += 1
+                                advanced = True
+                            if advanced:
+                                try:
+                                    await consumer.commit({tp: st["next"]})
+                                except Exception:
+                                    logger.debug("commit failed", exc_info=True)
+                    finally:
+                        queue.task_done()
+
+            workers = [asyncio.create_task(worker())
+                       for _ in range(max(1, self._concurrency))]
+            last_progress = time.time()
+            last_nudge = time.time()
+            try:
+                while True:
+                    try:
+                        batches = await asyncio.wait_for(
+                            consumer.getmany(timeout_ms=1000,
+                                             max_records=self._concurrency),
+                            timeout=15)
+                    except asyncio.TimeoutError:
+                        batches = {}
+                    got = 0
+                    for _tp, msgs in batches.items():
+                        for msg in msgs:
+                            try:
+                                queue.put_nowait(msg)
+                            except asyncio.QueueFull:
+                                raise RuntimeError("processing queue full; recycling")
+                            got += 1
+                    now = time.time()
+                    if got:
+                        last_progress = now
+                        last_nudge = now
+                    elif now - last_nudge > 3:
+                        logger.debug("reader %s fetch nudge idle=%.1fs", topic, now - last_progress)
+                        # Работа вокруг бага aiokafka: getmany отдаёт первую
+                        # пачку и затем не возвращает новые записи, пока не
+                        # выполнить seek. Переставляем позицию на текущую
+                        # (без leave/join и без утечек членов группы) — это
+                        # «толкает» следующий fetch. Без этого пайплайн
+                        # обрабатывал батч, затем простаивал ~5 мин.
+                        try:
+                            assigned = consumer.assignment()
+                            if not assigned:
+                                logger.warning("consumer for %s has no partition assigned", topic)
+                            for tp in assigned:
+                                pos = await asyncio.wait_for(
+                                    consumer.position(tp), timeout=5)
+                                consumer.seek(tp, pos)
+                        except Exception:
+                            logger.debug("fetch nudge failed", exc_info=True)
+                        last_nudge = now
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Kafka consumer for %s reconnecting: %s", topic, exc)
+            finally:
+                for w in workers:
+                    w.cancel()
+                # Жёсткие таймауты: иначе stop()/join воркеров могут
+                # зависнуть навсегда, reader встанет и консьюмер больше
+                # никогда не пересоздастся (тихий вечный простой).
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*workers, return_exceptions=True), timeout=10)
+                except Exception:
+                    logger.debug("worker join timed out", exc_info=True)
+                try:
+                    await asyncio.wait_for(consumer.stop(), timeout=10)
+                except Exception:
+                    logger.debug("consumer.stop() failed/timed out", exc_info=True)
+            await asyncio.sleep(2)
+
+    async def _ensure_started(self) -> None:
+        """Потокобезопасный ленивый старт продюсера.
+
+        Раньше publish делал `if not self._started: await self.start()`. При
+        параллельных запросах (напр. пакетная загрузка писем в api-gateway,
+        который не стартует шину на старте) несколько корутин одновременно
+        создавали AIOKafkaProducer, часть проходила через ещё не готовый
+        продюсер -> AttributeError '_producer_magic' (HTTP 500) и потеря
+        сообщений. Лок гарантирует единственный старт.
+        """
+        if self._started:
+            return
+        lock = getattr(self, "_start_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._start_lock = lock
+        async with lock:
+            if not self._started:
+                await self.start()
 
     async def publish(self, topic: str, key: str, payload: dict) -> None:
-        if not self._started:
-            await self.start()
-        await self._producer.send(topic, key=key.encode("utf-8"), value=payload)
-        await self._producer.flush()
+        await self._ensure_started()
+        # send_and_wait дожидается подтверждения брокера (в отличие от send()+flush(),
+        # который в aiokafka 0.11 в некоторых состояниях возвращался, не доставив
+        # запись — из-за этого ingest терял document.parsed).
+        await self._producer.send_and_wait(topic, key=key.encode("utf-8"), value=payload)
 
 
 _bus: EventBus | None = None

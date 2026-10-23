@@ -1,4 +1,4 @@
-"""CMDB Заказчика (Приложение 8): общий протокол инвентаря + REST-коннектор.
+﻿"""CMDB Заказчика (Приложение 8): общий протокол инвентаря + REST-коннектор.
 RestCMDB ходит в {CMDB_ENDPOINT}?query=..., auth none|bearer|basic, пагинация.
 Недоступность CMDB НЕ подменяется фейком: is error → external_errors (ТЗ 4.2)."""
 import logging
@@ -7,6 +7,7 @@ from typing import Protocol
 
 import httpx
 
+from security_service.http_pool import get_client
 from security_service.resilience import retry_async
 from shared.config import (CMDB_AUTH_TYPE, CMDB_ENDPOINT, CMDB_PROVIDER,
                            CMDB_TIMEOUT_S, CMDB_TOKEN)
@@ -51,10 +52,13 @@ class RestCMDB:
         return h
 
     async def _fetch_page(self, product: str, page: int) -> dict:
-        kwargs = {"timeout": self.timeout}
         if self.transport is not None:
-            kwargs["transport"] = self.transport
-        async with httpx.AsyncClient(**kwargs) as client:
+            kwargs = {"timeout": self.timeout, "transport": self.transport}
+            async with httpx.AsyncClient(**kwargs) as client:
+                resp = await client.get(self.endpoint, params={"query": product, "page": page},
+                                        headers=self._headers())
+        else:
+            client = get_client("cmdb", timeout=self.timeout)
             resp = await client.get(self.endpoint, params={"query": product, "page": page},
                                     headers=self._headers())
         resp.raise_for_status()
@@ -90,7 +94,14 @@ def _item_from_rest(r: dict) -> InventoryItem:
 
 
 def get_cmdb() -> InventoryClient:
-    """Фабрика по CMDB_PROVIDER: mock (dev, тот же протокол) | rest (реальная CMDB)."""
+    """Фабрика по CMDB_PROVIDER: mock (dev) | rest (внешняя CMDB) | glpi (инвентарь ПО GLPI)."""
+    if CMDB_PROVIDER == "glpi":
+        from shared.config import GLPI_URL
+        if not GLPI_URL:
+            logger.warning("CMDB_PROVIDER=glpi, но GLPI_URL не задан — используется mock")
+        else:
+            from security_service.glpi import GlpiCMDB
+            return GlpiCMDB()
     if CMDB_PROVIDER == "rest":
         return RestCMDB()
     from security_service.cmdb_mock import MockCMDB

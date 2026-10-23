@@ -15,6 +15,7 @@ import {
   TableHead,
   TableRow,
   Chip,
+  Alert,
 } from "@mui/material";
 import {
   Mail as MailIcon,
@@ -39,11 +40,21 @@ const typeColors: Record<string, "error" | "warning" | "info" | "default"> = {
   other: "default",
 };
 
+const statusLabels: Record<string, string> = {
+  uploaded: "Загружен",
+  parsed: "Текст извлечён",
+  analyzed: "Проанализирован",
+  assessed: "Оценён",
+  completed: "Отчёт сформирован",
+  failed: "Ошибка обработки",
+};
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [letters, setLetters] = useState<LetterListItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     const loadData = async () => {
@@ -51,8 +62,9 @@ export default function Dashboard() {
         const [statsRes, lettersRes] = await Promise.all([lettersApi.stats(), lettersApi.list()]);
         setStats(statsRes.data);
         setLetters(lettersRes.data);
-      } catch (err) {
-        console.error((err as Error)?.message || "Error loading dashboard");
+        setError("");
+      } catch (err: any) {
+        setError(err.response?.data?.detail || (err as Error)?.message || "Не удалось загрузить панель");
       } finally {
         setLoading(false);
       }
@@ -75,6 +87,8 @@ export default function Dashboard() {
           Загрузить письмо
         </Button>
       </Box>
+
+      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
       <Grid container spacing={2} sx={{ mb: 3 }}>
         {statCards.map((card) => (
@@ -130,7 +144,9 @@ export default function Dashboard() {
                       size="small"
                     />
                   </TableCell>
-                  <TableCell>{letter.status}</TableCell>
+                  <TableCell>
+                    <Chip label={statusLabels[letter.status] || letter.status} size="small" variant="outlined" />
+                  </TableCell>
                   <TableCell align="center">{letter.threat_count}</TableCell>
                   <TableCell align="center">{letter.ioc_count}</TableCell>
                   <TableCell align="center">{letter.vuln_count}</TableCell>

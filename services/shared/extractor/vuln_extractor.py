@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from shared.extractor.patterns import BDU_PATTERN, CVE_PATTERN, KNOWN_GROUPS
+from shared.extractor.patterns import BDU_PATTERN, CVE_PATTERN, KNOWN_GROUPS, normalize_vuln_ids
 
 # Соотносится со следующей фразой про исправление: «обновление до версии 2.17.0»
 _PATCH_SENTENCE = re.compile(
@@ -43,7 +43,7 @@ class VulnInfo:
 def extract_vulns(text: str, tables: list | None = None) -> list[VulnInfo]:
     results = []
     seen = set()
-    text = text.replace("\xa0", " ")
+    text = normalize_vuln_ids(text.replace("\xa0", " "))
 
     for m in BDU_PATTERN.finditer(text):
         bdu = f"BDU:{m.group(1)}"

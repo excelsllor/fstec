@@ -128,6 +128,9 @@ export interface VulnerabilityUpdateData {
   action_details?: string;
   response_point?: string;
   software?: string;
+  current_version?: string;
+  target_version?: string;
+  fixed_version?: string;
 }
 
 export interface SummaryResponse {

@@ -224,10 +224,10 @@ export default function LetterList() {
                   <TableCell align="center">{letter.vuln_count}</TableCell>
                   <TableCell>{new Date(letter.created_at).toLocaleDateString("ru-RU")}</TableCell>
                   <TableCell align="center">
-                    <IconButton size="small" onClick={() => navigate(`/letters/${letter.id}`)}>
+                    <IconButton size="small" aria-label="Открыть письмо" onClick={() => navigate(`/letters/${letter.id}`)}>
                       <ViewIcon fontSize="small" />
                     </IconButton>
-                    <IconButton size="small" onClick={() => setDeleteId(letter.id)}>
+                    <IconButton size="small" aria-label="Удалить письмо" onClick={() => setDeleteId(letter.id)}>
                       <DeleteIcon fontSize="small" />
                     </IconButton>
                   </TableCell>

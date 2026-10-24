@@ -71,7 +71,7 @@ export default function Layout() {
             </IconButton>
           )}
           <Box sx={{ flexGrow: 1 }} />
-          <IconButton onClick={(e) => setAnchorEl(e.currentTarget)} color="inherit">
+          <IconButton aria-label="Меню пользователя" onClick={(e) => setAnchorEl(e.currentTarget)} color="inherit">
             <Avatar sx={{ width: 32, height: 32, bgcolor: "secondary.main", fontSize: 14 }}>
               {user?.username?.[0]?.toUpperCase() || "U"}
             </Avatar>

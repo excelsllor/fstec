@@ -176,7 +176,7 @@ function categorizeRisks(vulns: VulnerabilityResponse[]) {
 const riskStyleMap: Record<RiskLevel, { bg: string; color: string; label: string }> = {
   red: { bg: "#c0392b", color: "#fff", label: "К" },
   yellow: { bg: "#f1c40f", color: "#000", label: "Ж" },
-  green: { bg: "#27ae60", color: "#fff", label: "З" },
+  green: { bg: "#dcfce7", color: "#14532d", label: "З" },
 };
 
 function RiskChip({ level, title }: { level: RiskLevel; title: string }) {
@@ -389,7 +389,7 @@ export default function LetterDetail() {
   return (
     <Box>
       <Box sx={{ display: "flex", alignItems: "center", mb: 2, gap: 1 }}>
-        <IconButton onClick={() => navigate("/letters")}>
+        <IconButton aria-label="Назад к списку писем" onClick={() => navigate("/letters")}>
           <BackIcon />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
@@ -687,7 +687,7 @@ function IocTab({ iocs, onCopy }: { iocs: IoCResponse[]; onCopy: (text: string) 
                     <TableRow key={ioc.id} hover>
                       <TableCell sx={{ fontFamily: "monospace" }}>{ioc.value}</TableCell>
                       <TableCell align="right">
-                        <IconButton size="small" onClick={() => onCopy(ioc.value)}>
+                        <IconButton size="small" aria-label={`Скопировать ${ioc.value}`} onClick={() => onCopy(ioc.value)}>
                           <CopyIcon fontSize="small" />
                         </IconButton>
                       </TableCell>
@@ -708,6 +708,7 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
   const [drafts, setDrafts] = useState<Record<number, {
     action_type: string; software: string;
     applicability: string; applicability_notes: string; action_details: string;
+    current_version: string; target_version: string; fixed_version: string;
   }>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
   const [snack, setSnack] = useState("");
@@ -721,6 +722,9 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
         applicability: v.is_applicable === true ? "true" : v.is_applicable === false ? "false" : "",
         applicability_notes: v.applicability_notes || "",
         action_details: v.action_details || "",
+        current_version: v.current_version || "",
+        target_version: v.target_version || "",
+        fixed_version: v.fixed_version || "",
       };
     }
     setDrafts(initial);
@@ -733,10 +737,11 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
   const updateDraft = (id: number, patch: Partial<{
     action_type: string; software: string;
     applicability: string; applicability_notes: string; action_details: string;
+    current_version: string; target_version: string; fixed_version: string;
   }>) => {
     setDrafts((prev) => ({
       ...prev,
-      [id]: { ...(prev[id] || { action_type: "", software: "", applicability: "", applicability_notes: "", action_details: "" }), ...patch },
+      [id]: { ...(prev[id] || { action_type: "", software: "", applicability: "", applicability_notes: "", action_details: "", current_version: "", target_version: "", fixed_version: "" }), ...patch },
     }));
   };
 
@@ -751,6 +756,9 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
         is_applicable: d.applicability === "" ? null : d.applicability === "true",
         applicability_notes: d.applicability_notes,
         action_details: d.action_details,
+        current_version: d.current_version,
+        target_version: d.target_version,
+        fixed_version: d.fixed_version,
       });
       setSnack("Уязвимость сохранена");
       if (onSaved) onSaved();
@@ -825,6 +833,21 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
                     size="small"
                     fullWidth
                   />
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField label="Текущая версия" value={d.current_version}
+                    onChange={(e) => updateDraft(v.id, { current_version: e.target.value })}
+                    size="small" fullWidth />
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField label="Целевая версия" value={d.target_version}
+                    onChange={(e) => updateDraft(v.id, { target_version: e.target.value })}
+                    size="small" fullWidth />
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField label="Исправленная версия" value={d.fixed_version}
+                    onChange={(e) => updateDraft(v.id, { fixed_version: e.target.value })}
+                    size="small" fullWidth />
                 </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <FormControl fullWidth size="small">
@@ -1219,6 +1242,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
                   }
                 }}
                 spellCheck={false}
+                aria-label="Текст ответа на письмо"
                 style={{
                   position: "relative",
                   display: "block",

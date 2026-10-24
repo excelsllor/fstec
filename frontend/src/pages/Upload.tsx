@@ -87,6 +87,16 @@ export default function Upload() {
       <Grid container spacing={3}>
         <Grid size={{ xs: 12, md: 8, lg: 6 }}>
           <Paper
+            role="button"
+            tabIndex={0}
+            aria-label="Загрузить файлы: нажмите или перетащите документы"
+            onClick={() => inputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                inputRef.current?.click();
+              }
+            }}
             sx={{
               p: 4,
               textAlign: "center",
@@ -96,7 +106,6 @@ export default function Upload() {
               cursor: "pointer",
               mb: 2,
             }}
-            onClick={() => inputRef.current?.click()}
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
             onDrop={handleDrop}
@@ -106,6 +115,7 @@ export default function Upload() {
               type="file"
               multiple
               hidden
+              aria-label="Выбор файлов для загрузки"
               onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
             />
             <UploadIcon sx={{ fontSize: 48, color: dragOver ? "primary.main" : "text.secondary", mb: 1 }} />

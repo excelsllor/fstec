@@ -832,7 +832,8 @@ def _update_vulnerability(db: Session, user: User, doc_id: int, vuln_id: int,
         raise HTTPException(status_code=404, detail="Уязвимость не найдена")
     if "is_applicable" in body and body["is_applicable"] is not None:
         vuln.is_applicable = bool(body["is_applicable"])
-    for f in ("applicability_notes", "action_type", "action_details", "response_point", "software"):
+    for f in ("applicability_notes", "action_type", "action_details", "response_point", "software",
+              "current_version", "target_version", "fixed_version"):
         if f in body and body[f] is not None:
             setattr(vuln, f, body[f])
     db.commit()

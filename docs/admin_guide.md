@@ -51,6 +51,10 @@ docker run --rm -v services_data:/data -v "$PWD":/backup alpine \
 ```
 Хранить копии вне хоста; проверять восстановление на тестовой БД.
 
+Готовый скрипт: services/tools/backup.sh (OUT_DIR, PG_CONTAINER, DATA_VOLUME).
+Для зависших документов: python tools/watchdog.py --older-than 30 (просмотр)
+или --mark-failed (перевод в failed с записью причины).
+
 ## 7. Безопасность
 
 - `.env` — `chmod 600`, не коммитить.

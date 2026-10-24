@@ -27,6 +27,7 @@ COPY .env.example ./
 
 ARG SERVICE
 COPY ${SERVICE} ./${SERVICE}
+COPY tools ./tools
 
 # llm_service кладём во все образы: он лёгкий (чистый Python + httpx из requirements.txt),
 # но нужен сервисам, которые сами планируют ответ — api-gateway (/reply/generate) и

@@ -9,12 +9,16 @@ import asyncio
 import json
 import logging
 import sqlite3
+import ssl
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from shared.config import (BUS_BATCH, BUS_CONCURRENCY, BUS_POLL_S, DB_PATH,
-                            EVENT_BUS, KAFKA_BOOTSTRAP, KAFKA_CONSUMER_GROUP)
+                            EVENT_BUS, KAFKA_BOOTSTRAP, KAFKA_CONSUMER_GROUP,
+                            KAFKA_SASL_MECHANISM, KAFKA_SASL_PASSWORD,
+                            KAFKA_SASL_USERNAME, KAFKA_SECURITY_PROTOCOL,
+                            KAFKA_SSL_CA_FILE)
 from shared.concurrency import gate
 
 logger = logging.getLogger(__name__)
@@ -244,6 +248,22 @@ def datetime_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def kafka_security_kwargs() -> dict:
+    protocol = KAFKA_SECURITY_PROTOCOL
+    if protocol == "PLAINTEXT":
+        return {}
+    kwargs: dict = {"security_protocol": protocol}
+    if "SASL" in protocol:
+        kwargs["sasl_mechanism"] = KAFKA_SASL_MECHANISM
+        kwargs["sasl_plain_username"] = KAFKA_SASL_USERNAME
+        kwargs["sasl_plain_password"] = KAFKA_SASL_PASSWORD
+    if "SSL" in protocol:
+        if not KAFKA_SSL_CA_FILE:
+            raise RuntimeError("KAFKA_SSL_CA_FILE is required for Kafka SSL")
+        kwargs["ssl_context"] = ssl.create_default_context(cafile=KAFKA_SSL_CA_FILE)
+    return kwargs
+
+
 class KafkaEventBus(EventBus):
     """Kafka-шина через aiokafka. Сообщения сериализуются в JSON.
 
@@ -270,6 +290,7 @@ class KafkaEventBus(EventBus):
         self._producer = AIOKafkaProducer(
             bootstrap_servers=self._bootstrap,
             value_serializer=lambda v: json.dumps(v, ensure_ascii=False, default=str).encode("utf-8"),
+            **kafka_security_kwargs(),
         )
         await self._producer.start()
         self._started = True
@@ -348,6 +369,7 @@ class KafkaEventBus(EventBus):
                 max_poll_interval_ms=1800000,
                 group_id=f"{self._group}-{topic}-consumer",
                 value_deserializer=lambda b: json.loads(b.decode("utf-8")),
+                **kafka_security_kwargs(),
             )
             try:
                 await asyncio.wait_for(consumer.start(), timeout=60)

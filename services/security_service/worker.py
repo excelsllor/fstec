@@ -11,7 +11,7 @@ from shared.concurrency import run_blocking
 from shared.config import SECURITY_MODE
 from shared.db import SessionLocal, init_db
 from shared.events import AuditEvent, SecurityAssessed, VulnerabilityAssessed
-from shared.models import AuditLog, Document, SLABase, Vulnerability, VulnActionTemplate
+from shared.models import Document, SLABase, Vulnerability, VulnActionTemplate
 from shared.worker import configure_logging, register_handlers, serve_forever
 from security_service.assessment import assess_document
 from security_service.bdu_client import BDUClient
@@ -123,19 +123,6 @@ def _persist_assessment(doc_id: int, assessment) -> None:
         db.commit()
 
 
-def _persist_external_error_audit(doc_id: int, reason: str) -> None:
-    with SessionLocal() as db:
-        db.add(AuditLog(
-            username="security-service",
-            action="external_error",
-            object_type="security",
-            object_id=doc_id,
-            filename=reason[:500],
-            document_id=doc_id,
-        ))
-        db.commit()
-
-
 async def handle_analyzed(topic: str, key: str, payload: dict) -> None:
     doc_id = int(payload["document_id"])
     vulns_raw = payload.get("vulns_raw", [])
@@ -153,7 +140,6 @@ async def handle_analyzed(topic: str, key: str, payload: dict) -> None:
     bus = get_event_bus()
     if assessment.external_errors:
         reason = "; ".join(assessment.external_errors)[:2000]
-        await run_blocking(_persist_external_error_audit, doc_id, reason)
         await bus.publish("audit.events", str(doc_id), _audit(doc_id, reason))
         await bus.publish("documents.failed", str(doc_id), {
             "event": "documents.failed",

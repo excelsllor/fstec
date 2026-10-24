@@ -18,6 +18,7 @@ backend/*.egg-info/
 *.key
 *.pem
 *.env
+certs/
 
 # Rust / Tauri
 src-tauri/target/

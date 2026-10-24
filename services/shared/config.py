@@ -38,6 +38,11 @@ KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_TOPIC_PARTITIONS = max(1, int(os.environ.get("FSTEC_KAFKA_PARTITIONS", "1")))
 KAFKA_REPLICATION_FACTOR = max(1, int(os.environ.get("FSTEC_KAFKA_REPLICATION", "1")))
 KAFKA_CONSUMER_GROUP = os.environ.get("FSTEC_KAFKA_GROUP", "fstec")
+KAFKA_SECURITY_PROTOCOL = os.environ.get("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT").upper()
+KAFKA_SASL_MECHANISM = os.environ.get("KAFKA_SASL_MECHANISM", "PLAIN").upper()
+KAFKA_SASL_USERNAME = os.environ.get("KAFKA_SASL_USERNAME", "")
+KAFKA_SASL_PASSWORD = os.environ.get("KAFKA_SASL_PASSWORD", "")
+KAFKA_SSL_CA_FILE = os.environ.get("KAFKA_SSL_CA_FILE", "")
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 

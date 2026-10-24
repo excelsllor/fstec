@@ -41,6 +41,7 @@ class Document(Base):
     all_text = Column(Text, default="")
     parse_errors = Column(Text, default="")
 
+    content_hash = Column(String(64), default="", index=True)
     source_filename = Column(String(500), default="")
     file_path = Column(String(1000), default="")
     size = Column(Integer, default=0)

@@ -10,7 +10,7 @@ from enum import Enum
 import httpx
 
 from shared.config import (LLM_PROVIDER, LLM_TIMEOUT_S, VLLM_BASE_URL,
-                           VLLM_MAX_TOKENS, VLLM_MODEL, VLLM_TEMPERATURE,
+                           VLLM_MAX_TOKENS, PLAN_MAX_TOKENS, VLLM_MODEL, VLLM_TEMPERATURE,
                            VLLM_CA_FILE,
                            VLLM_TOP_P,                            VLLM_REPETITION_PENALTY, VLLM_FREQUENCY_PENALTY,
                            LLM_MERGED_IOCS, LLM_DISABLE_GUIDED,
@@ -1061,8 +1061,8 @@ class VLLMProvider(LLMProvider):
         # Компактный формат-массив [{n,f,m}]: ~12 токенов/блок + до 8 id мер.
         # Бюджет растёт с числом блоков, иначе JSON обрезается на больших письмах.
         if self.enable_thinking:
-            return self._completion_budget
-        return min(4000, max(800, 64 * max(0, int(blocks_count)) + 200))
+            return min(self._completion_budget, PLAN_MAX_TOKENS)
+        return min(PLAN_MAX_TOKENS, max(800, 64 * max(0, int(blocks_count)) + 200))
 
     def plan_reply(self, *, letter_type: str, blocks: list[dict], library: list[dict],
                    fragments: list[dict]) -> dict | None:

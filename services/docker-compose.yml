@@ -151,6 +151,9 @@ services:
       VLLM_CA_FILE: ${VLLM_CA_FILE:-}
       VLLM_MODEL: ${VLLM_MODEL:-Qwen3.5-9B}
       FSTEC_LLM_TIMEOUT_S: ${FSTEC_LLM_TIMEOUT_S:-300}
+      FSTEC_PLAN_MAX_TOKENS: ${FSTEC_PLAN_MAX_TOKENS:-4000}
+      FSTEC_LLM_MERGED_ANALYZE: ${FSTEC_LLM_MERGED_ANALYZE:-0}
+      FSTEC_REPLY_LLM_MODE: ${FSTEC_REPLY_LLM_MODE:-always}
       # Р­С‚Р°Рї 4 вЂ” bounded concurrency. РћРґРёРЅ РєРѕРЅСЃСЊСЋРјРµСЂ С‡РёС‚Р°РµС‚ СЃС‚РѕР»СЊРєРѕ РїР°СЂС‚РёС†РёР№,
       # СЃРєРѕР»СЊРєРѕ РµРјСѓ РЅР°Р·РЅР°С‡РµРЅРѕ, РїРѕСЌС‚РѕРјСѓ СЂРµР°Р»СЊРЅС‹Р№ РїР°СЂР°Р»Р»РµР»РёР·Рј СѓРїРёСЂР°РµС‚СЃСЏ РІ С‡РёСЃР»Рѕ
       # РїР°СЂС‚РёС†РёР№ (FSTEC_KAFKA_PARTITIONS), Р° BUS_CONCURRENCY вЂ” Р¶С‘СЃС‚РєРёР№ РїРѕС‚РѕР»РѕРє.
@@ -226,6 +229,7 @@ services:
       # СЂРµР°Р»СЊРЅРѕ РїРµСЂРµРІР°СЂРёРІР°РµС‚ T4 (measured AWQ: concurrency 10-12), РёРЅР°С‡Рµ
       # РѕС‡РµСЂРµРґСЊ Р·Р°РїСЂРѕСЃРѕРІ РІ vLLM СЂР°СЃС‚С‘С‚ Рё p99 РІР·Р»РµС‚Р°РµС‚.
       FSTEC_LLM_CONCURRENCY: ${FSTEC_LLM_CONCURRENCY:-8}
+      FSTEC_REPLY_LLM_MODE: ${FSTEC_REPLY_LLM_MODE:-always}
       FSTEC_LLM_POOL_MAX: ${FSTEC_LLM_POOL_MAX:-16}
       FSTEC_LLM_WARMUP_ENABLED: ${FSTEC_LLM_WARMUP_ENABLED:-1}
       FSTEC_LLM_WARMUP_INTERVAL_S: ${FSTEC_LLM_WARMUP_INTERVAL_S:-300}
@@ -319,10 +323,12 @@ services:
       VLLM_CA_FILE: ${VLLM_CA_FILE:-}
       VLLM_MODEL: ${VLLM_MODEL:-Qwen3.5-9B}
       FSTEC_LLM_TIMEOUT_S: ${FSTEC_LLM_TIMEOUT_S:-300}
+      FSTEC_PLAN_MAX_TOKENS: ${FSTEC_PLAN_MAX_TOKENS:-4000}
       # РџР»Р°РЅРёСЂРѕРІР°РЅРёРµ РѕС‚РІРµС‚Р° РґРµСЂР¶РёС‚ Рё СЃРµСЃСЃРёСЋ Р‘Р”, Рё РѕР¶РёРґР°РЅРёРµ vLLM вЂ” РїСѓР» Рё
       # РєРѕРЅРєСѓСЂРµРЅС‚РЅРѕСЃС‚СЊ СЃРѕРіР»Р°СЃРѕРІР°РЅС‹ СЃ llm-service, РёРЅР°С‡Рµ reporting СЃС‚Р°РЅРµС‚ СѓР·РєРёРј
       # РјРµСЃС‚РѕРј РїР°Р№РїР»Р°Р№РЅР°.
       FSTEC_LLM_CONCURRENCY: ${FSTEC_LLM_CONCURRENCY:-8}
+      FSTEC_REPLY_LLM_MODE: ${FSTEC_REPLY_LLM_MODE:-always}
       FSTEC_BUS_CONCURRENCY: ${FSTEC_REPORTING_BUS_CONCURRENCY:-10}
       FSTEC_DB_POOL_SIZE: ${FSTEC_REPORTING_DB_POOL_SIZE:-12}
       FSTEC_DB_MAX_OVERFLOW: ${FSTEC_REPORTING_DB_MAX_OVERFLOW:-20}

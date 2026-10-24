@@ -5,6 +5,7 @@ GET /reports/{id}/download, GET /reports/{id}/download_raw, POST /reply/generate
 Плюс обратная совместимость: /api/letters/... и /api/auth/*.
 """
 import base64
+import hashlib
 import logging
 import os
 import shutil
@@ -417,6 +418,29 @@ async def upload(
             file_type=Path(name).suffix.lower(), parse_status="pending", is_main=(idx == 0),
         ))
         att_metas.append({"filename": name, "path": str(dest), "size": sizes[idx]})
+
+    digest = hashlib.sha256()
+    for meta in att_metas:
+        with open(meta["path"], "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+    doc.content_hash = digest.hexdigest()
+    db.flush()
+
+    duplicate = (db.query(Document)
+                 .filter(Document.content_hash == doc.content_hash,
+                         Document.id != doc.id,
+                         Document.status == "completed",
+                         Document.processing_stage == "done")
+                 .order_by(Document.id.desc()).first())
+    if duplicate and (user.role == "admin" or duplicate.created_by == user.id):
+        db.delete(doc)
+        db.commit()
+        shutil.rmtree(doc_dir, ignore_errors=True)
+        _audit(db, user, "upload_duplicate", "document", duplicate.id,
+               files[0].filename, duplicate.id, request=request)
+        return {"id": duplicate.id, "status": duplicate.status,
+                "filename": files[0].filename, "duplicate": True}
 
     _audit(db, user, "upload", "document", doc.id, files[0].filename, doc.id, request=request)
     db.commit()

@@ -8,6 +8,7 @@ fallback (по образцу response_generator), чтобы ответ все�
 """
 import json
 import logging
+import os
 import re
 
 from shared.config import LLM_PROVIDER, ORG_NAME
@@ -518,6 +519,17 @@ def _load_letter_intros() -> dict:
     return _LETTER_INTROS
 
 
+def _use_llm_for_reply(letter_type: str, letter_number: str) -> bool:
+    mode = os.environ.get("FSTEC_REPLY_LLM_MODE", "always").strip().lower()
+    if mode == "never":
+        return False
+    if mode in ("reference", "reference-hacker"):
+        key = (letter_number or "").replace("/", "-").strip()
+        if letter_type == "hacker" and key in _load_letter_intros():
+            return False
+    return True
+
+
 _VULN_STATUS: dict | None = None
 
 
@@ -887,6 +899,8 @@ async def plan_reply_async(*, db, letter_type: str, blocks: list[dict], addr_cou
     library, fragments, _ = load_reply_resources(db)
 
     llm_plan = None
+    if use_llm is None:
+        use_llm = _use_llm_for_reply(letter_type, letter_number)
     provider = _plugin_provider() if use_llm is not False else None
     if provider is None:
         logger.warning("LLM-план отключён: провайдер не создан "
@@ -962,6 +976,8 @@ def plan_reply(*, db, letter_type: str, blocks: list[dict], addr_count: int,
     library, fragments, _ = load_reply_resources(db)
 
     llm_plan = None
+    if use_llm is None:
+        use_llm = _use_llm_for_reply(letter_type, letter_number)
     provider = _plugin_provider() if use_llm is not False else None
     if provider is None:
         logger.warning("LLM-план отключён: провайдер не создан "

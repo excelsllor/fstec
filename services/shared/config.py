@@ -116,6 +116,7 @@ VLLM_MODEL = os.environ.get("VLLM_MODEL", "Qwen3.5-9B")
 VLLM_CA_FILE = os.environ.get("VLLM_CA_FILE", "")
 LLM_TIMEOUT_S = float(os.environ.get("FSTEC_LLM_TIMEOUT_S", "10"))
 VLLM_MAX_TOKENS = int(os.environ.get("FSTEC_VLLM_MAX_TOKENS", "900"))
+PLAN_MAX_TOKENS = max(800, int(os.environ.get("FSTEC_PLAN_MAX_TOKENS", "4000")))
 VLLM_TEMPERATURE = float(os.environ.get("FSTEC_VLLM_TEMPERATURE", "0.1"))
 VLLM_TOP_P = float(os.environ.get("FSTEC_VLLM_TOP_P", "0.9"))
 # Прогрев/keepalive vLLM: первый запрос после старта не должен быть холодным.

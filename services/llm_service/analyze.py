@@ -137,7 +137,10 @@ async def analyze_async(provider: LLMProvider, text: str) -> tuple[DocumentAnaly
     # IoC из внешнего BERT-классификатора запускаем ПАРАЛЛЕЛЬНО с 8B-вызовом,
     # чтобы его латентность (CPU) не добавлялась к критическому пути.
     clf_task = asyncio.ensure_future(_classifier_iocs_async(text))
-    if LLM_MERGED_ANALYZE and callable(getattr(provider, "analyze_and_extract", None)):
+    # merged быстрее на hacker/other-письмах; для regex-vulnerability оставляем
+    # два вызова, чтобы не менять проверенное поведение на больших BDU-списках.
+    if (LLM_MERGED_ANALYZE and classification != "vulnerability"
+            and callable(getattr(provider, "analyze_and_extract", None))):
         merged = await _maybe("analyze_and_extract", text, hint=classification)
         llm_result, llm_io = merged if merged else (None, None)
     else:

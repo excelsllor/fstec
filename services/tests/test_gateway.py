@@ -66,6 +66,21 @@ def test_legacy_compat(client):
     assert stats.json()["total_letters"] >= 1
 
 
+def test_duplicate_upload_returns_cached_document(client):
+    content = make_docx_bytes("Уникальный тест дедупликации SHA-256 2026-10-24")
+    files = {"files": ("dup.docx", content, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+    first = client.post("/upload", files=files, headers=_headers(client))
+    assert first.status_code == 201
+    doc_id = first.json()["id"]
+    second = client.post("/upload", files={
+        "files": ("dup-copy.docx", content, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    }, headers=_headers(client))
+    assert second.status_code == 201
+    body = second.json()
+    assert body["id"] == doc_id
+    assert body.get("duplicate") is True
+
+
 def test_upload_rejects_bad_extension(client):
     files = {"files": ("evil.exe", b"MZ", "application/x-msdownload")}
     r = client.post("/upload", files=files, headers=_headers(client))

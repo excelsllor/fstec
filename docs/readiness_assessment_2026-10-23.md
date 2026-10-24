@@ -79,6 +79,15 @@ aria-label/клавиатурная загрузка/контраст/`lang="ru"
 p50 **181.0 с**, max **189.3 с**, пропускная способность в окне теста **57.0 док/ч**; детали и план
 ускорения — `docs/speed_quick_2026-10-24.md`. После починки TLS-прокси vLLM warmup — **0.1 с**.
 
+**После SHA-кэша и reference-профиля:** 3 hacker-PDF — p50 **87.8 с**, max **114.1 с**, **94.3 док/ч**;
+повторная загрузка тех же файлов — **36–53 мс** (`duplicate=true`). A/B 22 документов:
+mean similarity **0.9969**, min **0.9609**, hacker 11/11 — **1.0**; детали:
+`docs/speed_quick_reference_2026-10-24.md`, `docs/reference_ab_2026-10-24.md`.
+
+**После merged analyze+extract (hacker/other):** 3 hacker-PDF — p50 **36.6 с**, max **44.7 с**,
+**239.7 док/ч**; threats/iocs совпали с раздельным прогоном, у `9-85` отброшен отсутствующий
+в тексте `telegram.org`. Детали: `docs/speed_quick_merged_2026-10-24.md`.
+
 **Безопасность:**
 - vLLM прогрев: `warmup_async` + keepalive раз в 300 с; RuBERT в контейнере недоступен (нет `torch`), fallback на vLLM/heuristic.
 - npm prod audit: **0** (follow-redirects обновлён); dev — 1 high.

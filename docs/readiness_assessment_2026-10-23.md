@@ -1,6 +1,6 @@
 # Оценка готовности по ТЗ — 2026-10-23
 
-Код: `fstec-service`, commit `f112dce` + docs-sync (master + feat/llm-8b-redis-fixes, GitHub `excelsllor/fstec`).
+Код: `fstec-service`, commit `f112dce` + последующие infra/docs-коммиты (master + feat/llm-8b-redis-fixes, GitHub `excelsllor/fstec`).
 Генератор проверен на прогоне `glpi_run28_20261023_200936` (22 письма).
 OCR проверен на сканированном PDF: Tesseract — 2054 символа; PaddleOCR после фикса ABI — 1788 символов.
 
@@ -42,7 +42,7 @@ KPI (≤5 с LLM, 500+ писем/час) и настоящего HA на нес
 | KPI ≤2 с текст / ≤5 с LLM / ≤3 с DOCX | **не подтверждено** | Нет замеров; сквозная обработка в тесте 150–350 с/док |
 | 500+ документов/час | **не подтверждено** | Фактическая пропускная способность ниже; упирается в T4/LLM |
 | Ретраи NVD/BDU до 3 раз | **есть** | 5xx/503 теперь идут через retry_async (3 попытки, backoff) |
-| TLS 1.3 для внешних интеграций | **есть для UI/Kafka** | nginx TLS 1.2/1.3; Kafka SASL_SSL; vLLM остаётся HTTP внутри Docker-сети |
+| TLS 1.3 для внешних интеграций | **есть** | nginx TLS 1.2/1.3; Kafka SASL_SSL; vLLM за TLS-прокси |
 | Аудит всех действий | **есть** | скачивания/просмотры, audit consumer `audit.events`, ошибки security в `audit_log` |
 | SLA 99,5% / RTO ≤30 мин | частично | один Kafka/Postgres, HA нет; бэкапы ежедневно, RTO 15–30 мин, RPO до 24 ч |
 | Документация и приёмка | **есть базовая** | `openapi.json`, admin/user guide, acceptance protocol, vuln report, TLS/backup docs |
@@ -75,14 +75,19 @@ aria-label/клавиатурная загрузка/контраст/`lang="ru"
 **Вывод по стабильности:** конвейер не теряет документы и не падает, но latency/пропускная способность далеки от ТЗ.
 Узкое место — последовательные LLM/обогащение и T4; для 500+/ч нужен более мощный GPU-инстанс/шардирование.
 
+**Быстрая проверка 2026-10-24** (3 PDF, 3 параллельно, без часового прогона): 3/3 completed,
+p50 **185.2 с**, max **203.7 с**, пропускная способность в окне теста **52.9 док/ч**; детали и план
+ускорения — `docs/speed_quick_2026-10-24.md`. После починки TLS-прокси vLLM warmup — **0.1 с**.
+
 **Безопасность:**
 - vLLM прогрев: `warmup_async` + keepalive раз в 300 с; RuBERT в контейнере недоступен (нет `torch`), fallback на vLLM/heuristic.
 - npm prod audit: **0** (follow-redirects обновлён); dev — 1 high.
 - pip-audit: осталось **3** advisories без фикса (python-jose 3.5.0 — 1, ecdsa 0.19.2 — 2); Pillow обновлён 12.3.0 → 13.0.0.
-- TLS 1.3 на nginx, Kafka `SASL_SSL`/`PLAIN` поверх TLS, сертификаты внутреннего CA; `.env` 0600, ключи 0600.
-- Бэкапы: cron 02:30, retention 14 дней, restore проверен; watchdog каждые 15 минут.
-- Открытые риски: vLLM HTTP внутри Docker, секреты в env без шифрования at-rest, HA на одном хосте,
-  базовые образы (Kafka 3.9/nginx 1.29 обновлены; vLLM 0.9.0 и 96–101 HIGH в старых слоях остаются).
+- TLS 1.3 на nginx, Kafka `SASL_SSL`/`PLAIN` поверх TLS, vLLM за TLS-прокси; сертификаты внутреннего CA.
+- Секреты: `systemd-creds` + tmpfs `/run/fstec/compose.env`, `.env` — симлинк, plaintext удалён; ключи 0600.
+- Бэкапы: cron 02:30, retention 14 дней, restore проверен; watchdog каждые 15 минут, `--since` для старых тестовых.
+- Trivy 2026-10-24: app/nginx — 0 fixable HIGH/CRITICAL; Paddle 2; Postgres 26; Kafka 139; см. `docs/trivy_scan_2026-10-24.md`.
+- Открытые риски: HA на одном хосте, legacy Kafka/Postgres, vLLM 0.9.0, `bootstrap_password.txt` без at-rest шифрования.
 
 ## Куда уходит время
 
@@ -115,9 +120,10 @@ aria-label/клавиатурная загрузка/контраст/`lang="ru"
 
 1. Подтверждение KPI на целевой конфигурации (500+/ч и ≤5 с LLM) — без этого приёмка невозможна.
 2. Разбор Kafka-бэклога: после часового теста в БД остались старые `parsed/uploaded/assessed`
-   документы; watchdog каждые 15 минут помечает зависшие (`>60 мин`) как failed. Нужны DLQ и лимит ретраев.
-3. TLS 1.3 и Kafka TLS/SASL закрыты; остаются шифрование секретов at-rest, HA на втором хосте
-   и регламент ручного режима.
+   документы; watchdog каждые 15 минут помечает зависшие (`>60 мин`) как failed, старые 56 документов
+   восстановлены из бэкапа и исключены через `--since`. Нужны DLQ и лимит ретраев.
+3. TLS 1.3, Kafka TLS/SASL, vLLM TLS и at-rest `.env` закрыты; остаются HA на втором хосте,
+   `bootstrap_password.txt` и регламент ручного режима.
 4. Полный аудит действий и журнал доступа к документам/отчётам — consumer и просмотры/скачивания добавлены.
 5. Остаточные frontend-дефекты: ручная правка сущностей сверх IoC/версий и отсутствие frontend-тестов.
 6. Version matching с буквенными суффиксами исправлен; CMDB в prod теперь fail-fast без GLPI_URL.

@@ -58,9 +58,17 @@ docker restart fstec-nginx fstec-kafka
 После перезапуска Kafka клиенты переподключатся автоматически; при смене CA нужно
 обновить `ca.crt` во всех контейнерах (compose `configs`) и перезапустить сервисы.
 
+## vLLM TLS
+
+vLLM на хосте слушает `172.17.0.1:8000` (HTTP). Контейнер `fstec-vllm-proxy` принимает HTTPS
+на `vllm-proxy:8443`, проверяет серверный сертификат `vllm.crt` (SAN `vllm-proxy`) и проксирует
+запросы к vLLM. Клиенты (`llm-service`, `api-gateway`, `reporting-service`) используют
+`VLLM_BASE_URL=https://vllm-proxy:8443/v1` и `VLLM_CA_FILE=/etc/fstec/vllm-ca.crt`.
+Проверка: `docker exec fstec-llm python -c "from llm_service.provider import get_provider; print(get_provider().warmup())"`.
+
 ## Ограничения
 
-- vLLM слушает HTTP внутри Docker-сети (`vllm:8000`), наружу не публикуется.
+- vLLM наружу не публикуется; доступ только через TLS-прокси внутри Docker-сети.
 - CMDB GLPI использует HTTPS, проверка сертификата выполняется клиентом.
 - Полноценный HA Kafka/Postgres на одном хосте невозможен; текущая схема — single-node
   с TLS/SASL, автоматическими бэкапами и watchdog.

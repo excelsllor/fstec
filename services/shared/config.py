@@ -113,6 +113,7 @@ OCR_GPU_IDS = [int(x) for x in os.environ.get("FSTEC_OCR_GPU_IDS", "0").split(",
 LLM_PROVIDER = os.environ.get("FSTEC_LLM_PROVIDER", "heuristic")  # heuristic | vllm
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")
 VLLM_MODEL = os.environ.get("VLLM_MODEL", "Qwen3.5-9B")
+VLLM_CA_FILE = os.environ.get("VLLM_CA_FILE", "")
 LLM_TIMEOUT_S = float(os.environ.get("FSTEC_LLM_TIMEOUT_S", "10"))
 VLLM_MAX_TOKENS = int(os.environ.get("FSTEC_VLLM_MAX_TOKENS", "900"))
 VLLM_TEMPERATURE = float(os.environ.get("FSTEC_VLLM_TEMPERATURE", "0.1"))

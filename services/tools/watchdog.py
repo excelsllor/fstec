@@ -18,14 +18,21 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--older-than", type=int, default=30, help="минут с последнего обновления")
     parser.add_argument("--mark-failed", action="store_true", help="пометить найденные документы failed")
+    parser.add_argument("--since", default="", help="не трогать документы с updated_at раньше ISO-времени")
     args = parser.parse_args()
 
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=args.older_than)
+    since = None
+    if args.since:
+        since = datetime.fromisoformat(args.since)
+        if since.tzinfo is not None:
+            since = since.astimezone(timezone.utc).replace(tzinfo=None)
     with SessionLocal() as db:
-        rows = (db.query(Document)
-                .filter(~Document.status.in_(TERMINAL), Document.updated_at < cutoff)
-                .order_by(Document.updated_at)
-                .all())
+        query = (db.query(Document)
+                 .filter(~Document.status.in_(TERMINAL), Document.updated_at < cutoff))
+        if since is not None:
+            query = query.filter(Document.updated_at >= since)
+        rows = query.order_by(Document.updated_at).all()
         if not rows:
             print(f"OK: нет документов старше {args.older_than} мин в нетерминальном статусе")
             return

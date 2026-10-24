@@ -11,6 +11,7 @@ import httpx
 
 from shared.config import (LLM_PROVIDER, LLM_TIMEOUT_S, VLLM_BASE_URL,
                            VLLM_MAX_TOKENS, VLLM_MODEL, VLLM_TEMPERATURE,
+                           VLLM_CA_FILE,
                            VLLM_TOP_P,                            VLLM_REPETITION_PENALTY, VLLM_FREQUENCY_PENALTY,
                            LLM_MERGED_IOCS, LLM_DISABLE_GUIDED,
                            CHUNK_MAX_TOKENS, LLM_ENABLE_THINKING,
@@ -75,6 +76,7 @@ async def get_async_client() -> "httpx.AsyncClient":
                 max_keepalive_connections=LLM_POOL_KEEPALIVE,
             ),
             timeout=httpx.Timeout(LLM_TIMEOUT_S, connect=10.0),
+            verify=VLLM_CA_FILE or True,
         )
         _async_client_loop = loop
         return _async_client
@@ -325,6 +327,7 @@ class VLLMProvider(LLMProvider):
               thinking: bool | None = None, timeout_s: float | None = None,
               guided_json: dict | None = None) -> str:
         import json
+        import ssl
         import urllib.request
 
         body = json.dumps(self._payload(system, user, max_tokens, fit, thinking, guided_json)).encode("utf-8")
@@ -332,7 +335,8 @@ class VLLMProvider(LLMProvider):
             f"{self.base_url}/chat/completions", data=body,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=timeout_s if timeout_s is not None else self.timeout_s) as resp:
+        ctx = ssl.create_default_context(cafile=VLLM_CA_FILE) if VLLM_CA_FILE else None
+        with urllib.request.urlopen(req, timeout=timeout_s if timeout_s is not None else self.timeout_s, context=ctx) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return self._record(data)
 

@@ -1,6 +1,6 @@
 # Оценка готовности по ТЗ — 2026-10-23
 
-Код: `fstec-service`, commit `749c63a` (master + feat/llm-8b-redis-fixes, GitHub `excelsllor/fstec`).
+Код: `fstec-service`, commit `31cc185` + docs-sync (master + feat/llm-8b-redis-fixes, GitHub `excelsllor/fstec`).
 Генератор проверен на прогоне `glpi_run28_20261023_200936` (22 письма).
 OCR проверен на сканированном PDF: `ocr_used=true`, извлечено 2054 символа.
 

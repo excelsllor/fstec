@@ -54,7 +54,7 @@ aria-label/клавиатурная загрузка/контраст/`lang="ru"
 
 Осталось:
 - ручная правка сущностей/сводки ограничена (основные поля редактируются через response/vulnerabilities);
-- `npm run lint` — 9 warnings, frontend-тестов нет.
+- `npm run lint` — 11 warnings, 0 errors, frontend-тестов нет.
 
 ## Стабильность и безопасность
 

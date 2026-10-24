@@ -2,7 +2,7 @@
 
 ## Nginx / внешний HTTPS
 
-- HTTP: `:8080` (healthcheck `/healthz`), HTTPS: `:8443` (host `443`).
+- HTTP: `:8080` только `/healthz`, остальное — 301 на HTTPS; HTTPS: `:8443` (host `443`).
 - Протоколы: TLS 1.2 и TLS 1.3; проверено `TLSv1.3 / TLS_AES_256_GCM_SHA384`.
 - Сертификат: `/home/raport/fstec-service/certs/server.crt`, SAN `fstec.local`, `10.248.55.161`.
 - Ключ: `server.key` (0600, uid 101 nginx).

@@ -5,7 +5,7 @@ from typing import Awaitable, Callable
 
 from shared.bus import get_event_bus
 from shared.db import SessionLocal
-from shared.models import Document, Vulnerability
+from shared.models import AuditLog, Document, Vulnerability
 from security_service.cmdb_mock import MockCMDB
 from security_service.worker import handle_analyzed, set_test_clients
 from conftest import create_uploaded_document
@@ -63,6 +63,11 @@ def test_dlq_on_external_failure(tmp_path):
     assert failed and failed[0]["document_id"] == doc_id
     assert failed[0]["stage"] == "security.assessed"
     assert any(a["action"] == "external_security_error" for a in audited)
+    with SessionLocal() as db:
+        assert db.query(AuditLog).filter(
+            AuditLog.document_id == doc_id,
+            AuditLog.action == "external_error",
+        ).first() is not None
     with SessionLocal() as db:
         doc = db.query(Document).filter(Document.id == doc_id).first()
         assert doc.processing_stage in ("assessed", "done")   # документ не упал (graceful)

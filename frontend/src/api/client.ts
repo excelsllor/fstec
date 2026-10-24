@@ -24,6 +24,14 @@ api.interceptors.response.use(
       if (window.location.pathname !== "/login") {
         window.location.href = "/login";
       }
+    } else if (error.response?.status === 403) {
+      window.dispatchEvent(new CustomEvent("fstec-api-error", {
+        detail: error.response?.data?.detail || "Недостаточно прав для этого действия",
+      }));
+    } else if (error.response?.status >= 500 || !error.response) {
+      window.dispatchEvent(new CustomEvent("fstec-api-error", {
+        detail: error.response?.data?.detail || "Сервер временно недоступен",
+      }));
     }
     return Promise.reject(error);
   }
@@ -188,7 +196,8 @@ export const lettersApi = {
   list: (params?: { letter_type?: string; status?: string; skip?: number; limit?: number }) =>
     api.get<LetterListItem[]>("/api/letters", { params }),
   stats: () => api.get<StatsResponse>("/api/letters/stats"),
-  get: (id: number) => api.get<LetterResponse>(`/api/letters/${id}`),
+  get: (id: number, view = false) =>
+    api.get<LetterResponse>(`/api/letters/${id}`, { params: view ? { view: 1 } : {} }),
   delete: (id: number) => api.delete(`/api/letters/${id}`),
   upload: (files: File[]) => {
     const formData = new FormData();

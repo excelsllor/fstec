@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Outlet, useNavigate, useLocation } from "react-router-dom";
 import {
   AppBar,
@@ -18,6 +18,8 @@ import {
   Divider,
   useMediaQuery,
   useTheme,
+  Snackbar,
+  Alert,
 } from "@mui/material";
 import {
   Dashboard as DashboardIcon,
@@ -40,8 +42,18 @@ export default function Layout() {
   const location = useLocation();
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [apiError, setApiError] = useState("");
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
+
+  useEffect(() => {
+    const onError = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      setApiError(typeof detail === "string" && detail ? detail : "Ошибка запроса");
+    };
+    window.addEventListener("fstec-api-error", onError as EventListener);
+    return () => window.removeEventListener("fstec-api-error", onError as EventListener);
+  }, []);
 
   const menuItems = [
     { text: "Панель", icon: <DashboardIcon />, path: "/", roles: ["admin", "user"] },
@@ -134,6 +146,13 @@ export default function Layout() {
         <Toolbar />
         <Outlet />
       </Box>
+
+      <Snackbar open={!!apiError} autoHideDuration={5000} onClose={() => setApiError("")}
+                anchorOrigin={{ vertical: "bottom", horizontal: "center" }}>
+        <Alert severity="error" onClose={() => setApiError("")} variant="filled">
+          {apiError}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }

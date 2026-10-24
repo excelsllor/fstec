@@ -270,10 +270,10 @@ export default function LetterDetail() {
   const [loadError, setLoadError] = useState("");
   const [regeneratingReport, setRegeneratingReport] = useState(false);
 
-  const load = async () => {
+  const load = async (view = false) => {
     setLoading(true);
     try {
-      const { data } = await lettersApi.get(Number(id));
+      const { data } = await lettersApi.get(Number(id), view);
       setLetter(data);
       setLoadError("");
     } catch (err: any) {
@@ -283,7 +283,7 @@ export default function LetterDetail() {
     }
   };
 
-  useEffect(() => { load(); }, [id]);
+  useEffect(() => { load(true); }, [id]);
 
   useEffect(() => {
     if (!letter || ["completed", "failed", "error", "deleted"].includes(letter.status)) return;

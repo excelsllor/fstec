@@ -537,8 +537,11 @@ def _serialize_document(db: Session, doc: Document) -> dict:
 
 
 @app.get("/documents/{doc_id}")
-def get_document(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def get_document(doc_id: int, request: Request, view: bool = Query(False),
+                 db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     doc = _owned_document(db, user, doc_id)
+    if view:
+        _audit(db, user, "view_document", "document", doc_id, doc.source_filename, doc_id, request=request)
     return _serialize_document(db, doc)
 
 
@@ -785,8 +788,11 @@ def legacy_stats(db: Session = Depends(get_db), user: User = Depends(get_current
 
 
 @app.get("/api/letters/{letter_id}")
-def legacy_detail(letter_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def legacy_detail(letter_id: int, request: Request, view: bool = Query(False),
+                  db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
+    if view:
+        _audit(db, user, "view_document", "document", doc.id, doc.source_filename, doc.id, request=request)
     return _serialize_document(db, doc)
 
 

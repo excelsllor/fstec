@@ -239,6 +239,12 @@ export const lettersApi = {
     api.get(`/api/letters/${id}/export/${type}`, { responseType: "blob" }),
   exportIocsDocx: (id: number, type: string) =>
     api.get(`/api/letters/${id}/export/${type}/docx`, { responseType: "blob" }),
+  createIoc: (letterId: number, data: { value: string; ioc_type: string }) =>
+    api.post<LetterResponse>(`/api/letters/${letterId}/iocs`, data),
+  updateIoc: (letterId: number, iocId: number, data: { value?: string; ioc_type?: string }) =>
+    api.put<LetterResponse>(`/api/letters/${letterId}/iocs/${iocId}`, data),
+  deleteIoc: (letterId: number, iocId: number) =>
+    api.delete<LetterResponse>(`/api/letters/${letterId}/iocs/${iocId}`),
   updateVulnerability: (letterId: number, vulnId: number, data: VulnerabilityUpdateData) =>
     api.put<LetterResponse>(`/api/letters/${letterId}/vulnerabilities/${vulnId}`, data),
 };

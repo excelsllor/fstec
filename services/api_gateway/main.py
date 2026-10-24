@@ -890,6 +890,52 @@ def legacy_vuln_update(letter_id: int, vuln_id: int, body: dict, request: Reques
     return _update_vulnerability(db, user, letter_id, vuln_id, body, request=request)
 
 
+@app.post("/api/letters/{letter_id}/iocs")
+def ioc_create(letter_id: int, body: dict, request: Request, db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
+    value = str(body.get("value") or "").strip()
+    ioc_type = str(body.get("ioc_type") or "").strip().lower()
+    if not value or ioc_type not in {"ip", "ipv6", "ip_cidr", "domain", "email", "hash", "bdu", "cve", "url"}:
+        raise HTTPException(status_code=400, detail="Некорректный тип или значение IoC")
+    db.add(IoC(document_id=doc.id, ioc_type=ioc_type, value=value, source="manual"))
+    _audit(db, user, "ioc_create", "document", doc.id, value, doc.id, request=request)
+    db.commit()
+    return _serialize_document(db, doc)
+
+
+@app.put("/api/letters/{letter_id}/iocs/{ioc_id}")
+def ioc_update(letter_id: int, ioc_id: int, body: dict, request: Request,
+               db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
+    ioc = db.query(IoC).filter(IoC.id == ioc_id, IoC.document_id == doc.id).first()
+    if not ioc:
+        raise HTTPException(status_code=404, detail="IoC не найден")
+    if "value" in body and str(body["value"]).strip():
+        ioc.value = str(body["value"]).strip()
+    if "ioc_type" in body:
+        t = str(body["ioc_type"]).strip().lower()
+        if t not in {"ip", "ipv6", "ip_cidr", "domain", "email", "hash", "bdu", "cve", "url"}:
+            raise HTTPException(status_code=400, detail="Некорректный тип IoC")
+        ioc.ioc_type = t
+    _audit(db, user, "ioc_update", "ioc", ioc.id, ioc.value, doc.id, request=request)
+    db.commit()
+    return _serialize_document(db, doc)
+
+
+@app.delete("/api/letters/{letter_id}/iocs/{ioc_id}")
+def ioc_delete(letter_id: int, ioc_id: int, request: Request, db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
+    ioc = db.query(IoC).filter(IoC.id == ioc_id, IoC.document_id == doc.id).first()
+    if not ioc:
+        raise HTTPException(status_code=404, detail="IoC не найден")
+    db.delete(ioc)
+    _audit(db, user, "ioc_delete", "ioc", ioc_id, document_id=doc.id, request=request)
+    db.commit()
+    return _serialize_document(db, doc)
+
+
 @app.put("/documents/{doc_id}/vulnerabilities/{vuln_id}")
 def vuln_update(doc_id: int, vuln_id: int, body: dict, request: Request,
                 db: Session = Depends(get_db), user: User = Depends(get_current_user)):

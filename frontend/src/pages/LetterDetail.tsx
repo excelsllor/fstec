@@ -39,6 +39,8 @@ import {
   Refresh as RefreshIcon,
   ContentCopy as CopyIcon,
   ExpandMore as ExpandMoreIcon,
+  Edit as EditIcon,
+  Delete as DeleteIcon,
 } from "@mui/icons-material";
 import {
   lettersApi,
@@ -457,7 +459,8 @@ export default function LetterDetail() {
 
       {tab === 0 && <InfoTab letter={letter} />}
       {tab === 1 && <ThreatsTab letter={letter} onSaved={load} />}
-      {tab === 2 && <IocTab iocs={letter.iocs} onCopy={copyToClipboard} />}
+      {tab === 2 && <IocTab iocs={letter.iocs} onCopy={copyToClipboard}
+                              letterId={letter.id} onSaved={load} />}
       {tab === 3 && <VulnTab letter={letter} onSaved={load} />}
       {tab === 4 && <ResponseTab letter={letter} onGenerate={handleGenerate} />}
       {tab === 5 && <ExportTab onExport={handleExport} onExportDocx={handleExportDocx} counts={letter.iocs} />}
@@ -682,10 +685,50 @@ function ThreatsTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () 
   );
 }
 
-function IocTab({ iocs, onCopy }: { iocs: IoCResponse[]; onCopy: (text: string) => void }) {
+function IocTab({ iocs, onCopy, letterId, onSaved }: {
+  iocs: IoCResponse[];
+  onCopy: (text: string) => void;
+  letterId: number;
+  onSaved?: (view?: boolean) => void;
+}) {
   const types = ["ip", "domain", "hash", "email", "bdu", "cve"];
+  const reload = () => onSaved?.();
+  const editIoc = async (id: number, value: string) => {
+    const next = window.prompt("Новое значение IoC", value);
+    if (!next || next.trim() === value) return;
+    try {
+      await lettersApi.updateIoc(letterId, id, { value: next.trim() });
+      reload();
+    } catch (err: any) {
+      window.alert(err.response?.data?.detail || "Не удалось изменить IoC");
+    }
+  };
+  const removeIoc = async (id: number, value: string) => {
+    if (!window.confirm(`Удалить IoC ${value}?`)) return;
+    try {
+      await lettersApi.deleteIoc(letterId, id);
+      reload();
+    } catch (err: any) {
+      window.alert(err.response?.data?.detail || "Не удалось удалить IoC");
+    }
+  };
+  const addIoc = async () => {
+    const ioc_type = window.prompt("Тип IoC: ip, ipv6, ip_cidr, domain, email, hash, bdu, cve, url", "ip");
+    if (!ioc_type) return;
+    const value = window.prompt("Значение IoC");
+    if (!value) return;
+    try {
+      await lettersApi.createIoc(letterId, { value: value.trim(), ioc_type: ioc_type.trim().toLowerCase() });
+      reload();
+    } catch (err: any) {
+      window.alert(err.response?.data?.detail || "Не удалось добавить IoC");
+    }
+  };
   return (
     <Box>
+      <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
+        <Button size="small" variant="outlined" onClick={addIoc}>Добавить IoC</Button>
+      </Box>
       {types.map((type) => {
         const filtered = iocs.filter((i) => i.ioc_type === type);
         if (filtered.length === 0) return null;
@@ -695,12 +738,9 @@ function IocTab({ iocs, onCopy }: { iocs: IoCResponse[]; onCopy: (text: string) 
               <Typography variant="subtitle1">
                 {iocTypeLabels[type] || type} ({filtered.length})
               </Typography>
-              <Button
-                size="small"
-                startIcon={<CopyIcon />}
-                onClick={() => onCopy(filtered.map((i) => i.value).join("\n"))}
-              >
-                Копировать
+              <Button size="small" startIcon={<CopyIcon />}
+                onClick={() => onCopy(filtered.map((i) => i.value).join("\n"))}>
+                Скопировать
               </Button>
             </Box>
             <TableContainer>
@@ -712,6 +752,12 @@ function IocTab({ iocs, onCopy }: { iocs: IoCResponse[]; onCopy: (text: string) 
                       <TableCell align="right">
                         <IconButton size="small" aria-label={`Скопировать ${ioc.value}`} onClick={() => onCopy(ioc.value)}>
                           <CopyIcon fontSize="small" />
+                        </IconButton>
+                        <IconButton size="small" aria-label={`Изменить ${ioc.value}`} onClick={() => editIoc(ioc.id, ioc.value)}>
+                          <EditIcon fontSize="small" />
+                        </IconButton>
+                        <IconButton size="small" aria-label={`Удалить ${ioc.value}`} onClick={() => removeIoc(ioc.id, ioc.value)}>
+                          <DeleteIcon fontSize="small" />
                         </IconButton>
                       </TableCell>
                     </TableRow>

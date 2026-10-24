@@ -124,6 +124,29 @@ def test_export_iocs_endpoints(client):
     assert bad.status_code == 400
 
 
+def test_ioc_manual_crud(client):
+    doc_id = _first_doc_id(client)
+    bad = client.post(f"/api/letters/{doc_id}/iocs", json={"value": "x", "ioc_type": "bogus"},
+                      headers=_headers(client))
+    assert bad.status_code == 400
+
+    created = client.post(f"/api/letters/{doc_id}/iocs",
+                          json={"value": "manual.example", "ioc_type": "domain"},
+                          headers=_headers(client))
+    assert created.status_code == 200, created.text
+    ioc = next(i for i in created.json()["iocs"] if i["value"] == "manual.example")
+    assert ioc["ioc_type"] == "domain"
+
+    updated = client.put(f"/api/letters/{doc_id}/iocs/{ioc['id']}",
+                         json={"value": "manual2.example"}, headers=_headers(client))
+    assert updated.status_code == 200
+    assert any(i["value"] == "manual2.example" for i in updated.json()["iocs"])
+
+    deleted = client.delete(f"/api/letters/{doc_id}/iocs/{ioc['id']}", headers=_headers(client))
+    assert deleted.status_code == 200
+    assert all(i["id"] != ioc["id"] for i in deleted.json()["iocs"])
+
+
 def test_templates_admin_endpoints(client):
     """CRUD для шаблонов и библиотеки мер (страница «Шаблоны»)."""
     import uuid

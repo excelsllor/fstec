@@ -268,6 +268,7 @@ export default function LetterDetail() {
   const [loading, setLoading] = useState(true);
   const [snack, setSnack] = useState("");
   const [loadError, setLoadError] = useState("");
+  const [regeneratingReport, setRegeneratingReport] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -342,6 +343,19 @@ export default function LetterDetail() {
     }
   };
 
+  const handleRegenerateReport = async () => {
+    setRegeneratingReport(true);
+    try {
+      await documentsApi.regenerateReport(Number(id));
+      setSnack("Карточка индикаторов перегенерирована");
+      await load();
+    } catch (err: any) {
+      setSnack("Ошибка: " + (err.response?.data?.detail || "не удалось перегенерировать карточку"));
+    } finally {
+      setRegeneratingReport(false);
+    }
+  };
+
   const handleDownloadRaw = async () => {
     try {
       const { data } = await documentsApi.downloadRaw(Number(id));
@@ -403,6 +417,15 @@ export default function LetterDetail() {
           disabled={!letter.processing_stage || letter.processing_stage === "uploaded"}
         >
           Карточка индикаторов
+        </Button>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<RefreshIcon />}
+          onClick={handleRegenerateReport}
+          disabled={regeneratingReport || !letter.processing_stage || letter.processing_stage === "uploaded"}
+        >
+          {regeneratingReport ? "Пересборка..." : "Пересобрать карточку"}
         </Button>
         <Button
           variant="outlined"

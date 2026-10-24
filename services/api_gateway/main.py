@@ -30,7 +30,7 @@ from shared.auth import (
 from shared.config import (
     ALLOWED_EXTENSIONS, BOOTSTRAP_PASSWORD, BOOTSTRAP_USERNAME, CORS_ORIGINS,
     DATA_DIR, DISABLE_DOCS, MAX_FILE_SIZE, MAX_FILES_PER_BATCH,
-    MIN_PASSWORD_LENGTH, ORG_NAME, UPLOAD_DIR,
+    MIN_PASSWORD_LENGTH, ORG_NAME, REPORT_DIR, UPLOAD_DIR,
 )
 from shared.db import SessionLocal, get_db, init_db
 from shared.events import DocumentsUploaded
@@ -567,6 +567,42 @@ def download_raw(doc_id: int, request: Request, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="Исходный файл не найден")
     _audit(db, user, "download_source", "document", doc_id, doc.source_filename, doc_id, request=request)
     return FileResponse(path, filename=doc.source_filename)
+
+
+@app.post("/reports/{doc_id}/regenerate")
+def regenerate_report(doc_id: int, request: Request, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """Пересобрать карточку индикаторов после ручных правок (ТЗ 2.5.1)."""
+    doc = _owned_document(db, user, doc_id)
+    iocs = db.query(IoC).filter(IoC.document_id == doc_id).all()
+    vulns = db.query(Vulnerability).filter(Vulnerability.document_id == doc_id).all()
+    from shared.generator.indicator_card import build_indicator_card, report_filename
+    card = build_indicator_card(
+        org_name=ORG_NAME,
+        source_filename=doc.source_filename,
+        document_id=doc.id,
+        ips=[i.value for i in iocs if i.ioc_type == "ip"],
+        ipv6=[i.value for i in iocs if i.ioc_type == "ipv6"],
+        domains=[i.value for i in iocs if i.ioc_type == "domain"],
+        emails=[i.value for i in iocs if i.ioc_type == "email"],
+        vulnerabilities=[{
+            "cve_id": v.cve_id, "bdu_id": v.bdu_id, "description": v.description,
+            "software": v.software, "severity": v.severity, "cvss_score": v.cvss_score,
+            "current_version": v.current_version, "target_version": v.target_version,
+            "fixed_version": v.fixed_version, "cmdb_match": v.cmdb_match,
+        } for v in vulns],
+        sla=doc.sla,
+    )
+    fname = report_filename(doc.source_filename)
+    report_dir = REPORT_DIR / f"doc_{doc.id}"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / fname
+    report_path.write_bytes(card)
+    db.add(Report(document_id=doc.id, report_type="indicator_card",
+                  filename=fname, file_path=str(report_path)))
+    _audit(db, user, "regenerate_report", "document", doc_id, fname, doc_id, request=request)
+    db.commit()
+    return {"filename": fname, "document_id": doc_id}
 
 
 @app.post("/reply/generate")

@@ -241,6 +241,8 @@ export const documentsApi = {
   get: (id: number) => api.get<LetterResponse>(`/documents/${id}`),
   downloadReport: (id: number) =>
     api.get(`/reports/${id}/download`, { responseType: "blob" }),
+  regenerateReport: (id: number) =>
+    api.post<{ filename: string; document_id: number }>(`/reports/${id}/regenerate`),
   downloadRaw: (id: number) =>
     api.get(`/reports/${id}/download_raw`, { responseType: "blob" }),
   generateReply: (id: number) =>

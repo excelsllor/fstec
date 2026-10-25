@@ -9,7 +9,7 @@ import re
 from sqlalchemy.orm import Session
 
 from shared.events import AnalysisIocs, DocumentAnalyzed
-from shared.config import LLM_MERGED_ANALYZE, IOC_CLASSIFIER_URL, BERT_PRIMARY_IOCS
+from shared.config import LLM_MERGED_ANALYZE, IOC_CLASSIFIER_URL, BERT_PRIMARY_IOCS, DEDUPE_PROMPT_LINES
 from shared.extractor.ioc_extractor import (
     INTERNAL_EMAILS, IoCResult, _clean_domain, _valid_domain, extract_iocs,
 )
@@ -61,6 +61,20 @@ THREAT_WEIGHTS = {
     "vulnerability": 1.2,
 }
 VULN_WEIGHTS = {"critical": 1.8, "high": 1.6, "medium": 1.3, "low": 1.0, "unknown": 1.2}
+
+
+def _dedupe_prompt_lines(text: str) -> str:
+    """Убирает точные повторы длинных строк (колонтитулы/шапки) из LLM-промпта."""
+    seen = set()
+    out = []
+    for raw in text.splitlines():
+        line = re.sub(r"\s+", " ", raw).strip()
+        if len(line) >= 40 and line in seen:
+            continue
+        if len(line) >= 40:
+            seen.add(line)
+        out.append(raw)
+    return "\n".join(out)
 
 
 def _regex_pass(text: str):
@@ -136,6 +150,7 @@ async def analyze_async(provider: LLMProvider, text: str) -> tuple[DocumentAnaly
     # (тестовые фейки) сохраняют прежнее поведение.
     # IoC из внешнего BERT-классификатора запускаем ПАРАЛЛЕЛЬНО с 8B-вызовом,
     # чтобы его латентность (CPU) не добавлялась к критическому пути.
+    llm_text = _dedupe_prompt_lines(text) if DEDUPE_PROMPT_LINES else text
     clf_task = asyncio.ensure_future(_classifier_iocs_async(text))
     # merged быстрее на hacker/other-письмах; для regex-vulnerability оставляем
     # два вызова, чтобы не менять проверенное поведение на больших BDU-списках.
@@ -147,16 +162,16 @@ async def analyze_async(provider: LLMProvider, text: str) -> tuple[DocumentAnaly
         # BERT видит весь текст (<=20k), regex дополняет; отдельный LLM-IoC
         # вызов не нужен. Если BERT упадёт — fallback ниже.
         llm_io = None
-        llm_result = await _maybe("analyze", text, hint=classification)
-    elif (LLM_MERGED_ANALYZE and not is_vuln_doc
+        llm_result = await _maybe("analyze", llm_text, hint=classification)
+    elif (LLM_MERGED_ANALYZE
             and callable(getattr(provider, "analyze_and_extract", None))):
         merged_used = True
-        merged = await _maybe("analyze_and_extract", text, hint=classification)
+        merged = await _maybe("analyze_and_extract", llm_text, hint=classification)
         llm_result, llm_io = merged if merged else (None, None)
     else:
         llm_io, llm_result = await asyncio.gather(
             _maybe("extract_iocs_llm", text),
-            _maybe("analyze", text, hint=classification),
+            _maybe("analyze", llm_text, hint=classification),
         )
     clf_io = await clf_task
     if bert_primary and clf_io is None:

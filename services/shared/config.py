@@ -149,6 +149,7 @@ IOC_CLASSIFIER_URL = os.environ.get(
     "FSTEC_IOC_CLASSIFIER_URL", "http://host.docker.internal:8002/extract").strip()
 LLM_MERGED_IOCS = os.environ.get("FSTEC_LLM_MERGED_IOCS", "1").lower() in ("1", "true", "yes")
 BERT_PRIMARY_IOCS = os.environ.get("FSTEC_BERT_PRIMARY_IOCS", "0").lower() in ("1", "true", "yes")
+DEDUPE_PROMPT_LINES = os.environ.get("FSTEC_DEDUPE_PROMPT_LINES", "0").lower() in ("1", "true", "yes")
 # Полностью отключить guided_json (промптовый JSON). Нужно для экспериментов со
 # спекулятивным декодированием: guided+spec несовместимы на vLLM 0.8.5.
 LLM_DISABLE_GUIDED = os.environ.get("FSTEC_LLM_DISABLE_GUIDED", "0").lower() in ("1", "true", "yes")

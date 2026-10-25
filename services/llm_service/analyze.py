@@ -163,7 +163,7 @@ async def analyze_async(provider: LLMProvider, text: str) -> tuple[DocumentAnaly
         # вызов не нужен. Если BERT упадёт — fallback ниже.
         llm_io = None
         llm_result = await _maybe("analyze", llm_text, hint=classification)
-    elif (LLM_MERGED_ANALYZE
+    elif (LLM_MERGED_ANALYZE and not is_vuln_doc
             and callable(getattr(provider, "analyze_and_extract", None))):
         merged_used = True
         merged = await _maybe("analyze_and_extract", llm_text, hint=classification)
@@ -189,6 +189,7 @@ async def analyze_async(provider: LLMProvider, text: str) -> tuple[DocumentAnaly
         _merge_iocs(iocs, _sanitize_classifier_iocs(llm_io, text))
     if clf_io:
         _merge_iocs(iocs, _sanitize_classifier_iocs(clf_io, text))
+    _expand_parent_domains(iocs)
     return _finalize(text, letter, iocs, vulns, ner, summary, classification,
                      "", llm_result)
 
@@ -357,6 +358,21 @@ def _sanitize_classifier_iocs(res, text: str = ""):
     out.vuln_ids = [v for v in res.vuln_ids if _classifier_value_in_text(str(v), text)]
     out.cve_ids = [v for v in res.cve_ids if _classifier_value_in_text(str(v), text)]
     return out
+
+
+def _expand_parent_domains(iocs: IoCResult) -> None:
+    """Добавляет родительский домен, если в тексте есть >=2 его поддомена."""
+    from collections import Counter
+    counts = Counter()
+    for d in iocs.domains:
+        parts = d.split(".")
+        if len(parts) >= 3:
+            counts[".".join(parts[-2:])] += 1
+    existing = set(iocs.domains)
+    for parent, count in counts.items():
+        if count >= 2 and parent not in existing and parent not in {"fstec.ru"}:
+            iocs.domains.append(parent)
+            existing.add(parent)
 
 
 def persist_analysis(db: Session, doc: Document, event: DocumentAnalyzed) -> None:

@@ -736,6 +736,31 @@ class VLLMProvider(LLMProvider):
             self._usage_tag = None
         return self._finalize_merged(pairs, hint)
 
+    async def _merged_one_async(self, chunk: str, hint):
+        res = LLMResult(llm_used=False)
+        ok = False
+        chunk_iocs: list[IoCResult] = []
+        for system in self._merged_systems():
+            try:
+                raw = (await self.achat(system, chunk,
+                                        max_tokens=self._MERGED_MAX_TOKENS,
+                                        fit=False, thinking=False,
+                                        guided_json=self._merged_schema(),
+                                        timeout_s=max(self.timeout_s, 900))).strip()
+            except Exception:
+                break
+            res, ioc, ok = self._merge_response(raw, chunk, hint)
+            if ioc is not None:
+                chunk_iocs.append(ioc)
+            if ok:
+                break
+        chunk_ioc = None
+        if chunk_iocs:
+            chunk_ioc = IoCResult()
+            for ci in chunk_iocs:
+                self._merge_iocs(chunk_ioc, ci)
+        return res, chunk_ioc, ok
+
     async def analyze_and_extract_async(self, text: str, hint=None) -> tuple[LLMResult, IoCResult | None]:
         """Асинхронный twin analyze_and_extract (не блокирует event loop)."""
         if not text.strip():
@@ -744,30 +769,9 @@ class VLLMProvider(LLMProvider):
         self._usage_tag = "analyze+extract"
         pairs: list = []
         try:
-            for chunk in chunks:
-                res = LLMResult(llm_used=False)
-                ok = False
-                chunk_iocs: list[IoCResult] = []
-                for system in self._merged_systems():
-                    try:
-                        raw = (await self.achat(system, chunk,
-                                                max_tokens=self._MERGED_MAX_TOKENS,
-                                                fit=False, thinking=False,
-                                         guided_json=self._merged_schema(),
-                                                timeout_s=max(self.timeout_s, 900))).strip()
-                    except Exception:
-                        break
-                    res, ioc, ok = self._merge_response(raw, chunk, hint)
-                    if ioc is not None:
-                        chunk_iocs.append(ioc)
-                    if ok:
-                        break
-                chunk_ioc = None
-                if chunk_iocs:
-                    chunk_ioc = IoCResult()
-                    for ci in chunk_iocs:
-                        self._merge_iocs(chunk_ioc, ci)
-                pairs.append((res, chunk_ioc, ok))
+            pairs = list(await asyncio.gather(
+                *(self._merged_one_async(chunk, hint) for chunk in chunks)
+            ))
         except Exception as exc:  # noqa: BLE001
             logger.warning("analyze_and_extract error: %s", exc)
         finally:

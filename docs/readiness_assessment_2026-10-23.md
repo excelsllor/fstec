@@ -88,8 +88,8 @@ mean similarity **0.9969**, min **0.9609**, hacker 11/11 — **1.0**; детал
 **239.7 док/ч**; threats/iocs совпали с раздельным прогоном, у `9-85` отброшен отсутствующий
 в тексте `telegram.org`. Детали: `docs/speed_quick_merged_2026-10-24.md`.
 
-**Финальный режим:** 8 hacker-писем параллельно — p50 **89.2 с**, p95 **119.8 с**,
-**211.1 док/ч**; 3 hacker — p50 **50.7 с**. Vulnerability — 96–117 с. BERT+regex с parent-domain
+**Финальный режим:** 8 hacker-писем параллельно, chunks параллельно — p50 **91.3 с**,
+p95 **125.7 с**, **202.3 док/ч**; 3 hacker — p50 **50.7 с**. Vulnerability — 96–117 с. BERT+regex с parent-domain
 правилом; 9-148/9-152 без потери старых IoC.
 Детали: `docs/speed_optimization_2026-10-24.md`.
 

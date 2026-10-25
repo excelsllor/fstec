@@ -9,7 +9,7 @@ import re
 from sqlalchemy.orm import Session
 
 from shared.events import AnalysisIocs, DocumentAnalyzed
-from shared.config import LLM_MERGED_ANALYZE
+from shared.config import LLM_MERGED_ANALYZE, IOC_CLASSIFIER_URL, BERT_PRIMARY_IOCS
 from shared.extractor.ioc_extractor import (
     INTERNAL_EMAILS, IoCResult, _clean_domain, _valid_domain, extract_iocs,
 )
@@ -79,7 +79,7 @@ def analyze(provider: LLMProvider, text: str) -> tuple[DocumentAnalyzed, dict]:
     _extract_llm = getattr(provider, "extract_iocs_llm", None)
     llm_io = _extract_llm(text) if callable(_extract_llm) else None
     if llm_io:
-        _merge_iocs(iocs, llm_io)
+        _merge_iocs(iocs, _sanitize_classifier_iocs(llm_io, text))
 
     # Классификация: regex-first (ТЗ 2.3) → RuBERT (если regex не определил) →
     # LLM-классификация типов (3 класса, авторитетный слой — сверка 22/22 vs 12/22)
@@ -140,7 +140,15 @@ async def analyze_async(provider: LLMProvider, text: str) -> tuple[DocumentAnaly
     # merged быстрее на hacker/other-письмах; для regex-vulnerability оставляем
     # два вызова, чтобы не менять проверенное поведение на больших BDU-списках.
     merged_used = False
-    if (LLM_MERGED_ANALYZE and classification != "vulnerability"
+    is_vuln_doc = classification == "vulnerability" or len(vulns) >= 3
+    bert_primary = (is_vuln_doc and BERT_PRIMARY_IOCS
+                    and bool(IOC_CLASSIFIER_URL) and len(text) <= 20000)
+    if bert_primary:
+        # BERT видит весь текст (<=20k), regex дополняет; отдельный LLM-IoC
+        # вызов не нужен. Если BERT упадёт — fallback ниже.
+        llm_io = None
+        llm_result = await _maybe("analyze", text, hint=classification)
+    elif (LLM_MERGED_ANALYZE and not is_vuln_doc
             and callable(getattr(provider, "analyze_and_extract", None))):
         merged_used = True
         merged = await _maybe("analyze_and_extract", text, hint=classification)
@@ -151,6 +159,9 @@ async def analyze_async(provider: LLMProvider, text: str) -> tuple[DocumentAnaly
             _maybe("analyze", text, hint=classification),
         )
     clf_io = await clf_task
+    if bert_primary and clf_io is None:
+        logger.warning("BERT IoC unavailable; fallback to LLM IoC extraction")
+        llm_io = await _maybe("extract_iocs_llm", text)
     if merged_used and llm_io is None and clf_io is None:
         # BERT-классификатор недоступен, а merged-промпт не просит IoC.
         # Не теряем качество: добираем IoC отдельным LLM-вызовом.
@@ -160,9 +171,9 @@ async def analyze_async(provider: LLMProvider, text: str) -> tuple[DocumentAnaly
         from llm_service.provider import LLMResult
         llm_result = LLMResult(llm_used=False)
     if llm_io:
-        _merge_iocs(iocs, llm_io)
+        _merge_iocs(iocs, _sanitize_classifier_iocs(llm_io, text))
     if clf_io:
-        _merge_iocs(iocs, _sanitize_classifier_iocs(clf_io))
+        _merge_iocs(iocs, _sanitize_classifier_iocs(clf_io, text))
     return _finalize(text, letter, iocs, vulns, ner, summary, classification,
                      "", llm_result)
 
@@ -175,7 +186,7 @@ async def _classifier_iocs_async(text: str):
     import httpx
     from shared.extractor.ioc_extractor import IoCResult
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=45) as client:
             resp = await client.post(IOC_CLASSIFIER_URL, json={"text": text[:20000]})
             if resp.status_code != 200:
                 return None
@@ -278,41 +289,58 @@ def _merge_iocs(base, llm):
                 existing.add(v)
 
 
-def _sanitize_classifier_iocs(res):
-    """Нормализация ответа внешнего IoC-классификатора: refang, типы, FP-фильтры."""
+def _classifier_value_in_text(value: str, text: str) -> bool:
+    if not text:
+        return True
+    needle = value.strip().lower()
+    hay = text.lower()
+    norm_hay = (hay.replace("[.]", ".").replace("(.)", ".").replace("[dot]", ".")
+                .replace("[:]", ":"))
+    norm_needle = (needle.replace("[.]", ".").replace("(.)", ".").replace("[dot]", ".")
+                   .replace("[:]", ":"))
+    if not norm_needle:
+        return False
+    pattern = r"(?<![0-9a-z_.@-])" + re.escape(norm_needle) + r"(?![0-9a-z_.@-])"
+    return re.search(pattern, norm_hay, re.IGNORECASE) is not None
+
+
+def _sanitize_classifier_iocs(res, text: str = ""):
+    """Нормализация ответа BERT: refang, типы, FP-фильтры и проверка по тексту."""
     out = IoCResult()
     seen = set()
     for value in res.ips:
         v = _refang(str(value))
         ip = _norm_ip(v)
-        if ip and ip not in seen:
+        if ip and ip not in seen and _classifier_value_in_text(ip, text):
             seen.add(ip)
             out.ips.append(ip)
     for value in res.domains:
         v = _refang(str(value)).strip()
         ip = _norm_ip(v.split("/", 1)[0].split(":", 1)[0])
         if ip:
-            if ip not in seen:
+            if ip not in seen and _classifier_value_in_text(ip, text):
                 seen.add(ip)
                 out.ips.append(ip)
             continue
         d = _clean_domain(v)
-        if d and d not in seen and _valid_domain(d, obfuscated=False):
+        if d and d not in seen and _valid_domain(d, obfuscated=False) \
+                and _classifier_value_in_text(d, text):
             seen.add(d)
             out.domains.append(d)
     for value in res.hashes:
         h = _refang(str(value)).strip().lower()
         if re.fullmatch(r"[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}|[0-9a-f]{96}|[0-9a-f]{128}", h):
-            if h not in seen:
+            if h not in seen and _classifier_value_in_text(h, text):
                 seen.add(h)
                 out.hashes.append(h)
     for value in res.emails:
         e = _refang(str(value)).strip().lower()
-        if EMAIL_PATTERN.match(e) and e not in INTERNAL_EMAILS and e not in seen:
+        if EMAIL_PATTERN.match(e) and e not in INTERNAL_EMAILS and e not in seen \
+                and _classifier_value_in_text(e, text):
             seen.add(e)
             out.emails.append(e)
-    out.vuln_ids = list(res.vuln_ids)
-    out.cve_ids = list(res.cve_ids)
+    out.vuln_ids = [v for v in res.vuln_ids if _classifier_value_in_text(str(v), text)]
+    out.cve_ids = [v for v in res.cve_ids if _classifier_value_in_text(str(v), text)]
     return out
 
 

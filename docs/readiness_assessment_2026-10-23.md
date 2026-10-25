@@ -88,6 +88,11 @@ mean similarity **0.9969**, min **0.9609**, hacker 11/11 — **1.0**; детал
 **239.7 док/ч**; threats/iocs совпали с раздельным прогоном, у `9-85` отброшен отсутствующий
 в тексте `telegram.org`. Детали: `docs/speed_quick_merged_2026-10-24.md`.
 
+**Финальный гибрид с BERT:** 8 hacker-писем параллельно — p50 **89.2 с**, p95 **119.8 с**,
+**211.1 док/ч**; 3 hacker — p50 **50.7 с**. Для vulnerability — 96–117 с. BERT+regex используются
+для hacker, отдельный LLM-IoC сохранён для vulnerability; 9-148/9-152 без пропусков старых IoC.
+Детали: `docs/speed_optimization_2026-10-24.md`.
+
 **Безопасность:**
 - vLLM прогрев: `warmup_async` + keepalive раз в 300 с; RuBERT в контейнере недоступен (нет `torch`), fallback на vLLM/heuristic.
 - npm prod audit: **0** (follow-redirects обновлён); dev — 1 high.

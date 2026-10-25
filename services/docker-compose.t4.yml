@@ -4,6 +4,7 @@
 services:
   llm-service:
     depends_on: !override [kafka, redis, postgres, vllm-proxy]
+    extra_hosts: !override ["host.docker.internal:host-gateway"]
     environment:
       FSTEC_LLM_PROVIDER: vllm
       VLLM_BASE_URL: https://vllm-proxy:8443/v1

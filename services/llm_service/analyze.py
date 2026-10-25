@@ -139,8 +139,10 @@ async def analyze_async(provider: LLMProvider, text: str) -> tuple[DocumentAnaly
     clf_task = asyncio.ensure_future(_classifier_iocs_async(text))
     # merged быстрее на hacker/other-письмах; для regex-vulnerability оставляем
     # два вызова, чтобы не менять проверенное поведение на больших BDU-списках.
+    merged_used = False
     if (LLM_MERGED_ANALYZE and classification != "vulnerability"
             and callable(getattr(provider, "analyze_and_extract", None))):
+        merged_used = True
         merged = await _maybe("analyze_and_extract", text, hint=classification)
         llm_result, llm_io = merged if merged else (None, None)
     else:
@@ -149,6 +151,11 @@ async def analyze_async(provider: LLMProvider, text: str) -> tuple[DocumentAnaly
             _maybe("analyze", text, hint=classification),
         )
     clf_io = await clf_task
+    if merged_used and llm_io is None and clf_io is None:
+        # BERT-классификатор недоступен, а merged-промпт не просит IoC.
+        # Не теряем качество: добираем IoC отдельным LLM-вызовом.
+        logger.warning("IoC classifier unavailable; fallback to LLM IoC extraction")
+        llm_io = await _maybe("extract_iocs_llm", text)
     if llm_result is None:
         from llm_service.provider import LLMResult
         llm_result = LLMResult(llm_used=False)
@@ -168,7 +175,7 @@ async def _classifier_iocs_async(text: str):
     import httpx
     from shared.extractor.ioc_extractor import IoCResult
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(IOC_CLASSIFIER_URL, json={"text": text[:20000]})
             if resp.status_code != 200:
                 return None

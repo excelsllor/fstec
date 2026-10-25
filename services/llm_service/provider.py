@@ -13,7 +13,7 @@ from shared.config import (LLM_PROVIDER, LLM_TIMEOUT_S, VLLM_BASE_URL,
                            VLLM_MAX_TOKENS, PLAN_MAX_TOKENS, VLLM_MODEL, VLLM_TEMPERATURE,
                            VLLM_CA_FILE,
                            VLLM_TOP_P,                            VLLM_REPETITION_PENALTY, VLLM_FREQUENCY_PENALTY,
-                           LLM_MERGED_IOCS, LLM_DISABLE_GUIDED,
+                           LLM_MERGED_IOCS, LLM_DISABLE_GUIDED, LLM_GUIDED_FALLBACK,
                            CHUNK_MAX_TOKENS, LLM_ENABLE_THINKING,
                            VLLM_THINK_MAX_TOKENS, VLLM_THINK_BUDGET,
                            VLLM_CLASSIFY_MAX_CHARS, VLLM_EXTRACT_IO,
@@ -281,7 +281,7 @@ class VLLMProvider(LLMProvider):
 
     def _payload(self, system: str, user: str, max_tokens: int | None,
                  fit: bool, thinking: bool | None,
-                 guided_json: dict | None = None) -> dict:
+                 guided_json: dict | None = None, force_guided: bool = False) -> dict:
         import json
 
         if fit:
@@ -309,7 +309,7 @@ class VLLMProvider(LLMProvider):
         # A: структурная генерация (xgrammar) — гарантирует валидную схему и
         # обрывает «разговорчивость» модели, из-за которой крупные письма
         # упирались в лимит completion и теряли весь ответ.
-        if guided_json is not None and not LLM_DISABLE_GUIDED:
+        if guided_json is not None and (force_guided or not LLM_DISABLE_GUIDED):
             body["guided_json"] = guided_json
         return body
 
@@ -325,12 +325,12 @@ class VLLMProvider(LLMProvider):
 
     def _chat(self, system: str, user: str, max_tokens: int | None = None, fit: bool = True,
               thinking: bool | None = None, timeout_s: float | None = None,
-              guided_json: dict | None = None) -> str:
+              guided_json: dict | None = None, force_guided: bool = False) -> str:
         import json
         import ssl
         import urllib.request
 
-        body = json.dumps(self._payload(system, user, max_tokens, fit, thinking, guided_json)).encode("utf-8")
+        body = json.dumps(self._payload(system, user, max_tokens, fit, thinking, guided_json, force_guided)).encode("utf-8")
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions", data=body,
             headers={"Content-Type": "application/json"},
@@ -342,13 +342,13 @@ class VLLMProvider(LLMProvider):
 
     async def achat(self, system: str, user: str, max_tokens: int | None = None, fit: bool = True,
                     thinking: bool | None = None, timeout_s: float | None = None,
-                    guided_json: dict | None = None) -> str:
+                    guided_json: dict | None = None, force_guided: bool = False) -> str:
         """Асинхронный twin _chat: не блокирует event loop на время генерации.
 
         Параллелизм ограничен семафором LLM_MAX_CONCURRENCY — он же ограничивает
         фактическую очередь в vLLM, чтобы приложение не переполняло его память
         (на T4 запас VRAM около 0.3 ГиБ, см. этап замеров)."""
-        payload = self._payload(system, user, max_tokens, fit, thinking, guided_json)
+        payload = self._payload(system, user, max_tokens, fit, thinking, guided_json, force_guided)
         client = await get_async_client()
         effective_timeout = timeout_s if timeout_s is not None else self.timeout_s
         async with gate("vllm", LLM_MAX_CONCURRENCY):
@@ -710,12 +710,14 @@ class VLLMProvider(LLMProvider):
                 res = LLMResult(llm_used=False)
                 ok = False
                 chunk_iocs: list[IoCResult] = []
-                for system in self._merged_systems():
+                for attempt, system in enumerate(self._merged_systems()):
                     try:
+                        force_guided = LLM_GUIDED_FALLBACK and attempt > 0
                         raw = self._chat(system, chunk,
                                          max_tokens=self._MERGED_MAX_TOKENS,
                                          fit=False, thinking=False,
                                                 guided_json=self._merged_schema(),
+                                                force_guided=force_guided,
                                          timeout_s=max(self.timeout_s, 900)).strip()
                     except Exception:
                         break
@@ -740,12 +742,14 @@ class VLLMProvider(LLMProvider):
         res = LLMResult(llm_used=False)
         ok = False
         chunk_iocs: list[IoCResult] = []
-        for system in self._merged_systems():
+        for attempt, system in enumerate(self._merged_systems()):
             try:
+                force_guided = LLM_GUIDED_FALLBACK and attempt > 0
                 raw = (await self.achat(system, chunk,
                                         max_tokens=self._MERGED_MAX_TOKENS,
                                         fit=False, thinking=False,
                                         guided_json=self._merged_schema(),
+                                        force_guided=force_guided,
                                         timeout_s=max(self.timeout_s, 900))).strip()
             except Exception:
                 break

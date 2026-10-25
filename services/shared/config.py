@@ -153,6 +153,7 @@ DEDUPE_PROMPT_LINES = os.environ.get("FSTEC_DEDUPE_PROMPT_LINES", "0").lower() i
 # Полностью отключить guided_json (промптовый JSON). Нужно для экспериментов со
 # спекулятивным декодированием: guided+spec несовместимы на vLLM 0.8.5.
 LLM_DISABLE_GUIDED = os.environ.get("FSTEC_LLM_DISABLE_GUIDED", "0").lower() in ("1", "true", "yes")
+LLM_GUIDED_FALLBACK = os.environ.get("FSTEC_LLM_GUIDED_FALLBACK", "0").lower() in ("1", "true", "yes")
 VLLM_THINK_MAX_TOKENS = int(os.environ.get("FSTEC_VLLM_THINK_MAX_TOKENS", "5000"))
 # Лимит токенов на «размышления» (thinking_budget у Qwen3): предупреждает бесконечный reasoning
 # и гарантирует переход к финальному JSON. Без лимита модель сжигает весь бюджет на reasoning

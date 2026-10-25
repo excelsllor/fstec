@@ -1,5 +1,5 @@
 {
-  "started_at": 1792951951.1686,
+  "started_at": 1792955728.2367969,
   "duration_requested_s": 1.0,
   "concurrency": 3,
   "letters": 3,
@@ -10,20 +10,20 @@
   "upload_errors": 0,
   "poll_errors": 0,
   "durations_s": [
-    44.52,
-    50.66,
-    52.67
+    22.24,
+    24.24,
+    56.7
   ],
   "failures": [],
   "stages": {
     "done": 3
   },
-  "elapsed_s": 53.0,
-  "finished_at": 1792952004.2082832,
-  "throughput_completed_per_hour": 203.6,
-  "throughput_uploaded_per_hour": 203.6,
-  "duration_p50_s": 50.66,
-  "duration_p95_s": 50.66,
-  "duration_min_s": 44.52,
-  "duration_max_s": 52.67
+  "elapsed_s": 57.0,
+  "finished_at": 1792955785.2739632,
+  "throughput_completed_per_hour": 189.4,
+  "throughput_uploaded_per_hour": 189.4,
+  "duration_p50_s": 24.24,
+  "duration_p95_s": 24.24,
+  "duration_min_s": 22.24,
+  "duration_max_s": 56.7
 }

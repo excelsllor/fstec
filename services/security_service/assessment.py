@@ -112,7 +112,7 @@ class Assessment:
     routing: str = "default"
 
 
-async def _assess_one(v: dict, *, cmdb, enrich: bool, nvd, bdu) -> tuple[dict, str]:
+async def _assess_one(v: dict, *, cmdb, enrich: bool, nvd, bdu, cmdb_cache: dict | None = None) -> tuple[dict, str]:
     """Обогащение + сопоставление с CMDB для одной уязвимости."""
     raw = dict(v or {})
     software = raw.get("software") or ""
@@ -125,7 +125,12 @@ async def _assess_one(v: dict, *, cmdb, enrich: bool, nvd, bdu) -> tuple[dict, s
 
     item, matched = None, False
     try:
-        candidates = await cmdb.find_many(software)
+        if cmdb_cache is not None and software in cmdb_cache:
+            candidates = cmdb_cache[software]
+        else:
+            candidates = await cmdb.find_many(software)
+            if cmdb_cache is not None:
+                cmdb_cache[software] = candidates
         item, matched = _match_cmdb(enriched, candidates, software)
     except Exception as exc:  # noqa: BLE001 — CMDB недоступна (ТЗ 4.2)
         logger.warning("cmdb lookup failed for %r: %s", software, exc)
@@ -171,8 +176,10 @@ async def assess_document(vulns_raw: list[dict], *, cmdb: InventoryClient,
     if not vulns:
         return Assessment(assessed=[], external_errors=[], sla="normal", routing="default")
 
+    cmdb_cache: dict = {}
     results = await bounded_gather(
-        [_assess_one(v, cmdb=cmdb, enrich=enrich, nvd=nvd, bdu=bdu) for v in vulns],
+        [_assess_one(v, cmdb=cmdb, enrich=enrich, nvd=nvd, bdu=bdu, cmdb_cache=cmdb_cache)
+         for v in vulns],
         SECURITY_LOOKUP_CONCURRENCY,
         name="security",
     )

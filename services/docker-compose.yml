@@ -155,9 +155,10 @@ services:
       FSTEC_LLM_MERGED_ANALYZE: ${FSTEC_LLM_MERGED_ANALYZE:-0}
       FSTEC_LLM_MERGED_IOCS: ${FSTEC_LLM_MERGED_IOCS:-1}
       FSTEC_BERT_PRIMARY_IOCS: ${FSTEC_BERT_PRIMARY_IOCS:-0}
-      FSTEC_DEDUPE_PROMPT_LINES: 
+      FSTEC_DEDUPE_PROMPT_LINES: ${FSTEC_DEDUPE_PROMPT_LINES:-0}
       FSTEC_LLM_DISABLE_GUIDED: ${FSTEC_LLM_DISABLE_GUIDED:-0}
       FSTEC_LLM_GUIDED_FALLBACK: ${FSTEC_LLM_GUIDED_FALLBACK:-0}
+      FSTEC_PLAN_CACHE: ${FSTEC_PLAN_CACHE:-0}
       FSTEC_REPLY_LLM_MODE: ${FSTEC_REPLY_LLM_MODE:-always}
       # Р­С‚Р°Рї 4 вЂ” bounded concurrency. РћРґРёРЅ РєРѕРЅСЃСЊСЋРјРµСЂ С‡РёС‚Р°РµС‚ СЃС‚РѕР»СЊРєРѕ РїР°СЂС‚РёС†РёР№,
       # СЃРєРѕР»СЊРєРѕ РµРјСѓ РЅР°Р·РЅР°С‡РµРЅРѕ, РїРѕСЌС‚РѕРјСѓ СЂРµР°Р»СЊРЅС‹Р№ РїР°СЂР°Р»Р»РµР»РёР·Рј СѓРїРёСЂР°РµС‚СЃСЏ РІ С‡РёСЃР»Рѕ

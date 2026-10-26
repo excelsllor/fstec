@@ -6,11 +6,12 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from shared.bus import get_event_bus
-from shared.concurrency import run_blocking
-from shared.config import SECURITY_MODE
+from shared.bus import KafkaEventBus, get_event_bus
+from shared.concurrency import bounded_gather, run_blocking
+from shared.config import EVENT_BUS, SECURITY_LOOKUP_CONCURRENCY, SECURITY_MODE
 from shared.db import SessionLocal, init_db
 from shared.events import AuditEvent, SecurityAssessed, VulnerabilityAssessed
+from shared.extractor.vuln_extractor import extract_vulns
 from shared.models import Document, SLABase, Vulnerability, VulnActionTemplate
 from shared.worker import configure_logging, register_handlers, serve_forever
 from security_service.assessment import assess_document
@@ -123,6 +124,30 @@ def _persist_assessment(doc_id: int, assessment) -> None:
         db.commit()
 
 
+async def handle_parsed_prefetch(topic: str, key: str, payload: dict) -> None:
+    """Прогревает BDU/NVD-кэш в отдельной consumer group, пока LLM анализирует письмо."""
+    text = payload.get("all_text") or payload.get("text") or ""
+    if not text.strip():
+        return
+    try:
+        vulns = await run_blocking(extract_vulns, text)
+        bdu = _get_bdu()
+        nvd = _get_nvd()
+        jobs = []
+        for v in vulns[:80]:
+            bdu_id = (v.get("bdu_id", "") if isinstance(v, dict) else getattr(v, "bdu_id", "") or "").strip()
+            cve_id = (v.get("cve_id", "") if isinstance(v, dict) else getattr(v, "cve_id", "") or "").strip()
+            if bdu and bdu_id:
+                jobs.append(bdu.get_bdu(bdu_id))
+            if nvd and cve_id:
+                jobs.append(nvd.get_cve(cve_id))
+        if jobs:
+            await bounded_gather(jobs, SECURITY_LOOKUP_CONCURRENCY, name="security-prefetch")
+            logger.info("Prefetched %d security sources for doc %s", len(jobs), payload.get("document_id"))
+    except Exception:  # noqa: BLE001 - prefetch не должен ломать конвейер
+        logger.warning("Security prefetch failed", exc_info=True)
+
+
 async def handle_analyzed(topic: str, key: str, payload: dict) -> None:
     doc_id = int(payload["document_id"])
     vulns_raw = payload.get("vulns_raw", [])
@@ -176,9 +201,16 @@ def main():
         init_db()
         bus = get_event_bus()
         register_handlers(bus, {"document.analyzed": handle_analyzed})
+        prefetch_bus = None
+        if EVENT_BUS == "kafka":
+            prefetch_bus = KafkaEventBus(group="fstec-prefetch")
+            prefetch_bus.subscribe("document.parsed", handle_parsed_prefetch)
+            await prefetch_bus.start()
         try:
             await serve_forever(bus, heartbeat_name="security")
         finally:
+            if prefetch_bus is not None:
+                await prefetch_bus.stop()
             from security_service.http_pool import close_clients
             await close_clients()
     asyncio.run(_run())

@@ -6,6 +6,8 @@
 в measure_candidates (очередь админа). При недоступном LLM — детерминированный
 fallback (по образцу response_generator), чтобы ответ всегда собирался.
 """
+import copy
+import hashlib
 import json
 import logging
 import os
@@ -15,6 +17,36 @@ from shared.config import LLM_PROVIDER, ORG_NAME
 from shared.generator.response_generator import _clean_theme, render_reply_docx
 
 logger = logging.getLogger("fstec.reply")
+
+_PLAN_CACHE: dict[str, dict] = {}
+_PLAN_CACHE_MAX = 128
+
+
+def _plan_cache_key(letter_type: str, blocks: list[dict], addr_count: int,
+                    letter_number: str, use_llm: bool, library: list[dict],
+                    fragments: list[dict]) -> str:
+    payload = json.dumps({
+        "letter_type": letter_type, "blocks": blocks, "addr_count": addr_count,
+        "letter_number": letter_number, "use_llm": use_llm,
+        "library": library, "fragments": fragments,
+    }, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _plan_cache_get(key: str) -> dict | None:
+    if os.environ.get("FSTEC_PLAN_CACHE", "0").lower() not in ("1", "true", "yes"):
+        return None
+    value = _PLAN_CACHE.get(key)
+    return copy.deepcopy(value) if value is not None else None
+
+
+def _plan_cache_put(key: str, value: dict) -> None:
+    if os.environ.get("FSTEC_PLAN_CACHE", "0").lower() not in ("1", "true", "yes"):
+        return
+    if len(_PLAN_CACHE) >= _PLAN_CACHE_MAX:
+        _PLAN_CACHE.pop(next(iter(_PLAN_CACHE)))
+    _PLAN_CACHE[key] = copy.deepcopy(value)
+
 
 # --- валидация внешних полей уязвимости (защита от prompt injection/подмены) ---
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$")
@@ -901,6 +933,12 @@ async def plan_reply_async(*, db, letter_type: str, blocks: list[dict], addr_cou
     llm_plan = None
     if use_llm is None:
         use_llm = _use_llm_for_reply(letter_type, letter_number)
+    cache_key = _plan_cache_key(letter_type, blocks, addr_count, letter_number,
+                                bool(use_llm), library, fragments)
+    cached = _plan_cache_get(cache_key)
+    if cached is not None:
+        logger.info("plan_reply cache hit")
+        return cached
     provider = _plugin_provider() if use_llm is not False else None
     if provider is None:
         logger.warning("LLM-план отключён: провайдер не создан "
@@ -911,8 +949,10 @@ async def plan_reply_async(*, db, letter_type: str, blocks: list[dict], addr_cou
     else:
         llm_plan = await _llm_plan_async(provider, letter_type, blocks, library, fragments)
 
-    return _finalize_plan(llm_plan, db, letter_type, blocks, addr_count, library, fragments,
+    plan = _finalize_plan(llm_plan, db, letter_type, blocks, addr_count, library, fragments,
                           letter_number=letter_number)
+    _plan_cache_put(cache_key, plan)
+    return plan
 
 
 def _finalize_plan(llm_plan: dict | None, db, letter_type: str, blocks: list[dict],
@@ -978,6 +1018,12 @@ def plan_reply(*, db, letter_type: str, blocks: list[dict], addr_count: int,
     llm_plan = None
     if use_llm is None:
         use_llm = _use_llm_for_reply(letter_type, letter_number)
+    cache_key = _plan_cache_key(letter_type, blocks, addr_count, letter_number,
+                                bool(use_llm), library, fragments)
+    cached = _plan_cache_get(cache_key)
+    if cached is not None:
+        logger.info("plan_reply cache hit")
+        return cached
     provider = _plugin_provider() if use_llm is not False else None
     if provider is None:
         logger.warning("LLM-план отключён: провайдер не создан "
@@ -988,8 +1034,10 @@ def plan_reply(*, db, letter_type: str, blocks: list[dict], addr_count: int,
     else:
         llm_plan = _llm_plan(provider, letter_type, blocks, library, fragments)
 
-    return _finalize_plan(llm_plan, db, letter_type, blocks, addr_count, library, fragments,
+    plan = _finalize_plan(llm_plan, db, letter_type, blocks, addr_count, library, fragments,
                           letter_number=letter_number)
+    _plan_cache_put(cache_key, plan)
+    return plan
 
 
 # --- рендер текста ------------------------------------------------------------

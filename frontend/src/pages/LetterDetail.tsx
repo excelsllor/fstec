@@ -41,6 +41,7 @@ import {
   ExpandMore as ExpandMoreIcon,
   Edit as EditIcon,
   Delete as DeleteIcon,
+  AutoFixHigh as AutoFixHighIcon,
 } from "@mui/icons-material";
 import {
   lettersApi,
@@ -52,6 +53,9 @@ import {
 } from "../api/client";
 
 const iocTypeLabels: Record<string, string> = {
+  ip_cidr: "IP CIDR",
+  ipv6: "IPv6",
+  url: "URL",
   ip: "IP-адрес",
   domain: "Домен",
   hash: "Хэш",
@@ -123,9 +127,9 @@ const entityTypeLabels: Record<string, string> = {
 };
 
 const applicabilityOptions = [
-  { value: "", label: "Не задано" },
-  { value: "true", label: "Применимо" },
-  { value: "false", label: "Не применимо" },
+  { value: "", label: "Не проверено" },
+  { value: "true", label: "Используется" },
+  { value: "false", label: "Не используется" },
 ];
 
 const actionTypeOptions = [
@@ -156,29 +160,33 @@ const actionTypeOptions = [
   },
 ];
 
-type RiskLevel = "red" | "yellow" | "green";
+type RiskLevel = "red" | "yellow" | "green" | "gray";
 
 function vulnRiskLevel(v: VulnerabilityResponse): RiskLevel {
+  if (v.cmdb_error) return "gray";
   if (v.cmdb_match || v.severity === "critical") return "red";
   if (v.severity === "high" || v.severity === "medium") return "yellow";
+  if (v.severity === "unknown" || !v.severity) return "gray";
   return "green";
 }
 
 function categorizeRisks(vulns: VulnerabilityResponse[]) {
-  let red = 0, yellow = 0, green = 0;
+  let red = 0, yellow = 0, green = 0, gray = 0;
   for (const v of vulns) {
     const lvl = vulnRiskLevel(v);
     if (lvl === "red") red++;
     else if (lvl === "yellow") yellow++;
+    else if (lvl === "gray") gray++;
     else green++;
   }
-  return { red, yellow, green };
+  return { red, yellow, green, gray };
 }
 
 const riskStyleMap: Record<RiskLevel, { bg: string; color: string; label: string }> = {
   red: { bg: "#c0392b", color: "#fff", label: "К" },
   yellow: { bg: "#f1c40f", color: "#000", label: "Ж" },
   green: { bg: "#dcfce7", color: "#14532d", label: "З" },
+  gray: { bg: "#e5e7eb", color: "#374151", label: "?" },
 };
 
 function RiskChip({ level, title }: { level: RiskLevel; title: string }) {
@@ -192,14 +200,15 @@ function RiskChip({ level, title }: { level: RiskLevel; title: string }) {
   );
 }
 
-function RiskSummary({ summary }: { summary: { red: number; yellow: number; green: number } }) {
+function RiskSummary({ summary }: { summary: { red: number; yellow: number; green: number; gray: number } }) {
   return (
     <Paper sx={{ p: 1.5, mb: 2, display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
       <Typography variant="subtitle2" sx={{ mr: 1 }}>Индикаторы уязвимостей (ТЗ 4.4):</Typography>
       {summary.red > 0 && <RiskChip level="red" title={`Критические (${summary.red})`} />}
       {summary.yellow > 0 && <RiskChip level="yellow" title={`Средние (${summary.yellow})`} />}
       {summary.green > 0 && <RiskChip level="green" title={`Низкие (${summary.green})`} />}
-      {summary.red === 0 && summary.yellow === 0 && summary.green === 0 && (
+      {summary.gray > 0 && <RiskChip level="gray" title={`\u041d\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u0435\u043d\u043e (${summary.gray})`} />}
+      {summary.red === 0 && summary.yellow === 0 && summary.green === 0 && summary.gray === 0 && (
         <Typography variant="body2" color="text.secondary">Уязвимости не обнаружены</Typography>
       )}
     </Paper>
@@ -447,7 +456,7 @@ export default function LetterDetail() {
         </Alert>
       )}
 
-      <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }}>
+      <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" allowScrollButtonsMobile sx={{ mb: 2 }}>
         <Tab label="Информация" />
         <Tab label={`Угрозы (${letter.threats.length})`} />
         <Tab label={`IOC (${letter.iocs.length})`} />
@@ -500,7 +509,6 @@ function InfoTab({ letter }: { letter: LetterResponse }) {
                 </TableCell>
               </TableRow>
               <TableRow><TableCell>SLA</TableCell><TableCell>{letter.sla === "critical" ? "Критичный" : "Обычный"}</TableCell></TableRow>
-              <TableRow><TableCell>Маршрут</TableCell><TableCell>{letter.routing === "infosec" ? "ИБ-подразделение" : "Общий"}</TableCell></TableRow>
               <TableRow><TableCell>Создано</TableCell><TableCell>{new Date(letter.created_at).toLocaleString("ru-RU")}</TableCell></TableRow>
             </TableBody>
           </Table>
@@ -691,7 +699,7 @@ function IocTab({ iocs, onCopy, letterId, onSaved }: {
   letterId: number;
   onSaved?: (view?: boolean) => void;
 }) {
-  const types = ["ip", "domain", "hash", "email", "bdu", "cve"];
+  const types = ["ip", "ip_cidr", "ipv6", "domain", "url", "hash", "email", "bdu", "cve"];
   const reload = () => onSaved?.();
   const editIoc = async (id: number, value: string) => {
     const next = window.prompt("Новое значение IoC", value);
@@ -781,23 +789,29 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
   }>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
   const [snack, setSnack] = useState("");
+  const [editing, setEditing] = useState<Record<number, boolean>>({});
+  const [autofilling, setAutofilling] = useState<number | null>(null);
 
   useEffect(() => {
-    const initial: typeof drafts = {};
-    for (const v of letter.vulnerabilities) {
-      initial[v.id] = {
-        action_type: v.action_type,
-        software: v.software,
-        applicability: v.is_applicable === true ? "true" : v.is_applicable === false ? "false" : "",
-        applicability_notes: v.applicability_notes || "",
-        action_details: v.action_details || "",
-        current_version: v.current_version || "",
-        target_version: v.target_version || "",
-        fixed_version: v.fixed_version || "",
-      };
-    }
-    setDrafts(initial);
-  }, [letter]);
+    setDrafts((prev) => {
+      const next = { ...prev };
+      for (const v of letter.vulnerabilities) {
+        if (!next[v.id]) {
+          next[v.id] = {
+            action_type: v.action_type,
+            software: v.software,
+            applicability: v.is_applicable === true ? "true" : v.is_applicable === false ? "false" : "",
+            applicability_notes: v.applicability_notes || "",
+            action_details: v.action_details || "",
+            current_version: v.current_version || "",
+            target_version: v.target_version || "",
+            fixed_version: v.fixed_version || "",
+          };
+        }
+      }
+      return next;
+    });
+  }, [letter.id, letter.vulnerabilities]);
 
   if (letter.vulnerabilities.length === 0) {
     return <Alert severity="info">Уязвимости не обнаружены</Alert>;
@@ -830,6 +844,7 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
         fixed_version: d.fixed_version,
       });
       setSnack("Уязвимость сохранена");
+      setEditing((prev) => ({ ...prev, [id]: false }));
       if (onSaved) onSaved();
     } catch (err: any) {
       setSnack("Ошибка: " + (err.response?.data?.detail || "неизвестная"));
@@ -838,17 +853,36 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
     }
   };
 
+  const handleAutofill = async (id: number) => {
+    setAutofilling(id);
+    try {
+      const { data } = await lettersApi.autofillVulnerability(letter.id, id);
+      updateDraft(id, {
+        action_type: data.action_type || "",
+        applicability: data.applicability === "unknown" ? "" : data.applicability,
+        applicability_notes: data.applicability_notes || "",
+        action_details: data.action_details || "",
+      });
+      setSnack("Заполнено по CMDB и библиотеке мер. Проверьте перед сохранением.");
+    } catch (err: any) {
+      setSnack("Ошибка автозаполнения: " + (err.response?.data?.detail || "неизвестная"));
+    } finally {
+      setAutofilling(null);
+    }
+  };
+
   return (
     <Box>
-      <Alert severity="info" sx={{ mb: 2 }}>
-        Настройки применяются при генерации DOCX («Сгенерировать заново» на вкладке «Ответ»).
-      </Alert>
       {letter.vulnerabilities.map((v) => {
         const d = drafts[v.id] || {
           action_type: v.action_type, software: v.software,
-          applicability: "", applicability_notes: "", action_details: "",
+          applicability: v.is_applicable === true ? "true" : v.is_applicable === false ? "false" : "",
+          applicability_notes: v.applicability_notes || "", action_details: v.action_details || "",
+          current_version: v.current_version || "", target_version: v.target_version || "",
+          fixed_version: v.fixed_version || "",
         };
         const opt = actionTypeOptions.find((o) => o.value === d.action_type);
+        const app = applicabilityOptions.find((o) => o.value === d.applicability);
         return (
           <Card key={v.id} sx={{ mb: 2 }}>
             <CardContent>
@@ -860,10 +894,7 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
                   size="small"
                   color={severityColors[v.severity] || "default"}
                 />
-                <RiskChip level={vulnRiskLevel(v)} title={
-                  vulnRiskLevel(v) === "red" ? "Высокий риск" :
-                  vulnRiskLevel(v) === "yellow" ? "Средний риск" : "Низкий риск"
-                } />
+                <RiskChip level={vulnRiskLevel(v)} title={vulnRiskLevel(v) === "red" ? "\u0412\u044b\u0441\u043e\u043a\u0438\u0439 \u0440\u0438\u0441\u043a" : vulnRiskLevel(v) === "yellow" ? "\u0421\u0440\u0435\u0434\u043d\u0438\u0439 \u0440\u0438\u0441\u043a" : vulnRiskLevel(v) === "gray" ? "\u041d\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u0435\u043d\u043e" : "\u041d\u0438\u0437\u043a\u0438\u0439 \u0440\u0438\u0441\u043a"} />
                 {v.source && (
                   <Chip
                     label={`Источник: ${sourceLabels[v.source] || v.source}`}
@@ -893,6 +924,19 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
                   )}
                 </Alert>
               )}
+              {v.cmdb_error && (
+                <Alert severity="warning" sx={{ mb: 1 }}>{`CMDB: ${v.cmdb_error}`}</Alert>
+              )}
+              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, mb: 1.5 }}>
+                {v.cvss_score != null && <Chip size="small" label={`CVSS ${v.cvss_score}`} color="warning" variant="outlined" />}
+                {d.software && <Chip size="small" label={`${d.software}${d.current_version ? ` ${d.current_version}` : ""}`} />}
+                {d.target_version && <Chip size="small" color="warning" variant="outlined" label={`\u2192 ${d.target_version}`} />}
+                {d.fixed_version && <Chip size="small" color="success" variant="outlined" label={d.fixed_version} />}
+                {opt && d.action_type !== "" && <Chip size="small" variant="outlined" label={opt.label} />}
+                {app && d.applicability !== "" && <Chip size="small" variant="outlined" color={d.applicability === "true" ? "success" : "default"} label={app.label} />}
+              </Box>
+              {editing[v.id] ? (
+                <>
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <TextField
@@ -921,7 +965,7 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
                 <Grid size={{ xs: 12, md: 6 }}>
                   <FormControl fullWidth size="small">
                     <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5 }}>
-                      Применимость (ТЗ 2.4)
+                      ПО используется
                     </Typography>
                     <Select
                       value={d.applicability}
@@ -968,27 +1012,63 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
                 </Grid>
                 <Grid size={{ xs: 12 }}>
                   <TextField
-                    label="Примечания по применимости"
+                    label="Обоснование использования ПО"
                     value={d.applicability_notes}
                     onChange={(e) => updateDraft(v.id, { applicability_notes: e.target.value })}
                     size="small"
                     fullWidth
                     multiline
                     minRows={1}
-                    placeholder="Почему уязвимость применима/не применима (версия, конфигурация и т.п.)"
+                    placeholder="Почему ПО используется или не используется (CMDB, версия, конфигурация)"
                   />
                 </Grid>
               </Grid>
-              <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 2 }}>
-                <Button
-                  variant="contained"
-                  size="small"
-                  onClick={() => handleSave(v.id)}
-                  disabled={savingId === v.id}
-                >
-                  {savingId === v.id ? "Сохранение..." : "Сохранить"}
-                </Button>
-              </Box>
+                  <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 2, gap: 1 }}>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      startIcon={<AutoFixHighIcon />}
+                      onClick={() => handleAutofill(v.id)}
+                      disabled={autofilling === v.id || savingId === v.id}
+                    >{autofilling === v.id ? "Заполнение..." : "Заполнить"}</Button>
+                    <Button
+                      variant="text"
+                      size="small"
+                      onClick={() => {
+                        setDrafts((prev) => ({
+                          ...prev,
+                          [v.id]: {
+                            action_type: v.action_type,
+                            software: v.software,
+                            applicability: v.is_applicable === true ? "true" : v.is_applicable === false ? "false" : "",
+                            applicability_notes: v.applicability_notes || "",
+                            action_details: v.action_details || "",
+                            current_version: v.current_version || "",
+                            target_version: v.target_version || "",
+                            fixed_version: v.fixed_version || "",
+                          },
+                        }));
+                        setEditing((prev) => ({ ...prev, [v.id]: false }));
+                      }}
+                    >{"\u041e\u0442\u043c\u0435\u043d\u0430"}</Button>
+                    <Button
+                      variant="contained"
+                      size="small"
+                      onClick={() => handleSave(v.id)}
+                      disabled={savingId === v.id}
+                    >{savingId === v.id ? "\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u0435..." : "\u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c"}</Button>
+                  </Box>
+                </>
+              ) : (
+                <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    startIcon={<EditIcon />}
+                    onClick={() => setEditing((prev) => ({ ...prev, [v.id]: true }))}
+                  >{"\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c"}</Button>
+                </Box>
+              )}
             </CardContent>
           </Card>
         );
@@ -1034,7 +1114,7 @@ function buildHighlightedHtml(text: string, iocs: IoCResponse[], measureOptions:
   const patterns: { re: RegExp; cls: string }[] = [];
 
   const hashIocs = iocs.filter((i) => i.ioc_type === "hash").map((i) => i.value);
-  const ipIocs = iocs.filter((i) => i.ioc_type === "ip").map((i) => i.value);
+  const ipIocs = iocs.filter((i) => ["ip", "ip_cidr", "ipv6"].includes(i.ioc_type)).map((i) => i.value);
   const domainIocs = iocs.filter((i) => i.ioc_type === "domain").map((i) => i.value);
   const emailIocs = iocs.filter((i) => i.ioc_type === "email").map((i) => i.value);
 
@@ -1131,7 +1211,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
       } catch {
         savedText = "";
       }
-      setEditText(savedText || buildText(data));
+      setEditText(savedText || data.text || buildText(data));
       if (savedText) {
         setSnack("Загружена сохранённая версия ответа");
       }
@@ -1419,12 +1499,13 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
               <Typography variant="subtitle2" sx={{ mb: 1 }}>
                 IoC ({letter.iocs.length}) — клик копирует
               </Typography>
-              {renderIocGroup("IP-адреса", ["ip"])}
-              {renderIocGroup("Домены", ["domain"])}
-              {renderIocGroup("Хэши", ["hash"])}
-              {renderIocGroup("Email", ["email"])}
-              {renderIocGroup("BDU", ["bdu"])}
-              {renderIocGroup("CVE", ["cve"])}
+              {renderIocGroup(iocTypeLabels.ip, ["ip", "ip_cidr", "ipv6"])}
+              {renderIocGroup(iocTypeLabels.domain, ["domain"])}
+              {renderIocGroup(iocTypeLabels.url, ["url"])}
+              {renderIocGroup(iocTypeLabels.hash, ["hash"])}
+              {renderIocGroup(iocTypeLabels.email, ["email"])}
+              {renderIocGroup(iocTypeLabels.bdu, ["bdu"])}
+              {renderIocGroup(iocTypeLabels.cve, ["cve"])}
               {letter.iocs.length === 0 && (
                 <Typography variant="caption" color="text.secondary">Нет IoC</Typography>
               )}
@@ -1446,7 +1527,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
 function ExportTab({ onExport, onExportDocx, counts }: { onExport: (type: string) => void; onExportDocx: (type: string) => void; counts: IoCResponse[] }) {
   const exportTypes = [
     { type: "emails", label: "Email-адреса", count: counts.filter((i) => i.ioc_type === "email").length },
-    { type: "ip_addresses", label: "IP-адреса (на блокировку)", count: counts.filter((i) => i.ioc_type === "ip").length },
+    { type: "ip_addresses", label: "IP-адреса (на блокировку)", count: counts.filter((i) => ["ip", "ip_cidr", "ipv6"].includes(i.ioc_type)).length },
     { type: "domains", label: "Домены (на блокировку)", count: counts.filter((i) => i.ioc_type === "domain").length },
     { type: "ioc_indicators", label: "Все IOC (IP + домены + хэши + email + BDU + CVE)", count: counts.length },
   ];

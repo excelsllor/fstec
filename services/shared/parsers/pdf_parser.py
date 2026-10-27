@@ -29,6 +29,7 @@ def parse_pdf(content: bytes) -> ParseResult:
                 except Exception:
                     pass
         result.text = "\n".join(text_parts)
+        result.page_texts = text_parts
         result.tables = tables
     except Exception as e:
         result.errors.append(f"PDF: {e}")

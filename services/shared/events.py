@@ -81,11 +81,13 @@ class VulnerabilityAssessed(BaseModel):
     software: str = ""
     severity: str = "unknown"
     cvss_score: float | None = None
+    cvss_version: str = ""
     cpe: str = ""
     affected_range: str = ""
     fixed_version: str = ""
     patch_url: str = ""
     cmdb_match: bool = False
+    cmdb_error: str = ""
     current_version: str = ""
     target_version: str = ""
     recommendation: str = ""

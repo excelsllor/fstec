@@ -6,6 +6,7 @@ GET /reports/{id}/download, GET /reports/{id}/download_raw, POST /reply/generate
 """
 import base64
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -25,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from shared import bus as eventbus
 from shared.auth import (
-    create_access_token, ensure_bootstrap, get_current_user,
+    create_access_token, create_refresh_token, decode_token, ensure_bootstrap, get_current_user, revoke_token, is_token_revoked,
     hash_password, mark_bootstrap_used, needs_setup, require_admin, verify_password,
 )
 from shared.config import (
@@ -36,7 +37,7 @@ from shared.config import (
 from shared.db import SessionLocal, get_db, init_db
 from shared.events import DocumentsUploaded
 from shared.models import (
-    Attachment, AuditLog, BootstrapSecret, Document, Entity, GeneratedResponse,
+    Attachment, AuditLog, BootstrapSecret, Document, DocumentTable, Entity, GeneratedResponse, Report,
     IoC, Measure, MeasureCandidate, MeasureTemplate, Report, Summary,
     Threat, ThreatType, User, VulnActionTemplate, Vulnerability,
 )
@@ -194,6 +195,7 @@ def login(body: dict, request: Request, db: Session = Depends(get_db)):
     password = body.get("password") or ""
     user = db.query(User).filter(User.username == username).first()
     if not user or not verify_password(password, user.password_hash):
+        _audit(db, None, "login_failed", "user", user.id if user else None, filename=username, request=request)
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
     if not user.is_active:
         raise HTTPException(status_code=401, detail="Учётная запись отключена")
@@ -201,8 +203,11 @@ def login(body: dict, request: Request, db: Session = Depends(get_db)):
         mark_bootstrap_used(db)
     _audit(db, user, "login", "user", user.id, request=request)
     db.commit()
-    token = create_access_token({"sub": user.username, "role": user.role})
-    return {"access_token": token, "token_type": "bearer", "role": user.role, "username": user.username}
+    claims = {"sub": user.username, "role": user.role}
+    token = create_access_token(claims)
+    refresh = create_refresh_token(claims)
+    return {"access_token": token, "refresh_token": refresh, "token_type": "bearer",
+            "role": user.role, "username": user.username}
 
 
 @app.get("/api/auth/status")
@@ -212,21 +217,45 @@ def auth_status(db: Session = Depends(get_db)):
     setup = needs_setup(db)
     payload = {"needs_setup": setup}
     if setup:
-        password = None
-        source = "file"
-        if BOOTSTRAP_PASSWORD:
-            source = "env"
-        else:
-            try:
-                path = Path(DATA_DIR) / "bootstrap_password.txt"
-                if path.exists():
-                    password = path.read_text(encoding="utf-8").strip() or None
-            except OSError:
-                password = None
         payload.update({"bootstrap_username": BOOTSTRAP_USERNAME,
-                        "bootstrap_password": password,
-                        "bootstrap_source": source})
+                        "bootstrap_source": "env" if BOOTSTRAP_PASSWORD else "file"})
     return payload
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, body: dict | None = None,
+           db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        revoke_token(auth.split(" ", 1)[1])
+    refresh = (body or {}).get("refresh_token")
+    if refresh:
+        revoke_token(str(refresh))
+    _audit(db, user, "logout", "user", user.id, request=request)
+    return {"ok": True}
+
+
+@app.post("/api/auth/refresh")
+def refresh_token(body: dict, db: Session = Depends(get_db)):
+    refresh = str((body or {}).get("refresh_token") or "")
+    if not refresh:
+        raise HTTPException(status_code=401, detail="??? refresh token")
+    try:
+        payload = decode_token(refresh)
+    except Exception:
+        raise HTTPException(status_code=401, detail="???????????????? refresh token")
+    if payload.get("type") != "refresh" or payload.get("sub") is None or is_token_revoked(refresh):
+        raise HTTPException(status_code=401, detail="???????????????? refresh token")
+    user = db.query(User).filter(User.username == payload["sub"]).first()
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="???????????? ?? ??????")
+    claims = {"sub": user.username, "role": user.role}
+    token = create_access_token(claims)
+    new_refresh = create_refresh_token(claims)
+    revoke_token(refresh)
+    _audit(db, user, "refresh", "user", user.id)
+    return {"access_token": token, "refresh_token": new_refresh, "token_type": "bearer",
+            "role": user.role, "username": user.username}
 
 
 @app.get("/api/auth/me")
@@ -410,7 +439,7 @@ async def upload(
     att_metas = []
     for idx, uf in enumerate(files):
         name = Path(uf.filename).name
-        dest = doc_dir / name
+        dest = doc_dir / f"{idx}_{name}"
         with open(dest, "wb") as f:
             shutil.copyfileobj(uf.file, f)
         db.add(Attachment(
@@ -491,10 +520,44 @@ def _document_brief(doc: Document):
         "source_filename": doc.source_filename,
         "processing_stage": doc.processing_stage,
         "created_at": doc.created_at,
+        "progress_percent": _document_progress(doc),
+        "eta_seconds": _document_eta(doc),
     }
 
 
+def _document_progress(doc: Document) -> int:
+    return {
+        "uploaded": 10, "parsed": 35, "analyzed": 60,
+        "assessed": 80, "done": 100, "completed": 100,
+        "failed": 100, "error": 100,
+    }.get((doc.processing_stage or "").lower(), 20 if doc.status == "uploaded" else 50)
+
+
+def _document_eta(doc: Document) -> int | None:
+    stage = (doc.processing_stage or "").lower()
+    if stage in ("done", "completed", "failed", "error"):
+        return 0
+    return {"uploaded": 60, "parsed": 30, "analyzed": 12, "assessed": 5}.get(stage, 60)
+
+
+def _report_meta(db: Session, doc_id: int) -> dict:
+    report = (db.query(Report).filter(Report.document_id == doc_id)
+              .order_by(Report.generated_at.desc()).first())
+    if not report:
+        return {}
+    return {"filename": report.filename,
+            "generated_at": report.generated_at.isoformat() if report.generated_at else ""}
+
+
 def _serialize_document(db: Session, doc: Document) -> dict:
+    tables = []
+    for t in db.query(DocumentTable).filter(DocumentTable.document_id == doc.id).order_by(DocumentTable.table_index).all():
+        try:
+            rows = json.loads(t.rows_json or "[]")
+        except Exception:
+            rows = []
+        tables.append({"index": t.table_index, "rows": rows})
+
     attachments = [{
         "id": a.id, "filename": a.filename, "file_type": a.file_type,
         "parse_status": a.parse_status, "parse_errors": a.parse_errors,
@@ -521,7 +584,7 @@ def _serialize_document(db: Session, doc: Document) -> dict:
         "fixed_version": v.fixed_version, "patch_url": v.patch_url,
         "cmdb_match": v.cmdb_match, "current_version": v.current_version,
         "target_version": v.target_version, "source": v.source,
-        "recommendation": v.recommendation,
+        "cmdb_error": v.cmdb_error or "", "recommendation": v.recommendation,
         "is_applicable": v.is_applicable, "applicability_notes": v.applicability_notes,
         "action_type": v.action_type, "action_details": v.action_details,
         "response_point": v.response_point,
@@ -546,6 +609,7 @@ def _serialize_document(db: Session, doc: Document) -> dict:
         "ocr_used": doc.ocr_used,
         "updated_at": doc.updated_at,
         "attachments": attachments,
+        "tables": tables,
         "threats": threats,
         "iocs": iocs,
         "vulnerabilities": vulnerabilities,
@@ -556,6 +620,7 @@ def _serialize_document(db: Session, doc: Document) -> dict:
         "threat_count": len(threats),
         "response": {"text": resp.content or "", "exists": resp is not None, "id": resp.id} if resp
         else {"text": "", "exists": False},
+        "report": _report_meta(db, doc.id),
     })
     return data
 
@@ -579,6 +644,8 @@ def download_report(doc_id: int, request: Request, db: Session = Depends(get_db)
               .order_by(Report.generated_at.desc()).first())
     if not report:
         raise HTTPException(status_code=404, detail="Отчёт ещё не сформирован")
+    if not report.file_path or not Path(report.file_path).exists():
+        raise HTTPException(status_code=404, detail="Report file not found")
     _audit(db, user, "download_report", "document", doc_id, report.filename, doc_id, request=request)
     return FileResponse(report.file_path, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         filename=report.filename)
@@ -608,7 +675,7 @@ def regenerate_report(doc_id: int, request: Request, db: Session = Depends(get_d
         org_name=ORG_NAME,
         source_filename=doc.source_filename,
         document_id=doc.id,
-        ips=[i.value for i in iocs if i.ioc_type == "ip"],
+        ips=[i.value for i in iocs if i.ioc_type in ("ip", "ip_cidr")],
         ipv6=[i.value for i in iocs if i.ioc_type == "ipv6"],
         domains=[i.value for i in iocs if i.ioc_type == "domain"],
         emails=[i.value for i in iocs if i.ioc_type == "email"],
@@ -771,12 +838,35 @@ def admin_candidate_reject(candidate_id: int, db: Session = Depends(get_db),
 # ---------------- Legacy compat: /api/letters ----------------
 # (обратная совместимость для существующего фронтенда до его перехода на ТЗ 2.6)
 
+@app.get("/api/audit")
+def list_audit(skip: int = 0, limit: int = 200, action: str = "", document_id: int | None = None,
+               db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="???????????? ????")
+    q = db.query(AuditLog)
+    if action:
+        q = q.filter(AuditLog.action == action)
+    if document_id is not None:
+        q = q.filter(AuditLog.document_id == document_id)
+    total = q.count()
+    rows = q.order_by(AuditLog.created_at.desc()).offset(max(0, skip)).limit(min(500, max(1, limit))).all()
+    return {"total": total, "items": [
+        {"id": r.id, "user_id": r.user_id, "username": r.username, "action": r.action,
+         "object_type": r.object_type, "object_id": r.object_id, "filename": r.filename,
+         "document_id": r.document_id, "ip_address": r.ip_address,
+         "created_at": r.created_at.isoformat() if r.created_at else ""}
+        for r in rows
+    ]}
+
+
 @app.get("/api/letters")
 def legacy_list(skip: int = Query(0, ge=0, le=1_000_000), limit: int = Query(50, ge=1, le=200),
-                letter_type: str | None = None,
-                status: str | None = None, db: Session = Depends(get_db),
+                letter_type: str | None = None, status: str | None = None,
+                mine: bool = Query(True), db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):
     query = _scoped_documents(db, user)
+    if mine:
+        query = query.filter(Document.created_by == user.id)
     if letter_type:
         query = query.filter(Document.letter_type == letter_type)
     if status:
@@ -791,8 +881,11 @@ def legacy_list(skip: int = Query(0, ge=0, le=1_000_000), limit: int = Query(50,
 
 
 @app.get("/api/letters/stats")
-def legacy_stats(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def legacy_stats(mine: bool = Query(True), db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
     scope = _scoped_documents(db, user)
+    if mine:
+        scope = scope.filter(Document.created_by == user.id)
     doc_ids = [d.id for d in scope.with_entities(Document.id).all()]
 
     def _count(model) -> int:
@@ -872,6 +965,12 @@ def legacy_response_preview(letter_id: int, db: Session = Depends(get_db),
     iocs = db.query(IoC).filter(IoC.document_id == doc.id).all()
     preview = build_preview(db=db, document=doc, threats=threats,
                             vulnerabilities=vulns, iocs=iocs)
+    resp = (db.query(GeneratedResponse)
+            .filter(GeneratedResponse.document_id == doc.id)
+            .order_by(GeneratedResponse.id.desc()).first())
+    if resp:
+        preview["text"] = resp.content or ""
+    preview["response_exists"] = resp is not None
     return preview
 
 
@@ -884,6 +983,7 @@ def legacy_measures_update(letter_id: int, threat_id: int, body: dict, request: 
     if not threat:
         raise HTTPException(status_code=404, detail="Угроза не найдена")
     threat.measures = "\n".join(measures)
+    _audit(db, user, "update_measures", "threat", threat_id, document_id=letter_id, request=request)
     db.commit()
     texts = [m.strip() for m in measures if m.strip()]
     return {"measures": measures, "text": "\n".join(f"  {m}" for m in texts)}
@@ -899,13 +999,94 @@ def _update_vulnerability(db: Session, user: User, doc_id: int, vuln_id: int,
     if "is_applicable" in body and body["is_applicable"] is not None:
         vuln.is_applicable = bool(body["is_applicable"])
     for f in ("applicability_notes", "action_type", "action_details", "response_point", "software",
-              "current_version", "target_version", "fixed_version"):
+              "current_version", "target_version", "fixed_version", "bdu_id", "cve_id",
+              "description", "severity"):
         if f in body and body[f] is not None:
             setattr(vuln, f, body[f])
+    if "severity" in body and body["severity"] not in (None, "") and body["severity"] not in {"critical", "high", "medium", "low", "unknown"}:
+        raise HTTPException(status_code=400, detail="???????????? severity")
+    if "cvss_score" in body:
+        try:
+            score = float(str(body["cvss_score"]).replace(",", ".")) if body["cvss_score"] not in (None, "") else None
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="???????????? CVSS score")
+        if score is not None and not (0 <= score <= 10):
+            raise HTTPException(status_code=400, detail="CVSS score ?????? ???? ?? 0 ?? 10")
+        vuln.cvss_score = score
     db.commit()
     _audit(db, user, "update_vulnerability", "vulnerability", vuln_id,
            document_id=doc_id, request=request)
     return _serialize_document(db, doc)
+
+
+
+@app.post("/api/letters/{letter_id}/vulnerabilities/{vuln_id}/autofill")
+def autofill_vulnerability(letter_id: int, vuln_id: int, request: Request,
+                           db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    doc = _owned_document(db, user, letter_id, detail="Letter not found")
+    vuln = db.query(Vulnerability).filter(
+        Vulnerability.id == vuln_id, Vulnerability.document_id == doc.id).first()
+    if not vuln:
+        raise HTTPException(status_code=404, detail="Vulnerability not found")
+
+    software = (vuln.software or "").strip()
+    current = (vuln.current_version or "").strip()
+    target = (vuln.target_version or "").strip()
+    fixed = (vuln.fixed_version or "").strip()
+    version = target or fixed
+
+    if not software:
+        applicability = "unknown"
+        action_type = ""
+    elif vuln.cmdb_match:
+        applicability = "true"
+        action_type = "update" if version else "compensate"
+    elif (vuln.cmdb_error or "").strip():
+        applicability = "unknown"
+        action_type = ""
+    else:
+        applicability = "false"
+        action_type = "skip"
+
+    templates = {t.action_type: t for t in db.query(VulnActionTemplate).all()}
+    template = templates.get(action_type)
+    details = (template.content or "") if template else ""
+    for key, value in (
+        ("{{software}}", software), ("{software}", software),
+        ("{{current_version}}", current), ("{current_version}", current),
+        ("{{target_version}}", version), ("{target_version}", version),
+        ("{{fixed_version}}", version), ("{fixed_version}", version),
+    ):
+        details = details.replace(key, value)
+    if action_type == "update" and version and version not in details:
+        details = details.rstrip() + f" Целевая версия: {version}."
+
+    if applicability == "true":
+        current_part = f" {current}" if current else ""
+        notes = f"ПО «{software}»{current_part} обнаружено в CMDB; уязвимость применима."
+    elif applicability == "false":
+        notes = (f"Совпадений для ПО «{software}» в CMDB не найдено; "
+                 "уязвимость не применяется к инвентаризованному ПО.")
+    elif not software:
+        notes = "Не указано ПО; применимость требует проверки."
+    else:
+        err = (vuln.cmdb_error or "").strip()[:300]
+        suffix = f": {err}" if err else ""
+        notes = f"Не удалось проверить ПО «{software}» в CMDB{suffix}. Требуется ручная проверка."
+
+    result = {
+        "action_type": action_type,
+        "applicability": applicability,
+        "action_details": details[:1500],
+        "applicability_notes": notes[:1500],
+        "source": "cmdb+library" if template else "cmdb",
+        "model": "",
+        "llm_used": False,
+    }
+    _audit(db, user, "autofill_vulnerability", "vulnerability", vuln_id,
+           document_id=doc.id, request=request)
+    return result
 
 
 @app.put("/api/letters/{letter_id}/vulnerabilities/{vuln_id}")
@@ -1029,7 +1210,7 @@ _EXPORT_DOCX_FILENAMES = {
 
 
 @app.get("/api/letters/{letter_id}/download")
-def legacy_download(letter_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def legacy_download(letter_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     _owned_document(db, user, letter_id, detail="Письмо не найдено")
     resp = db.query(GeneratedResponse).filter(GeneratedResponse.document_id == letter_id) \
         .order_by(GeneratedResponse.id.desc()).first()
@@ -1045,6 +1226,7 @@ def legacy_download(letter_id: int, db: Session = Depends(get_db), user: User = 
         d.add_paragraph(resp.content or "")
         d.save(buf)
         content = buf.getvalue()
+    _audit(db, user, "download_reply", "document", letter_id, document_id=letter_id, request=request)
     return Response(content, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     headers={"Content-Disposition": _content_disposition(f"answer_{letter_id}.docx")})
 
@@ -1233,7 +1415,7 @@ def delete_vuln_template(vt_id: int, db: Session = Depends(get_db),
 
 # ---------------- Diagnostics ----------------
 
-def _probe_http(url: str, timeout: float = 3.0) -> dict:
+def _probe_http(url: str, timeout: float = 3.0, insecure: bool = False) -> dict:
     """Проверка доступности хоста. «Доступен» = получен любой HTTP-ответ (включая 4xx/5xx),
     недоступен — только транспортные ошибки (DNS, таймаут, TLS, refused)."""
     import urllib.error
@@ -1241,7 +1423,11 @@ def _probe_http(url: str, timeout: float = 3.0) -> dict:
     start = time.time()
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "fstec-diagnostics"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        context = None
+        if insecure:
+            import ssl
+            context = ssl._create_unverified_context()
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
             return {"reachable": True, "http_status": resp.status,
                     "latency_ms": round((time.time() - start) * 1000), "error": ""}
     except urllib.error.HTTPError as e:  # сервер ответил не-2xx — хост доступен
@@ -1308,7 +1494,14 @@ def diagnostics(db: Session = Depends(get_db), user: User = Depends(require_admi
                          "http_status": None, "latency_ms": 0,
                          "error": "провайдер 'mock' (внешний запрос не выполняется)"})
 
-    llm_probe = _probe_http(f"{VLLM_BASE_URL}/models", timeout=2.0)
+    from shared.config import IOC_CLASSIFIER_URL
+    if IOC_CLASSIFIER_URL:
+        bert_health = IOC_CLASSIFIER_URL.rsplit("/", 1)[0] + "/health"
+        bert_health = bert_health.replace("host.docker.internal", "172.17.0.1")
+        external.append({"name": "BERT IoC", "url": bert_health,
+                         **_probe_http(bert_health, timeout=3.0, insecure=True)})
+
+    llm_probe = _probe_http(f"{VLLM_BASE_URL}/models", timeout=2.0, insecure=True)
     llm = {
         "provider": LLM_PROVIDER,
         "base_url": VLLM_BASE_URL,
@@ -1390,11 +1583,13 @@ def _bus_kafka() -> dict:
     import asyncio
 
     from shared.config import KAFKA_BOOTSTRAP
+    from shared.bus import kafka_security_kwargs
 
     async def _collect() -> list:
         from aiokafka import AIOKafkaConsumer, TopicPartition
         consumer = AIOKafkaConsumer(bootstrap_servers=KAFKA_BOOTSTRAP,
-                                    client_id="fstec-diagnostics")
+                                    client_id="fstec-diagnostics",
+                                    **kafka_security_kwargs())
         await consumer.start()
         try:
             topics = sorted(t for t in await consumer.topics() if not t.startswith("__"))

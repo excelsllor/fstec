@@ -79,6 +79,7 @@ SECRET_KEY = _resolve_secret_key()
 ALGORITHM = "HS256"
 JWT_AUDIENCE = "fstec-service"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("FSTEC_TOKEN_MINUTES", "120"))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.environ.get("FSTEC_REFRESH_DAYS", "30"))
 
 # CORS: список разрешённых origin через запятую. В prod по умолчанию пусто
 # (UI и API отдаются с одного origin через nginx); в dev — локальный Vite.
@@ -179,6 +180,17 @@ RUBERT_MODEL = os.environ.get("FSTEC_RUBERT_MODEL", "deepvk/USER2-base")
 RUBERT_DEVICE = os.environ.get("FSTEC_RUBERT_DEVICE", "cpu").lower()
 RUBERT_CONFIDENCE = float(os.environ.get("FSTEC_RUBERT_CONFIDENCE", "0.35"))
 RUBERT_MAX_TOKENS = int(os.environ.get("FSTEC_RUBERT_MAX_TOKENS", "2048"))
+RUBERT_AUTHORITATIVE = os.environ.get("FSTEC_RUBERT_AUTHORITATIVE", "0").lower() in ("1", "true", "yes")
+ANALYSIS_CACHE_ENABLED = os.environ.get("FSTEC_ANALYSIS_CACHE", "0").lower() in ("1", "true", "yes")
+ANALYSIS_CACHE_TTL_S = int(os.environ.get("FSTEC_ANALYSIS_CACHE_TTL_S", "86400"))
+LLM_NO_SUMMARY = os.environ.get("FSTEC_LLM_NO_SUMMARY", "0").lower() in ("1", "true", "yes")
+LLM_SKIP_ANALYZE = os.environ.get("FSTEC_LLM_SKIP_ANALYZE", "0").lower() in ("1", "true", "yes")
+LLM_PROMPT_DIGEST = os.environ.get("FSTEC_LLM_PROMPT_DIGEST", "0").lower() in ("1", "true", "yes")
+LLM_PROMPT_DIGEST_CHARS = int(os.environ.get("FSTEC_LLM_PROMPT_DIGEST_CHARS", "6000"))
+# Вариант A: массивы IoC собирает детерминированный extractor/BERT, а 8B
+# возвращает только classification/summary/entities. Это убирает из completion
+# длинный список IoC, который модель иначе копирует из письма.
+LLM_LOCAL_IOC_ARRAYS = os.environ.get("FSTEC_LLM_LOCAL_IOC_ARRAYS", "0").lower() in ("1", "true", "yes")
 
 # Security (ТЗ 2.4)
 SECURITY_MODE = os.environ.get("FSTEC_SECURITY_MODE", "live")  # mock (оффлайн/dev) | live (внешние БД)

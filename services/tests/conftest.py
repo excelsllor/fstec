@@ -60,8 +60,11 @@ def create_uploaded_document(tmp_path, filename: str = "letter.docx", content: b
     content = content if content is not None else make_docx_bytes()
     from shared.config import UPLOAD_DIR
     with SessionLocal() as db:
+        from shared.models import User
+        admin = db.query(User).filter(User.role == "admin").first()
         doc = Document(source_filename=filename, letter_type="other",
-                       status="uploaded", processing_stage="uploaded")
+                       status="uploaded", processing_stage="uploaded",
+                       created_by=admin.id if admin else None)
         db.add(doc)
         db.flush()
         doc_dir = UPLOAD_DIR / f"doc_{doc.id}"

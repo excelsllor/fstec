@@ -15,6 +15,7 @@ def export_emails(iocs) -> str:
 
 def export_ips(iocs) -> str:
     ips = sorted({i.value.split(":")[0] for i in iocs if i.ioc_type == "ip"})
+    ips += sorted({i.value for i in iocs if i.ioc_type in ("ipv6", "ip_cidr")})
     if not ips:
         return ""
     lines = ["Сетевые индикаторы компрометации"]
@@ -35,6 +36,7 @@ def export_all(iocs) -> str:
     lines = []
 
     ips = sorted({i.value.split(":")[0] for i in iocs if i.ioc_type == "ip"})
+    ips += sorted({i.value for i in iocs if i.ioc_type in ("ipv6", "ip_cidr")})
     if ips:
         lines.append("Сетевые индикаторы компрометации")
         lines.extend(ips)

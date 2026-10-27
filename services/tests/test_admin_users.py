@@ -100,7 +100,7 @@ def test_bootstrap_status_once(client):
     js = client.get("/api/auth/status").json()
     assert js["needs_setup"] is True
     assert js["bootstrap_username"] == BOOTSTRAP_USERNAME
-    assert js["bootstrap_password"]
+    assert "bootstrap_password" not in js
     assert js["bootstrap_source"] == "file"
     with SessionLocal() as db:
         db.query(BootstrapSecret).delete()

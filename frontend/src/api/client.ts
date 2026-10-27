@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8666";
+const API_BASE = import.meta.env.VITE_API_BASE || "/gw";
 
 export const api = axios.create({
   baseURL: API_BASE,
@@ -8,7 +8,7 @@ export const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("fstec_token");
+  const token = sessionStorage.getItem("fstec_token");
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -17,20 +17,40 @@ api.interceptors.request.use((config) => {
 
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    const original = error.config;
+    if (error.response?.status === 401 && original && !original._retry
+        && !String(original.url || "").includes("/api/auth/login")
+        && !String(original.url || "").includes("/api/auth/refresh")) {
+      const refresh = sessionStorage.getItem("fstec_refresh");
+      if (refresh) {
+        original._retry = true;
+        try {
+          const r = await axios.post(`${API_BASE}/api/auth/refresh`, { refresh_token: refresh });
+          sessionStorage.setItem("fstec_token", r.data.access_token);
+          if (r.data.refresh_token) sessionStorage.setItem("fstec_refresh", r.data.refresh_token);
+          original.headers = original.headers || {};
+          original.headers.Authorization = `Bearer ${r.data.access_token}`;
+          return api(original);
+        } catch {
+          // fall through to logout
+        }
+      }
+    }
     if (error.response?.status === 401) {
-      localStorage.removeItem("fstec_token");
-      localStorage.removeItem("fstec_user");
+      sessionStorage.removeItem("fstec_token");
+      sessionStorage.removeItem("fstec_refresh");
+      sessionStorage.removeItem("fstec_user");
       if (window.location.pathname !== "/login") {
-        window.location.href = "/login";
+        window.location.href = `${import.meta.env.BASE_URL}login`;
       }
     } else if (error.response?.status === 403) {
       window.dispatchEvent(new CustomEvent("fstec-api-error", {
-        detail: error.response?.data?.detail || "Недостаточно прав для этого действия",
+        detail: error.response?.data?.detail || "???????????? ????",
       }));
     } else if (error.response?.status >= 500 || !error.response) {
       window.dispatchEvent(new CustomEvent("fstec-api-error", {
-        detail: error.response?.data?.detail || "Сервер временно недоступен",
+        detail: error.response?.data?.detail || "?????? ???????",
       }));
     }
     return Promise.reject(error);
@@ -39,6 +59,7 @@ api.interceptors.response.use(
 
 export interface TokenResponse {
   access_token: string;
+  refresh_token?: string;
   token_type: string;
   role: string;
   username: string;
@@ -119,6 +140,7 @@ export interface VulnerabilityResponse {
   patch_url?: string;
   source?: string;
   cmdb_match?: boolean;
+  cmdb_error?: string;
   current_version?: string;
   target_version?: string;
   recommendation?: string;
@@ -129,7 +151,22 @@ export interface VulnerabilityResponse {
   response_point: string;
 }
 
+export interface VulnerabilityAutofillResult {
+  action_type: string;
+  applicability: "true" | "false" | "unknown";
+  action_details: string;
+  applicability_notes: string;
+  source?: string;
+  model?: string;
+  llm_used?: boolean;
+}
+
 export interface VulnerabilityUpdateData {
+  bdu_id?: string;
+  cve_id?: string;
+  description?: string;
+  severity?: string;
+  cvss_score?: number | null;
   is_applicable?: boolean | null;
   applicability_notes?: string;
   action_type?: string;
@@ -171,18 +208,28 @@ export interface LetterResponse {
   created_at: string;
   updated_at: string;
   attachments: AttachmentResponse[];
+  tables?: Array<{ index: number; rows: string[][] }>;
+  progress_percent?: number;
+  eta_seconds?: number | null;
   threats: ThreatResponse[];
   iocs: IoCResponse[];
   vulnerabilities: VulnerabilityResponse[];
   entities?: EntityResponse[];
   summaries?: SummaryResponse[];
   response?: { text: string; exists: boolean; id?: number };
+  report?: { filename?: string; generated_at?: string };
 }
 
 export const authApi = {
   login: (username: string, password: string) =>
     api.post<TokenResponse>("/api/auth/login", { username, password }),
   me: () => api.get<UserResponse>("/api/auth/me"),
+  refresh: (refreshToken: string) =>
+    api.post<TokenResponse>("/api/auth/refresh", { refresh_token: refreshToken }),
+  logout: (refreshToken?: string, accessToken?: string) =>
+    axios.post<{ ok: boolean }>(`${API_BASE}/api/auth/logout`,
+      refreshToken ? { refresh_token: refreshToken } : {},
+      accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : {}),
   status: () =>
     api.get<{
       needs_setup: boolean;
@@ -193,16 +240,16 @@ export const authApi = {
 };
 
 export const lettersApi = {
-  list: (params?: { letter_type?: string; status?: string; skip?: number; limit?: number }) =>
+  list: (params?: { letter_type?: string; status?: string; skip?: number; limit?: number; mine?: boolean }) =>
     api.get<LetterListItem[]>("/api/letters", { params }),
-  stats: () => api.get<StatsResponse>("/api/letters/stats"),
+  stats: (params?: { mine?: boolean }) => api.get<StatsResponse>("/api/letters/stats", { params }),
   get: (id: number, view = false) =>
     api.get<LetterResponse>(`/api/letters/${id}`, { params: view ? { view: 1 } : {} }),
   delete: (id: number) => api.delete(`/api/letters/${id}`),
   upload: (files: File[]) => {
     const formData = new FormData();
     files.forEach((f) => formData.append("files", f));
-    return api.post<{ id: number; status: string; filename: string }>("/upload", formData, {
+    return api.post<{ id: number; status: string; filename: string; duplicate?: boolean }>("/upload", formData, {
       headers: { "Content-Type": "multipart/form-data" },
     });
   },
@@ -215,6 +262,8 @@ export const lettersApi = {
     api.get<{
       title: string;
       intro: string;
+      text?: string;
+      response_exists?: boolean;
       sections: Array<{
         threat_id: number;
         number: number;
@@ -247,6 +296,8 @@ export const lettersApi = {
     api.delete<LetterResponse>(`/api/letters/${letterId}/iocs/${iocId}`),
   updateVulnerability: (letterId: number, vulnId: number, data: VulnerabilityUpdateData) =>
     api.put<LetterResponse>(`/api/letters/${letterId}/vulnerabilities/${vulnId}`, data),
+  autofillVulnerability: (letterId: number, vulnId: number) =>
+    api.post<VulnerabilityAutofillResult>(`/api/letters/${letterId}/vulnerabilities/${vulnId}/autofill`),
 };
 
 // ТЗ 2.6: нижнеуровневые эндпоинты gateway
@@ -278,6 +329,24 @@ export interface DocumentListItem {
   processing_stage: string;
   created_at: string;
 }
+
+export interface AuditItem {
+  id: number;
+  user_id?: number | null;
+  username: string;
+  action: string;
+  object_type: string;
+  object_id?: number | null;
+  filename: string;
+  document_id?: number | null;
+  ip_address: string;
+  created_at: string;
+}
+
+export const auditApi = {
+  list: (params?: { skip?: number; limit?: number; action?: string; document_id?: number }) =>
+    api.get<{ total: number; items: AuditItem[] }>("/api/audit", { params }),
+};
 
 export const usersApi = {
   list: () => api.get<UserResponse[]>("/api/users"),

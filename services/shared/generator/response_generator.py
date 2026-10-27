@@ -82,22 +82,20 @@ def generate_reply_text(
     lines.append("Сообщаем о принятых мерах по повышению защищенности информационной инфраструктуры.")
 
     is_vuln_letter = letter_type == "vulnerability"
-    active_vulns = [v for v in vulnerabilities
-                    if v.get("cmdb_match")
-                    or (is_vuln_letter and v.get("severity") in ("critical", "high"))]
+    active_vulns = [v for v in vulnerabilities if v.get("cmdb_match") or v.get("is_applicable") is True]
     if active_vulns:
         lines.append("")
         lines.append("Выявлены уязвимости, затрагивающие используемое программное обеспечение. "
                      "Требуется срочно выполнить обновление:")
         for v in active_vulns:
             sw = v.get("software") or "программного обеспечения"
-            cur = v.get("current_version")
+            cur = ""
             tgt = v.get("target_version") or v.get("fixed_version")
-            rec = v.get("recommendation") or ""
+            rec = ""
             if rec:
                 lines.append(f"  - {rec};")
             elif cur and tgt:
-                lines.append(f"  - обновить {sw} c {cur} до {tgt};")
+                lines.append(f"  - обновить {sw} до {tgt};")
             else:
                 lines.append(f"  - обновить {sw};")
 
@@ -118,7 +116,11 @@ def generate_reply_text(
             lines.extend(_measures_block(i, t, addr_count))
     else:
         lines.append("")
-        lines.append(NO_RISK_TEXT)
+        unknown = [v for v in vulnerabilities if v.get("cmdb_error") and not v.get("cmdb_match")]
+        if unknown:
+            lines.append("Проверка применимости уязвимостей не завершена: CMDB недоступна. Требуется ручная проверка.")
+        else:
+            lines.append(NO_RISK_TEXT)
 
     return "\n".join(lines)
 
@@ -149,7 +151,11 @@ def _create_doc():
     style = doc.styles["Normal"]
     style.font.name = "Times New Roman"
     style.font.size = Pt(14)
+    style.paragraph_format.line_spacing = 1.0
+    style.paragraph_format.space_after = Pt(0)
     for section in doc.sections:
+        section.page_width = Cm(21.0)
+        section.page_height = Cm(29.7)
         section.top_margin = Cm(2)
         section.bottom_margin = Cm(2)
         section.left_margin = Cm(3)
@@ -159,13 +165,22 @@ def _create_doc():
 
 def render_reply_docx(text: str) -> bytes:
     doc = _create_doc()
-    for line in text.split("\n"):
-        line = line.strip()
-        if not line:
+    first = True
+    for raw in text.split("\n"):
+        line = raw.rstrip()
+        if not line.strip():
+            doc.add_paragraph()
             continue
         p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-        p.add_run(line)
+        if first:
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(line.strip())
+            run.bold = True
+            first = False
+        else:
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.first_line_indent = Cm(1.5)
+            p.add_run(line)
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()

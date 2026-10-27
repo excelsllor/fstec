@@ -1313,7 +1313,10 @@ def render_reply(*, plan: dict, templates: dict | None = None, letter_number: st
                 lines.append(f"  {t}")
         if not plan_blocks:
             lines.append("")
-            lines.append(NO_RISK_TEXT_C)
+            if any(v.get("cmdb_error") for v in (active_vulns or [])):
+                lines.append("Проверка применимости уязвимостей не завершена: CMDB недоступна. Требуется ручная проверка.")
+            else:
+                lines.append(NO_RISK_TEXT_C)
 
     # Защита от неразрешённых плейсхолдеров (LLM иногда копирует {{...}} из шаблонов)
     lines = [ln for ln in lines if "{{" not in ln]

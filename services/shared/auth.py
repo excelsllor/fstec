@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 import bcrypt
+import redis
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
@@ -20,8 +21,11 @@ from shared.config import (
     BOOTSTRAP_USERNAME,
     DATA_DIR,
     JWT_AUDIENCE,
+    IS_PROD,
     MIN_PASSWORD_LENGTH,
     SECRET_KEY,
+    REDIS_URL,
+    REFRESH_TOKEN_EXPIRE_DAYS,
 )
 from shared.db import get_db
 from shared.models import BootstrapSecret, User
@@ -29,6 +33,39 @@ from shared.models import BootstrapSecret, User
 logger = logging.getLogger(__name__)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+_revocation_client = None
+
+
+def _redis():
+    global _revocation_client
+    if _revocation_client is None:
+        _revocation_client = redis.from_url(REDIS_URL, decode_responses=True,
+                                           socket_connect_timeout=1.5, socket_timeout=1.5)
+    return _revocation_client
+
+
+def revoke_token(token: str) -> None:
+    try:
+        payload = decode_token(token)
+        jti = payload.get("jti")
+        exp = int(payload.get("exp") or 0)
+        ttl = max(1, exp - int(datetime.now(timezone.utc).timestamp()))
+        if jti:
+            _redis().setex(f"jwt:revoked:{jti}", ttl, "1")
+    except Exception as exc:
+        logger.warning("JWT revoke failed: %s", exc)
+
+
+def is_token_revoked(token: str) -> bool:
+    try:
+        payload = decode_token(token)
+        jti = payload.get("jti")
+        if not jti:
+            return False
+        return bool(_redis().exists(f"jwt:revoked:{jti}"))
+    except Exception as exc:
+        logger.warning("JWT revocation check failed: %s", exc)
+        return IS_PROD
 
 
 def hash_password(password: str) -> str:
@@ -44,13 +81,21 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+def _create_token(data: dict, token_type: str, expires_delta: timedelta) -> str:
     to_encode = data.copy()
     now = datetime.now(timezone.utc)
-    expire = now + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"iat": now, "aud": JWT_AUDIENCE, "exp": expire})
+    to_encode.update({"iat": now, "aud": JWT_AUDIENCE, "exp": now + expires_delta,
+                      "jti": secrets.token_urlsafe(24), "type": token_type})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    return _create_token(data, "access",
+                        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+
+
+def create_refresh_token(data: dict) -> str:
+    return _create_token(data, "refresh", timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
 
 def decode_token(token: str) -> dict:
     return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], audience=JWT_AUDIENCE)
@@ -68,7 +113,9 @@ def get_current_user(
     try:
         payload = decode_token(token)
         username = payload.get("sub")
-        if not username:
+        if payload.get("type") not in (None, "access"):
+            raise credentials_exception
+        if not username or is_token_revoked(token):
             raise credentials_exception
     except JWTError:
         raise credentials_exception
@@ -113,6 +160,10 @@ def ensure_bootstrap(db: Session) -> Optional[str]:
             BOOTSTRAP_USERNAME)
     else:
         try:
+            from shared.config import IS_PROD
+            if IS_PROD:
+                logger.warning("Bootstrap secret generated but not written to disk in prod")
+                return password
             secret_path = Path(DATA_DIR) / "bootstrap_password.txt"
             secret_path.write_text(password, encoding="utf-8")
             os.chmod(secret_path, 0o600)

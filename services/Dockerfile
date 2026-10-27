@@ -9,6 +9,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         poppler-utils tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng \
+        libreoffice-writer \
         libgl1 libglib2.0-0 libsm6 libxext6 libgomp1 \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*

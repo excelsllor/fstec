@@ -66,8 +66,7 @@ def build_preview(*, db, document, threats, vulnerabilities, iocs) -> dict:
     addr_count = len({i.value.split(":")[0] for i in iocs if i.ioc_type in ("ip", "domain")})
 
     # Приоритет: уязвимости (тип vulnerability) иначе угрозы
-    active_vulns = [v for v in vulnerabilities
-                    if v.cmdb_match or v.severity in ("critical", "high")]
+    active_vulns = [v for v in vulnerabilities if v.cmdb_match or v.is_applicable is True]
 
     lines = [title, "", intro]
 
@@ -80,13 +79,13 @@ def build_preview(*, db, document, threats, vulnerabilities, iocs) -> dict:
             if (v.action_type or "").lower() == "exclude":
                 continue
             sw = v.software or "программного обеспечения"
-            cur = v.current_version
+            cur = ""
             tgt = v.target_version or v.fixed_version
-            rec = v.recommendation or ""
+            rec = ""
             if rec:
                 text = f"{rec};"
             elif cur and tgt:
-                text = f"обновить {sw} c {cur} до {tgt};"
+                text = f"обновить {sw} до {tgt};"
             else:
                 text = f"обновить {sw};"
             lines.append(f"  - {text}")
@@ -141,7 +140,11 @@ def build_preview(*, db, document, threats, vulnerabilities, iocs) -> dict:
     else:
         sections = []
         lines.append("")
-        lines.append(NO_RISK_TEXT)
+        unknown = [v for v in vulnerabilities if v.cmdb_error and not v.cmdb_match]
+        if unknown:
+            lines.append("Проверка применимости уязвимостей не завершена: CMDB недоступна. Требуется ручная проверка.")
+        else:
+            lines.append(NO_RISK_TEXT)
 
     return {
         "title": title,

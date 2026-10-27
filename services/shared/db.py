@@ -67,6 +67,14 @@ def _migrate_postgres():
                 conn.execute(text("ALTER TABLE vulnerabilities ALTER COLUMN affected_range TYPE TEXT"))
                 conn.commit()
                 logger.info("PostgreSQL migration: vulnerabilities.affected_range widened to TEXT")
+            for col, typ in (("cmdb_error", "TEXT"), ("cvss_version", "VARCHAR(20)")):
+                exists = conn.execute(text(
+                    "SELECT 1 FROM information_schema.columns WHERE table_name='vulnerabilities' "
+                    "AND column_name=:c"), {"c": col}).fetchone()
+                if not exists:
+                    conn.execute(text(f"ALTER TABLE vulnerabilities ADD COLUMN {col} {typ}"))
+                    conn.commit()
+                    logger.info("PostgreSQL migration: vulnerabilities.%s added", col)
     except Exception as e:
         logger.error("PostgreSQL migration failed: %s", e)
 
@@ -90,6 +98,8 @@ def _migrate_sqlite():
             vcols = {r[1] for r in conn.execute(text("PRAGMA table_info(vulnerabilities)"))}
             if vcols and "cvss_version" not in vcols:
                 conn.execute(text("ALTER TABLE vulnerabilities ADD COLUMN cvss_version VARCHAR(20) DEFAULT ''"))
+            if vcols and "cmdb_error" not in vcols:
+                conn.execute(text("ALTER TABLE vulnerabilities ADD COLUMN cmdb_error TEXT DEFAULT ''"))
             conn.commit()
     except Exception as e:
         logger.error("SQLite migration failed: %s", e)

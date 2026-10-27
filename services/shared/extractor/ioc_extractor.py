@@ -4,9 +4,9 @@ from dataclasses import dataclass, field
 
 from shared.extractor.patterns import (
     HASH_SHA256, HASH_MD5, HASH_SHA1, HASH_SHA384, HASH_SHA512,
-    IP_OBFUSCATED, IP_OBFUSCATED_PAREN, IP_PLAIN, IPV4_CIDR, IPV6_PLAIN,
-    DOMAIN_OBFUSCATED, DOMAIN_OBFUSCATED_PAREN, DOMAIN_PLAIN,
-    EMAIL_PATTERN, BDU_PATTERN, CVE_PATTERN, VDB_URL_PATTERN, normalize_vuln_ids,
+    IP_OBFUSCATED, IP_OBFUSCATED_PAREN, IP_PLAIN, IPV4_CIDR, IPV6_PLAIN, IPV6_EMBEDDED,
+    DOMAIN_OBFUSCATED, DOMAIN_OBFUSCATED_PAREN, DOMAIN_MIXED, DOMAIN_PLAIN,
+    EMAIL_PATTERN, BDU_PATTERN, CVE_PATTERN, VDB_URL_PATTERN, VDB_HOSTS, normalize_vuln_ids,
 )
 
 INTERNAL_EMAILS = {
@@ -70,8 +70,68 @@ class IoCResult:
     vdb_urls: list[str] = field(default_factory=list)
 
 
+_HASH_LENGTHS = {32, 40, 64, 96, 128}
+_HEX_LINE = re.compile(r"^([0-9A-Fa-f]+)([;.,]?)$")
+
+
+def _join_wrapped_hashes(text: str) -> str:
+    """Склеивает hex-фрагменты, разорванные переносом строки.
+
+    PDF-письма ФСТЭК часто печатают SHA-256 двумя строками:
+    ``9932FA...F0`` / ``68935;``. Без склейки regex видит только
+    случайные 32-символьные обрывки. Склеиваем только те группы строк,
+    которые целиком состоят из hex и дают допустимую длину хеша.
+    """
+    lines = text.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        j = i
+        parts: list[tuple[str, str]] = []
+        while j < len(lines):
+            m = _HEX_LINE.match(lines[j].strip())
+            if not m:
+                break
+            parts.append((m.group(1), m.group(2)))
+            j += 1
+        if len(parts) >= 2:
+            k = 0
+            joined: list[str] = []
+            while k < len(parts):
+                total = 0
+                end = None
+                for t in range(k, len(parts)):
+                    total += len(parts[t][0])
+                    if total in _HASH_LENGTHS:
+                        end = t
+                        break
+                    if total > max(_HASH_LENGTHS):
+                        break
+                if end is None:
+                    break
+                joined.append("".join(p[0] for p in parts[k:end + 1]) + parts[end][1])
+                k = end + 1
+            if k == len(parts):
+                out.extend(joined)
+                i = j
+                continue
+        if j == i:
+            out.append(lines[i])
+            i += 1
+        else:
+            out.extend(lines[i:j])
+            i = j
+    return "\n".join(out)
+
+
+def _join_wrapped_urls(text: str) -> str:
+    """Склеивает домен/URL, разорванный переносом после дефиса."""
+    return re.sub(r"(?<=[A-Za-z0-9])-\s*\n\s*(?=[A-Za-z0-9])", "-", text)
+
+
 def extract_iocs(text: str, tables: list | None = None) -> IoCResult:
     result = IoCResult()
+    text = _join_wrapped_urls(_join_wrapped_hashes(text))
     text = _normalize_dotted_whitespace(normalize_vuln_ids(text.replace("\xa0", " ")))
     text_refanged = _refang_text(text)
     seen_ips, seen_cidr4, seen_ipv6 = set(), set(), set()
@@ -90,8 +150,17 @@ def extract_iocs(text: str, tables: list | None = None) -> IoCResult:
             result.ipv4_cidr.append(cidr)
             seen_cidr4.add(cidr)
 
+    embedded_values = []
+    for m in IPV6_EMBEDDED.finditer(text):
+        ipv6 = m.group(1).lower()
+        if _valid_ipv6(ipv6) and ipv6 not in seen_ipv6:
+            result.ipv6.append(ipv6)
+            seen_ipv6.add(ipv6)
+            embedded_values.append(ipv6)
     for m in IPV6_PLAIN.finditer(text):
         ipv6 = m.group(1).lower()
+        if any(ipv6 + "." in value for value in embedded_values):
+            continue
         if _valid_ipv6(ipv6) and ipv6 not in seen_ipv6:
             result.ipv6.append(ipv6)
             seen_ipv6.add(ipv6)
@@ -107,11 +176,22 @@ def extract_iocs(text: str, tables: list | None = None) -> IoCResult:
             result.ips.append(ip_entry)
             seen_ips.add(ip_entry)
 
+    for m in DOMAIN_MIXED.finditer(text):
+        raw = m.group(1)
+        if "[.]" not in raw and "(.)" not in raw:
+            continue
+        if _in_url_path(text, m.start()):
+            continue
+        domain = _clean_domain(raw.replace("[.]", ".").replace("(.)", "."))
+        if domain and domain.lower() not in VDB_HOSTS and not _in_guillemets(text, m.start()) and _valid_domain(domain, obfuscated=True) and domain not in seen_domains:
+            result.domains.append(domain)
+            seen_domains.add(domain)
+
     for m in DOMAIN_OBFUSCATED.finditer(text):
         if _in_url_path(text, m.start()):
             continue
         domain = _clean_domain(m.group(0).replace("[.]", "."))
-        if domain and not _in_guillemets(text, m.start()) and _valid_domain(domain, obfuscated=True) and domain not in seen_domains:
+        if domain and domain.lower() not in VDB_HOSTS and not _in_guillemets(text, m.start()) and _valid_domain(domain, obfuscated=True) and domain not in seen_domains:
             result.domains.append(domain)
             seen_domains.add(domain)
 
@@ -119,7 +199,7 @@ def extract_iocs(text: str, tables: list | None = None) -> IoCResult:
         if _in_url_path(text, m.start()):
             continue
         domain = _clean_domain(m.group(0).replace("(.)", "."))
-        if domain and not _in_guillemets(text, m.start()) and _valid_domain(domain, obfuscated=True) and domain not in seen_domains:
+        if domain and domain.lower() not in VDB_HOSTS and not _in_guillemets(text, m.start()) and _valid_domain(domain, obfuscated=True) and domain not in seen_domains:
             result.domains.append(domain)
             seen_domains.add(domain)
 
@@ -128,7 +208,7 @@ def extract_iocs(text: str, tables: list | None = None) -> IoCResult:
             continue
         domain = _clean_domain(m.group(1))
         in_list = _in_list_line(text, m.start(), m.end())
-        if domain and _valid_domain(domain, in_list_line=in_list) and domain not in seen_domains:
+        if domain and domain.lower() not in VDB_HOSTS and _valid_domain(domain, in_list_line=in_list) and domain not in seen_domains:
             result.domains.append(domain)
             seen_domains.add(domain)
 

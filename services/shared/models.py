@@ -83,6 +83,16 @@ class Attachment(Base):
     document = relationship("Document", back_populates="attachments")
 
 
+class DocumentTable(Base):
+    __tablename__ = "document_tables"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    table_index = Column(Integer, default=0)
+    rows_json = Column(Text, default="[]")
+    created_at = Column(DateTime, default=_utcnow)
+
+
 class Threat(Base):
     __tablename__ = "threats"
 
@@ -160,6 +170,7 @@ class Vulnerability(Base):
     fixed_version = Column(String(100), default="")
     patch_url = Column(String(1000), default="")
     cmdb_match = Column(Boolean, default=False)
+    cmdb_error = Column(Text, default="")
     current_version = Column(String(100), default="")
     target_version = Column(String(100), default="")
     source = Column(String(20), default="manual")  # nvd | bdu | manual (Фаза 3)

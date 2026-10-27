@@ -12,28 +12,25 @@ IP_OBFUSCATED_PAREN = re.compile(r"(\d{1,3})\(\.\)(\d{1,3})\(\.\)(\d{1,3})\(\.\)
 # IPv4 без CIDR-суффикса (требование ТЗ 2.3.2: CIDR выделяется отдельно).
 # Хвостовой \b намеренно не ставится: в реальных списках бывает мусор после
 # адреса ("203.0.113.10l", ".162l") — срезаем по (?!\d).
-IP_PLAIN = re.compile(r"(?<![0-9.])(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?!/\d)(?!\d)")
+IP_PLAIN = re.compile(r"(?<![0-9.])(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?!/\d)(?!\.\d)(?!\d)")
 IPV4_CIDR = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3}/\d{1,2})\b")
 
-# IPv6, включая сжатие "::", embedded IPv4 и CIDR-суффикс (ТЗ 2.3.2)
-_IPV6_BODY = (
-    r"(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}"
-    r"|(?:[0-9a-f]{1,4}:){1,7}:"
-    r"|(?:[0-9a-f]{1,4}:){1,6}:[0-9a-f]{1,4}"
-    r"|(?:[0-9a-f]{1,4}:){1,5}(?::[0-9a-f]{1,4}){1,2}"
-    r"|(?:[0-9a-f]{1,4}:){1,4}(?::[0-9a-f]{1,4}){1,3}"
-    r"|(?:[0-9a-f]{1,4}:){1,3}(?::[0-9a-f]{1,4}){1,4}"
-    r"|(?:[0-9a-f]{1,4}:){1,2}(?::[0-9a-f]{1,4}){1,5}"
-    r"|[0-9a-f]{1,4}:(?:(?::[0-9a-f]{1,4}){1,6})"
-    r"|:(?:(?::[0-9a-f]{1,4}){1,7}|:)"
-    r"|::ffff:\d{1,3}(?:\.\d{1,3}){3}"
-    r"|fe80:(?::[0-9a-f]{0,4}){0,4}%[0-9a-zA-Z]+"
-    r"|(?:[0-9a-f]{1,4}:){1,4}:\d{1,3}(?:\.\d{1,3}){3}"
+# IPv6 candidate; validated by ipaddress in ioc_extractor.
+IPV6_PLAIN = re.compile(
+    r"(?<![0-9A-Za-z:])((?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?:/\d{1,3})?)(?![0-9A-Za-z:])",
+    re.IGNORECASE,
 )
-IPV6_PLAIN = re.compile(r"\b((?:" + _IPV6_BODY + r")(?:/\d{1,3})?)\b", re.IGNORECASE)
+IPV6_EMBEDDED = re.compile(
+    r"(?<![0-9A-Za-z:])((?:::ffff:\d{1,3}(?:\.\d{1,3}){3})|(?:[0-9A-Fa-f]{1,4}:){1,4}:\d{1,3}(?:\.\d{1,3}){3})(?![/0-9A-Za-z:])",
+    re.IGNORECASE,
+)
 
 DOMAIN_OBFUSCATED = re.compile(
     r"([a-zA-Z0-9][a-zA-Z0-9\-]*(?:\[\.\][a-zA-Z0-9][a-zA-Z0-9\-]*)+)"
+)
+# ????????? ??????: ????? ????? ???????, ????? ? [.] ??? (.).
+DOMAIN_MIXED = re.compile(
+    r"(?<![-\w.])((?:[a-zA-Z0-9][a-zA-Z0-9\-]*(?:\[\.\]|\(\.\)|\.))+[a-zA-Z]{2,10})(?![-\w])"
 )
 DOMAIN_OBFUSCATED_PAREN = re.compile(
     r"([a-zA-Z0-9][a-zA-Z0-9\-]*(?:\(\.\)[a-zA-Z0-9][a-zA-Z0-9\-]*)+)"
@@ -58,9 +55,15 @@ def normalize_vuln_ids(text: str) -> str:
 
 VDB_URL_PATTERN = re.compile(
     r"(?:https?://)?(?:www\.)?"
-    r"(nvd\.nist\.gov|cve\.mitre\.org|bdu\.fstec\.ru|nvd\.nist\.gov/vuln/detail(?:/[A-Z\-0-9]+)?|bdu\.fstec\.ru/vul(?:/?\d+)?)",
+    r"(?:"
+    r"nvd\.nist\.gov/vuln/detail/[A-Za-z0-9-]+"
+    r"|cve\.mitre\.org/(?:cgi-bin/cvename\.cgi\?name=)?[A-Za-z0-9-]+"
+    r"|bdu\.fstec\.ru/vul(?:/|\?)?[0-9][0-9A-Za-z_-]*"
+    r"|nvd\.nist\.gov|cve\.mitre\.org|bdu\.fstec\.ru"
+    r")",
     re.IGNORECASE,
 )
+VDB_HOSTS = {"nvd.nist.gov", "cve.mitre.org", "bdu.fstec.ru", "www.nvd.nist.gov", "www.cve.mitre.org", "www.bdu.fstec.ru"}
 
 PORT_PATTERN = re.compile(r":(\d{1,5})\b")
 

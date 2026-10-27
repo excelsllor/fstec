@@ -59,7 +59,7 @@ export default function Dashboard() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const [statsRes, lettersRes] = await Promise.all([lettersApi.stats(), lettersApi.list()]);
+        const [statsRes, lettersRes] = await Promise.all([lettersApi.stats({ mine: true }), lettersApi.list({ mine: true })]);
         setStats(statsRes.data);
         setLetters(lettersRes.data);
         setError("");

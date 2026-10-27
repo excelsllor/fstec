@@ -38,7 +38,7 @@ def test_indicator_card_builds():
 
 def test_report_filename():
     name = report_filename("letter.docx", report_date=None)
-    assert name.startswith("Report_letter.docx_")
+    assert name.startswith("Report_letter_")
     assert name.endswith(".docx")
 
 

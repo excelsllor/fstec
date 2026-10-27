@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 
 from security_service.cmdb import InventoryClient, InventoryItem
 from security_service.enriched import EnrichedVuln
-from security_service.versioning import (match_cpe, match_product, normalize_version,
-                                         vuln_range_hit)
+from security_service.versioning import (compare_versions, match_cpe, match_product,
+                                         normalize_version, vuln_range_hit)
 from shared.config import SECURITY_MODE
 
 logger = logging.getLogger("fstec.security.assessment")
@@ -68,7 +68,7 @@ def _cpe_ok(matcher, item_cpe: str) -> bool:
 
 
 def _match_cmdb(enriched: EnrichedVuln | None, candidates: list[InventoryItem],
-                software: str) -> tuple[InventoryItem | None, bool]:
+                software: str, fixed_hint: str = "") -> tuple[InventoryItem | None, bool]:
     """Выбирает лучшего кандидата CMDB и определяет версионный match (ТЗ 2.4).
 
     Match = (CPE-совпадение ∥ product-совпадение) ∧ (нет диапазона ∨ версия в диапазоне).
@@ -83,15 +83,21 @@ def _match_cmdb(enriched: EnrichedVuln | None, candidates: list[InventoryItem],
         name_hit = match_product(item.name, software)
         if not (cpe_hit or name_hit):
             continue
-        version_hit = True
-        if range_info and item.version and enriched:
-            if cpe_hit and item.cpe:
-                targets = [m for m in enriched.cpe_matches if _cpe_ok(m, item.cpe)]
-                if not targets:
+        version_hit = False
+        fixed_for_check = (enriched.fixed_version if enriched else fixed_hint)
+        if item.version:
+            if range_info and enriched:
+                if cpe_hit and item.cpe:
+                    targets = [m for m in enriched.cpe_matches if _cpe_ok(m, item.cpe)]
+                    if not targets:
+                        targets = enriched.cpe_matches
+                else:
                     targets = enriched.cpe_matches
-            else:
-                targets = enriched.cpe_matches
-            version_hit = bool(targets) and vuln_range_hit(item.version, targets)
+                version_hit = bool(targets) and vuln_range_hit(item.version, targets)
+            elif fixed_for_check:
+                version_hit = compare_versions(item.version, fixed_for_check) < 0
+            elif enriched is None:
+                version_hit = True
         if not version_hit:
             continue
         return item, True
@@ -123,7 +129,9 @@ async def _assess_one(v: dict, *, cmdb, enrich: bool, nvd, bdu, cmdb_cache: dict
     else:
         err_text = ""
 
+    fixed = derive_fixed_version(enriched, raw.get("description", ""))
     item, matched = None, False
+    cmdb_error = ""
     try:
         if cmdb_cache is not None and software in cmdb_cache:
             candidates = cmdb_cache[software]
@@ -131,12 +139,12 @@ async def _assess_one(v: dict, *, cmdb, enrich: bool, nvd, bdu, cmdb_cache: dict
             candidates = await cmdb.find_many(software)
             if cmdb_cache is not None:
                 cmdb_cache[software] = candidates
-        item, matched = _match_cmdb(enriched, candidates, software)
+        item, matched = _match_cmdb(enriched, candidates, software, fixed_hint=fixed)
     except Exception as exc:  # noqa: BLE001 — CMDB недоступна (ТЗ 4.2)
         logger.warning("cmdb lookup failed for %r: %s", software, exc)
+        cmdb_error = f"cmdb:{software}:{exc}"
         err_text = "; ".join(x for x in (err_text, f"cmdb:{software}:{exc}") if x)
 
-    fixed = derive_fixed_version(enriched, raw.get("description", ""))
     current_version = item.version if item else ""
     rec = (f"Обновить {item.name if item else software} с {current_version} до {fixed}"
            if matched and fixed else UPDATE_TEMPLATE)
@@ -153,6 +161,7 @@ async def _assess_one(v: dict, *, cmdb, enrich: bool, nvd, bdu, cmdb_cache: dict
         "fixed_version": fixed,
         "patch_url": enriched.patch_url if enriched else (raw.get("patch_url") or ""),
         "cmdb_match": matched,
+        "cmdb_error": cmdb_error,
         "current_version": current_version,
         "target_version": fixed,
         "recommendation": rec,
@@ -161,7 +170,8 @@ async def _assess_one(v: dict, *, cmdb, enrich: bool, nvd, bdu, cmdb_cache: dict
 
 
 async def assess_document(vulns_raw: list[dict], *, cmdb: InventoryClient,
-                          enrich: bool | None = None, nvd=None, bdu=None) -> Assessment:
+                          enrich: bool | None = None, nvd=None, bdu=None,
+                          letter_type: str = "") -> Assessment:
     """Полный цикл ТЗ 2.4. enrich=False → без внешних вызовов (mock/dev-режим).
 
     Этап 4: уязвимости одного письма обрабатываются параллельно (ранее строго
@@ -190,6 +200,10 @@ async def assess_document(vulns_raw: list[dict], *, cmdb: InventoryClient,
         if err_text:
             external_errors.append(err_text)
 
-    sla_score = "critical" if any(a["cmdb_match"] for a in out) else "normal"
-    routing = "infosec" if sla_score == "critical" else "default"
+    cmdb_failed = any(a.get("cmdb_error") for a in out)
+    sla_score = "critical" if (
+        any(a.get("cmdb_match") for a in out)
+        or (letter_type or "").lower() in ("compromise", "clickfix")
+    ) else "normal"
+    routing = "infosec" if sla_score == "critical" or (letter_type or "").lower() in ("compromise", "clickfix") else "default"
     return Assessment(assessed=out, external_errors=external_errors, sla=sla_score, routing=routing)

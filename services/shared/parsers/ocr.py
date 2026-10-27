@@ -6,6 +6,7 @@
 Недоступность любого движка → ошибка, падение не допускается.
 """
 import logging
+from pathlib import Path
 
 from PIL import Image
 
@@ -124,3 +125,96 @@ def _paddle_engine(content: bytes, lang: str, dpi: int) -> tuple[str, list[str]]
 
 def ocr_needed(parsed_text: str, min_text: int) -> bool:
     return len((parsed_text or "").strip()) < min_text
+
+def ocr_docx_bytes(content: bytes, lang: str = "rus") -> tuple[str, list[str]]:
+    """OCR ??????????? ?????? DOCX (?????, ??????????? ??? ????????)."""
+    import io
+    import zipfile
+
+    errors: list[str] = []
+    try:
+        import pytesseract
+        from PIL import Image
+    except Exception as e:
+        return "", [f"OCR DOCX: pytesseract/PIL: {e}"]
+    parts: list[str] = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            media = [n for n in zf.namelist() if n.startswith("word/media/")
+                     and n.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"))]
+            for name in media:
+                try:
+                    image = Image.open(io.BytesIO(zf.read(name))).convert("RGB")
+                    parts.append(pytesseract.image_to_string(image, lang=lang))
+                except Exception as e:
+                    errors.append(f"OCR DOCX {name}: {e}")
+    except Exception as e:
+        return "", [f"OCR DOCX: {e}"]
+    return "\n".join(t for t in parts if t.strip()), errors
+
+
+def ocr_embedded_images_bytes(content: bytes, lang: str = "rus") -> tuple[str, list[str]]:
+    """OCR raw PNG/JPEG images embedded in DOC/RTF/OLE containers."""
+    import io
+    try:
+        import pytesseract
+        from PIL import Image
+    except Exception as e:
+        return "", [f"OCR embedded: pytesseract/PIL: {e}"]
+    parts: list[str] = []
+    errors: list[str] = []
+    starts = []
+    for sig in (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff"):
+        pos = 0
+        while len(starts) < 20:
+            i = content.find(sig, pos)
+            if i < 0:
+                break
+            starts.append((i, sig))
+            pos = i + len(sig)
+    for idx, (start, sig) in enumerate(sorted(starts)):
+        end_candidates = []
+        if sig.startswith(b"\x89PNG"):
+            end = content.find(b"IEND", start)
+            if end > 0:
+                end_candidates.append(end + 8)
+        else:
+            end = content.find(b"\xff\xd9", start)
+            if end > 0:
+                end_candidates.append(end + 2)
+        if not end_candidates:
+            continue
+        blob = content[start:end_candidates[0]]
+        try:
+            image = Image.open(io.BytesIO(blob)).convert("RGB")
+            parts.append(pytesseract.image_to_string(image, lang=lang))
+        except Exception as e:
+            errors.append(f"OCR embedded {idx}: {e}")
+    return "\n".join(t for t in parts if t.strip()), errors
+
+
+def ocr_office_bytes(content: bytes, suffix: str = ".docx", lang: str = "rus") -> tuple[str, list[str]]:
+    """Convert DOC/DOCX/RTF to PDF with LibreOffice, then OCR the PDF."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        return "", ["LibreOffice ?? ??????????"]
+    suffix = suffix if suffix.startswith(".") else "." + suffix
+    with tempfile.TemporaryDirectory(prefix="fstec-ocr-") as td:
+        src = Path(td) / f"input{suffix}"
+        src.write_bytes(content)
+        try:
+            proc = subprocess.run(
+                [soffice, "--headless", "--convert-to", "pdf", "--outdir", td, str(src)],
+                capture_output=True, timeout=90, check=False,
+            )
+        except Exception as e:
+            return "", [f"LibreOffice: {e}"]
+        pdf = src.with_suffix(".pdf")
+        if not pdf.exists():
+            err = (proc.stderr or proc.stdout or b"").decode("utf-8", "replace")[:500]
+            return "", [f"LibreOffice PDF ?? ??????: {err}"]
+        return ocr_pdf_bytes(pdf.read_bytes(), lang=lang)

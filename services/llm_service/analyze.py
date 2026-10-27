@@ -17,7 +17,7 @@ from shared.extractor.letter_analyzer import analyze_letter
 from shared.extractor.ner import extract_standard_ner
 from shared.extractor.patterns import EMAIL_PATTERN
 from shared.extractor.summary import summarize_heuristic
-from shared.extractor.vuln_extractor import extract_vulns
+from shared.extractor.vuln_extractor import extract_software_items, extract_vulns
 from shared.models import Document, Entity, IoC, Summary, Threat
 from llm_service.provider import LLMProvider, _norm_ip, _refang
 from llm_service.rubert import rubert_available, get_rubert
@@ -237,8 +237,6 @@ def _finalize(text, letter, iocs, vulns, ner, summary, classification,
         ner.contacts = [e["value"] for e in llm_result.entities if e.get("type") == "contact"] or ner.contacts
 
     # сведение типов к 3: compromise -> hacker (блоки ответа сохраняют threat_type compromise)
-    if classification == "compromise":
-        classification = "hacker"
 
     threats = [{"number": t.number, "threat_type": t.threat_type, "group_name": t.group_name,
                 "theme": t.theme, "archive_name": t.archive_name, "exe_name": t.exe_name,
@@ -258,10 +256,17 @@ def _finalize(text, letter, iocs, vulns, ner, summary, classification,
         {"type": "contact", "value": c} for c in ner.contacts
     ]
 
-    software_items = []
+    software_items = extract_software_items(text)
     for v in vulns:
-        if v.software and not any(s["name"] == v.software for s in software_items):
+        if v.software and not any(s["name"] == v.software and s.get("version") == v.version for s in software_items):
             software_items.append({"name": v.software, "version": v.version})
+
+    existing_entities = {(e["type"], e["value"]) for e in entities_out}
+    for s in software_items:
+        value = f"{s['name']} {s['version']}".strip()
+        if value and ("software", value) not in existing_entities:
+            entities_out.append({"type": "software", "value": value})
+            existing_entities.add(("software", value))
 
     event = DocumentAnalyzed(
         document_id=0,

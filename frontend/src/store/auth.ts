@@ -10,6 +10,7 @@ interface BootstrapInfo {
 interface AuthState {
   user: UserResponse | null;
   token: string | null;
+  refreshToken: string | null;
   isLoading: boolean;
   needsSetup: boolean;
   bootstrap: BootstrapInfo | null;
@@ -22,7 +23,8 @@ interface AuthState {
 
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
-  token: localStorage.getItem("fstec_token"),
+  token: sessionStorage.getItem("fstec_token"),
+  refreshToken: sessionStorage.getItem("fstec_refresh"),
   isLoading: false,
   needsSetup: false,
   bootstrap: null,
@@ -30,19 +32,28 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   login: async (username, password) => {
     const { data } = await authApi.login(username, password);
-    localStorage.setItem("fstec_token", data.access_token);
+    sessionStorage.setItem("fstec_token", data.access_token);
+    if (data.refresh_token) sessionStorage.setItem("fstec_refresh", data.refresh_token);
     const { data: user } = await authApi.me();
-    set({ token: data.access_token, user, needsSetup: false, bootstrap: null, initialized: true });
+    set({ token: data.access_token, refreshToken: data.refresh_token || null, user, needsSetup: false, bootstrap: null, initialized: true });
   },
 
   logout: () => {
-    localStorage.removeItem("fstec_token");
-    localStorage.removeItem("fstec_user");
-    set({ user: null, token: null, initialized: true, bootstrap: null });
+    const refresh = sessionStorage.getItem("fstec_refresh") || undefined;
+    const access = sessionStorage.getItem("fstec_token") || undefined;
+    void authApi.logout(refresh, access).finally(() => {
+      sessionStorage.removeItem("fstec_token");
+      sessionStorage.removeItem("fstec_refresh");
+      sessionStorage.removeItem("fstec_user");
+    });
+    sessionStorage.removeItem("fstec_token");
+    sessionStorage.removeItem("fstec_refresh");
+    sessionStorage.removeItem("fstec_user");
+    set({ user: null, token: null, refreshToken: null, initialized: true, bootstrap: null });
   },
 
   checkAuth: async () => {
-    const token = localStorage.getItem("fstec_token");
+    const token = sessionStorage.getItem("fstec_token");
     if (!token) {
       set({ user: null, token: null, initialized: true });
       return;
@@ -51,9 +62,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       const { data } = await authApi.me();
       set({ user: data, token, initialized: true });
     } catch {
-      localStorage.removeItem("fstec_token");
-      localStorage.removeItem("fstec_user");
-      set({ user: null, token: null, initialized: true });
+      sessionStorage.removeItem("fstec_token");
+      sessionStorage.removeItem("fstec_refresh");
+      sessionStorage.removeItem("fstec_user");
+      set({ user: null, token: null, refreshToken: null, initialized: true });
     }
   },
 

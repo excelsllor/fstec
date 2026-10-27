@@ -149,15 +149,33 @@ def _parse_threats(text: str) -> list[ThreatInfo]:
 
 
 def _extract_measures(section: str) -> list[str]:
-    measure_pattern = re.compile(
-        r"(?:необходимо|принять|реализован[аы]?|осуществля(?:ется|ют|ет)"
-        r"|обеспечить|производи(?:тся|т(?:ь|е))|произведен[а-яё]+)"
-        r"\s+(.{10,300})",
+    """Return complete directive sentences, not PDF line fragments."""
+    text = re.sub(r"\s*\n\s*", " ", section or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    marker = re.compile(
+        r"(?:\u043d\u0435\u043e\u0431\u0445\u043e\u0434\u0438\u043c\u043e"
+        r"|\u043f\u0440\u0438\u043d\u044f\u0442\u044c"
+        r"|\u0440\u0435\u0430\u043b\u0438\u0437\u043e\u0432\u0430\u043d[\u0430\u044b]?"
+        r"|\u0441\u043b\u0435\u0434\u0443\u0435\u0442"
+        r"|\u043e\u0431\u0435\u0441\u043f\u0435\u0447\u0438\u0442\u044c"
+        r"|\u043f\u0440\u043e\u0438\u0437\u0432\u043e\u0434\u0438(?:\u0442\u0441\u044f|\u0442\u044c)"
+        r"|\u043f\u0440\u043e\u0438\u0437\u0432\u0435\u0434\u0435\u043d[\u0430-\u044f\u0451]+)",
         re.IGNORECASE,
     )
-    return [m.group(0).strip() for m in measure_pattern.finditer(section)][:50]
-
-
+    bad = re.compile(r"(?:\u043f\u0440\u0438\\s+\u0440\u0435\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u0438.*\u0432\u0440\u0435\u0434\u043e\u043d\u043e\u0441\u043d)", re.IGNORECASE)
+    sentences = re.split(r"(?<=[.!?;])\s+", text)
+    out: list[str] = []
+    for sentence in sentences:
+        s = sentence.strip()
+        if not s or bad.search(s):
+            continue
+        m = marker.search(s)
+        if not m:
+            continue
+        clause = s[m.start():].strip(" .;")
+        if len(clause) >= 10 and clause not in out:
+            out.append(clause)
+    return out[:50]
 def _detect_threat_type(section: str) -> str:
     s = section.lower()
     if re.search(r"(?:bd|бд)у[:\s]|cve-\d{4}", s):

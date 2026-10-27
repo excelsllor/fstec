@@ -152,11 +152,6 @@ export default function Login() {
             </Button>
           </Box>
 
-          {!needsSetup && (
-            <Typography variant="caption" color="text.secondary" align="center" sx={{ display: "block", mt: 2 }}>
-              Учётные записи создаёт администратор в разделе «Пользователи».
-            </Typography>
-          )}
         </Paper>
       </Box>
     </Container>

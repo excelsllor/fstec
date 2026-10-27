@@ -55,6 +55,8 @@ async def handle_assessed(topic: str, key: str, payload: dict) -> None:
             "target_version": v.get("target_version", ""),
             "recommendation": v.get("recommendation", ""),
             "cmdb_match": v.get("cmdb_match", False),
+            "cmdb_error": v.get("cmdb_error", ""),
+            "is_applicable": v.get("is_applicable"),
             "source": v.get("source", "manual"),
         } for v in assessed_vulns]
 
@@ -78,6 +80,7 @@ async def handle_assessed(topic: str, key: str, payload: dict) -> None:
 
         db.add(Report(document_id=doc.id, report_type="indicator_card",
                       filename=fname, file_path=str(report_path)))
+        db.commit()
 
         # 2.5.2 РџСЂРѕРµРєС‚ РѕС‚РІРµС‚Р° (С€Р°Р±Р»РѕРЅ + Р±РёР±Р»РёРѕС‚РµРєР° РјРµСЂ + LLM-РїРѕРґР±РѕСЂ; fallback вЂ” РґРµС‚РµСЂРјРёРЅРёСЂРѕРІР°РЅРЅС‹Р№)
         threat_rows = (db.query(Threat).filter(Threat.document_id == doc_id)
@@ -86,6 +89,7 @@ async def handle_assessed(topic: str, key: str, payload: dict) -> None:
             "id": t.id, "number": t.number, "threat_type": t.threat_type, "theme": t.theme,
             "group_name": t.group_name, "archive_name": t.archive_name, "exe_name": t.exe_name,
             "malware_type": t.malware_type, "description": t.description,
+            "explicit_measures": [m.strip() for m in (t.measures or "").split("\n") if m.strip()],
         } for t in threat_rows]
         from shared.generator.templated_reply import generate_reply_async, persist_candidates
         # Сессия БД переживает await: план и measure library читаются из неё же.

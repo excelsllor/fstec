@@ -67,7 +67,7 @@ def test_full_pipeline(tmp_path):
 
         report = db.query(Report).filter(Report.document_id == doc_id).first()
         assert report is not None
-        assert report.filename.startswith("Report_letter.docx_")
+        assert report.filename.startswith("Report_letter_")
         assert report.file_path
 
         resp = db.query(GeneratedResponse).filter(GeneratedResponse.document_id == doc_id) \

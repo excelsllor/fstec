@@ -14,6 +14,8 @@ def _create_doc():
     style.paragraph_format.line_spacing = 1.0
     style.paragraph_format.space_after = Pt(0)
     for section in doc.sections:
+        section.page_width = Cm(21.0)
+        section.page_height = Cm(29.7)
         section.top_margin = Cm(2)
         section.bottom_margin = Cm(2)
         section.left_margin = Cm(3)
@@ -29,6 +31,7 @@ def _save(doc):
 
 def export_ips_docx(iocs) -> bytes:
     ips = sorted({i.value.split(":")[0] for i in iocs if i.ioc_type == "ip"})
+    ips += sorted({i.value for i in iocs if i.ioc_type in ("ipv6", "ip_cidr")})
     doc = _create_doc()
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.LEFT
@@ -67,6 +70,7 @@ def export_all_docx(iocs) -> bytes:
     doc = _create_doc()
 
     ips = sorted({i.value.split(":")[0] for i in iocs if i.ioc_type == "ip"})
+    ips += sorted({i.value for i in iocs if i.ioc_type in ("ipv6", "ip_cidr")})
     if ips:
         p = doc.add_paragraph()
         run = p.add_run("Сетевые индикаторы компрометации")

@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from shared.extractor.patterns import BDU_PATTERN, CVE_PATTERN, KNOWN_GROUPS, normalize_vuln_ids
 
 # Соотносится со следующей фразой про исправление: «обновление до версии 2.17.0»
+_BDU_URL = re.compile(r"https?://(?:www\.)?bdu\.fstec\.ru/vul/(\d{4}-\d{3,6})", re.IGNORECASE)
+
 _PATCH_SENTENCE = re.compile(
     r"(?:обновлени[а-яё]*|устраня(?:ется|ются)|переход[а-яё]*|отключ(?:ение|ить))\s+"
     r"(?:до|на)\s+(?:версии|версию)|\bверси[а-яё]*\s+[\d.]+",
@@ -76,6 +78,21 @@ def extract_vulns(text: str, tables: list | None = None) -> list[VulnInfo]:
             severity=_extract_severity(sentence, m.group(0)),
         ))
 
+    for m in _BDU_URL.finditer(text):
+        bdu = f"BDU:{m.group(1)}"
+        if bdu in seen:
+            continue
+        seen.add(bdu)
+        sentence_end = _find_sentence_end_with_patch(text, m.end())
+        sentence = text[_find_sentence_start(text, m.start()): sentence_end]
+        results.append(VulnInfo(
+            bdu_id=bdu,
+            description=sentence.strip()[:500],
+            software=_extract_software(sentence, m.group(0)),
+            version=_extract_version(sentence),
+            severity=_extract_severity(sentence, m.group(0)),
+        ))
+
     if tables:
         for table in tables:
             for row in table:
@@ -120,6 +137,22 @@ def _find_sentence_end_with_patch(text: str, pos: int, lookahead: int = 260) -> 
     if _PATCH_SENTENCE.search(seg):
         return _find_sentence_end(text, end)
     return end
+
+
+def extract_software_items(text: str) -> list[dict]:
+    """????????? ????????? ???????? ? ????????? ?????? ??? ??????????? ?? CVE/BDU."""
+    items: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for pat, canon in _KNOWN_PRODUCTS:
+        for m in re.finditer(pat, text or "", re.IGNORECASE):
+            tail = (text or "")[m.end():m.end() + 120]
+            vm = re.search(r"(?<![0-9A-Za-z])([0-9]+(?:\.[0-9]+){1,4}[A-Za-z]?)(?![0-9A-Za-z])", tail)
+            version = vm.group(1) if vm else ""
+            key = (canon, version)
+            if key not in seen:
+                seen.add(key)
+                items.append({"name": canon, "version": version})
+    return items
 
 
 def _canonical_product(sentence: str) -> str:

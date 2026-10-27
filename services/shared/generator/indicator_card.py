@@ -36,6 +36,8 @@ def _create_doc():
     style.font.name = "Times New Roman"
     style.font.size = Pt(12)
     for section in doc.sections:
+        section.page_width = Cm(21.0)
+        section.page_height = Cm(29.7)
         section.top_margin = Cm(2)
         section.bottom_margin = Cm(2)
         section.left_margin = Cm(3)
@@ -153,7 +155,7 @@ def build_indicator_card(
         _line(doc, "  — не обнаружено")
 
     _section_title(doc, "Раздел 4. Результаты анализа уязвимостей")
-    headers = ["CVE ID", "CVSS Score", "Затронутое ПО", "Текущая версия", "Целевая версия", "Статус угрозы"]
+    headers = ["CVE / BDU ID", "CVSS Score", "Затронутое ПО", "Текущая версия", "Целевая версия", "Статус угрозы"]
     table = doc.add_table(rows=1, cols=len(headers))
     table.style = "Table Grid"
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -172,7 +174,7 @@ def build_indicator_card(
             row = table.add_row().cells
             vals = [
                 v.get("cve_id") or v.get("bdu_id") or "",
-                str(v.get("cvss_score") or ("" if v.get("cvss_score") else "")),
+                str(v.get("cvss_score")) if v.get("cvss_score") is not None else "",
                 v.get("software") or "",
                 v.get("current_version") or "",
                 v.get("target_version") or v.get("fixed_version") or "",
@@ -181,6 +183,7 @@ def build_indicator_card(
             for i, val in enumerate(vals):
                 row[i].text = val
             color = "C0392B" if (v.get("cmdb_match") or v.get("severity") == "critical") else (
+                "E5E7EB" if v.get("severity") == "unknown" else
                 "F1C40F" if v.get("severity") in ("high", "medium") else "27AE60"
             )
             _set_cell_bg(row[-1], color)
@@ -209,5 +212,5 @@ def _set_cell_bg_from_paragraph(p, color: str):
 
 def report_filename(source_filename: str, report_date: date | None = None) -> str:
     report_date = report_date or date.today()
-    safe = Path(source_filename).name
+    safe = Path(source_filename).stem
     return f"Report_{safe}_{report_date.isoformat()}.docx"

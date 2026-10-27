@@ -92,11 +92,13 @@ def _store_assessments(db: Session, doc: Document, assessed: list[dict]) -> None
             software=_clip(a.get("software", ""), _VULN_LIMITS["software"]),
             severity=_clip(a.get("severity", "unknown"), _VULN_LIMITS["severity"]),
             cvss_score=a.get("cvss_score"),
+            cvss_version=a.get("cvss_version", ""),
             cpe=_clip(a.get("cpe", ""), _VULN_LIMITS["cpe"]),
             affected_range=_clip(a.get("affected_range", ""), _VULN_LIMITS["affected_range"]),
             fixed_version=_clip(a.get("fixed_version", ""), _VULN_LIMITS["fixed_version"]),
             patch_url=_clip(a.get("patch_url", ""), _VULN_LIMITS["patch_url"]),
             cmdb_match=a.get("cmdb_match", False),
+            cmdb_error=a.get("cmdb_error", ""),
             current_version=_clip(a.get("current_version", ""), _VULN_LIMITS["current_version"]),
             target_version=_clip(a.get("target_version", ""), _VULN_LIMITS["target_version"]),
             source=_clip(a.get("source", "manual"), _VULN_LIMITS["source"]),
@@ -115,12 +117,17 @@ def _persist_assessment(doc_id: int, assessment) -> None:
             logger.warning("Document %s not found, skip security", doc_id)
             return
         sla, routing = assessment.sla, assessment.routing
+        if doc.sla == "critical" or sla == "critical":
+            sla = "critical"
+            routing = "infosec"
         _store_assessments(db, doc, assessment.assessed)
         doc.sla, doc.routing = sla, routing
         doc.processing_stage = "assessed"
         doc.status = "assessed"
+        cmdb_errors = sum(1 for a in assessment.assessed if a.get("cmdb_error"))
         db.add(SLABase(document_id=doc_id, sla=sla, routing=routing,
-                       reason=f"cmdb_matches={sum(1 for a in assessment.assessed if a['cmdb_match'])}"))
+                       reason=f"cmdb_matches={sum(1 for a in assessment.assessed if a['cmdb_match'])}; "
+                              f"cmdb_errors={cmdb_errors}"))
         db.commit()
 
 
@@ -161,7 +168,10 @@ async def handle_analyzed(topic: str, key: str, payload: dict) -> None:
     cmdb = _OVERRIDES.get("cmdb") or get_cmdb() or None
 
     enrich = _enrich if _enrich is not None else (SECURITY_MODE == "live")
-    assessment = await assess_document(vulns_raw, cmdb=cmdb, enrich=enrich, nvd=nvd, bdu=bdu)
+    assessment = await assess_document(
+        vulns_raw, cmdb=cmdb, enrich=enrich, nvd=nvd, bdu=bdu,
+        letter_type=payload.get("classification") or "",
+    )
     sla, routing = assessment.sla, assessment.routing
 
     await run_blocking(_persist_assessment, doc_id, assessment)

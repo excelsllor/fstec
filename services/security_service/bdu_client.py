@@ -17,7 +17,7 @@ import re
 import httpx
 
 from security_service.cache import EMPTY, Cache, MemoryCache
-from security_service.enriched import EnrichedVuln
+from security_service.enriched import CpeMatch, EnrichedVuln, RangeSpec
 from security_service.http_pool import get_client
 from security_service.resilience import retry_async
 from security_service.versioning import build_range
@@ -208,6 +208,30 @@ def _cvss_from_critu(critu: str) -> tuple[float | None, str]:
     return best, best_ver
 
 
+def _cpe_matches_from_model(model: dict) -> list[CpeMatch]:
+    matches: list[CpeMatch] = []
+    versions = model.get("versions") or []
+    if not isinstance(versions, list):
+        return matches
+    for item in versions:
+        if not isinstance(item, dict):
+            continue
+        soft = item.get("soft") or {}
+        name = str((soft or {}).get("sft_name") or "").strip()
+        raw = str(item.get("ver_name") or "").strip()
+        nums = re.findall(r"\d+(?:\.\d+){0,4}(?:[A-Za-z][\w]*)?", raw)
+        if not name or not nums:
+            continue
+        product = re.sub(r"[^a-z0-9._-]+", "_", name.lower()).strip("_") or "*"
+        criteria = f"cpe:2.3:a:*:{product}:*:*:*:*:*:*:*:*"
+        if len(nums) >= 2:
+            spec = RangeSpec(min_version=nums[0], max_version=nums[-1], max_inclusive=False)
+        else:
+            spec = RangeSpec(max_version=nums[0], max_inclusive=False)
+        matches.append(CpeMatch(criteria=criteria, ranges=[spec]))
+    return matches
+
+
 def _parse_from_model(model: dict, page: str, path_id: str) -> EnrichedVuln | None:
     if not isinstance(model, dict):
         return None
@@ -234,7 +258,7 @@ def _parse_from_model(model: dict, page: str, path_id: str) -> EnrichedVuln | No
         cvss_score=cvss_score,
         cvss_version=cvss_ver,
         cve_id=cve,
-        cpe_matches=[],
+        cpe_matches=_cpe_matches_from_model(model),
         fixed_version=fixed,
         patch_url=patch,
         references=[{"source": "bdu", "url": u} for u in refs],

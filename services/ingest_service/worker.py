@@ -1,5 +1,6 @@
 ﻿"""Ingest Service (РўР— 2.2): РїР°СЂСЃРёРЅРі + OCR в†’ document.parsed."""
 import asyncio
+import json
 import logging
 from pathlib import Path
 
@@ -8,9 +9,10 @@ from shared.concurrency import run_blocking
 from shared.config import OCR_ENABLED, OCR_MIN_TEXT, OCR_LANG
 from shared.db import SessionLocal
 from shared.events import DocumentParsed
-from shared.models import Attachment, Document
+from shared.models import Attachment, Document, DocumentTable
 from shared.parsers import parse_file
-from shared.parsers.ocr import ocr_pdf_bytes
+from shared.parsers.ocr import (ocr_docx_bytes, ocr_embedded_images_bytes,
+                                ocr_office_bytes, ocr_pdf_bytes)
 from shared.worker import configure_logging, register_handlers
 
 logger = logging.getLogger("fstec.ingest")
@@ -34,6 +36,7 @@ def _parse_document(doc_id: int) -> DocumentParsed | None:
             logger.warning("No attachments for doc %s", doc_id)
             return None
 
+        db.query(DocumentTable).filter(DocumentTable.document_id == doc_id).delete()
         main_text = ""
         all_texts: list[str] = []
         ocr_used = False
@@ -51,16 +54,45 @@ def _parse_document(doc_id: int) -> DocumentParsed | None:
                 continue
 
             text = result.text or ""
-            if OCR_ENABLED and att.file_type == ".pdf" and len(text.strip()) < OCR_MIN_TEXT:
+            if result.tables:
+                table_lines = []
+                for table in result.tables:
+                    for row in table:
+                        cells = [str(c).strip() for c in row if str(c).strip()]
+                        if cells:
+                            table_lines.append(" | ".join(cells))
+                table_text = "\n".join(table_lines)
+                if table_text and table_text not in text:
+                    text = (text.rstrip() + "\n\n" + table_text).strip()
+            page_texts = result.page_texts or []
+            needs_page_ocr = bool(page_texts) and any(
+                len((p or "").strip()) < OCR_MIN_TEXT for p in page_texts
+            )
+            if OCR_ENABLED and (len(text.strip()) < OCR_MIN_TEXT or needs_page_ocr):
                 try:
                     content = path.read_bytes()
-                    text, ocr_errors = ocr_pdf_bytes(content, lang=OCR_LANG)
-                    ocr_used = True
+                    if att.file_type == ".pdf":
+                        text, ocr_errors = ocr_pdf_bytes(content, lang=OCR_LANG)
+                    elif att.file_type in (".doc", ".docx", ".rtf"):
+                        text, ocr_errors = ocr_office_bytes(content, att.file_type, lang=OCR_LANG)
+                        if not text.strip():
+                            if att.file_type == ".docx":
+                                text, extra = ocr_docx_bytes(content, lang=OCR_LANG)
+                            else:
+                                text, extra = ocr_embedded_images_bytes(content, lang=OCR_LANG)
+                            ocr_errors.extend(extra or [])
+                    else:
+                        continue
+                    if text.strip():
+                        ocr_used = True
                     parse_errors.extend(f"OCR {att.filename}: {e}" for e in ocr_errors)
                     logger.info("OCR applied to %s (chars=%d)", att.filename, len(text))
                 except Exception as exc:
                     parse_errors.append(f"OCR {att.filename}: {exc}")
 
+            for ti, table in enumerate(result.tables or []):
+                db.add(DocumentTable(document_id=doc.id, table_index=ti,
+                                     rows_json=json.dumps(table, ensure_ascii=False)))
             att.parsed_text = text
             att.parse_status = "done" if text.strip() else "empty"
             all_texts.append(text)

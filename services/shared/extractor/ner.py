@@ -119,6 +119,8 @@ def extract_standard_ner(text: str) -> NERResult:
 
     for m in _DEADLINE_DATE_TEXT.finditer(text):
         mon = _MONTHS.get(m.group(2).lower())
+        if mon is None:
+            continue
         value = f"до {m.group(1)}.{mon:02d}.{m.group(3)}"
         if value not in seen_deadlines:
             result.deadlines.append(value)

@@ -22,6 +22,7 @@ from typing import Optional
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from shared import bus as eventbus
@@ -1624,6 +1625,13 @@ def diagnostics_bus(db: Session = Depends(get_db), user: User = Depends(require_
                 "error": "шина в памяти: счётчики не сохраняются"}
     except Exception as e:  # noqa: BLE001
         return {"backend": EVENT_BUS, "total": 0, "topics": [], "error": str(e)[:160]}
+
+
+_FRONTEND_DIR = Path(os.environ.get(
+    "FSTEC_FRONTEND_DIR", str(Path(__file__).resolve().parents[2] / "frontend")
+))
+if _FRONTEND_DIR.is_dir():
+    app.mount("/verify", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
 
 
 if __name__ == "__main__":

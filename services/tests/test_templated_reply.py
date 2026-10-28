@@ -129,6 +129,22 @@ def test_explicit_measures_override(doc_db):
     assert texts == ["Своя мера первая", "Своя мера вторая"]
 
 
+def test_fragment_explicit_measures_do_not_override(doc_db):
+    db, doc, threats = doc_db
+    blocks = [{"id": threats[0].id, "number": 1, "threat_type": "phishing",
+               "theme": "Договор", "group_name": "Vortex Werewolf",
+               "archive_name": "ishod.zip", "description": "фишинг",
+               "explicit_measures": [
+                   "необходимо реализовать меры защиты, указанные в пунктах 1.1-1.7",
+                   "Обеспечить ограничение обращений к указанным адресам",
+               ]}]
+    plan = plan_reply(db=db, letter_type="hacker", blocks=blocks,
+                      addr_count=1, use_llm=False)
+    texts = [m["text"] for m in plan["blocks"][0]["measures"]]
+    assert "необходимо реализовать меры защиты, указанные в пунктах 1.1-1.7" not in texts
+    assert any("песочниц" in t for t in texts)
+
+
 def test_generate_reply_plan_json_and_candidates(doc_db):
     from shared.generator.templated_reply import plan_reply as _p
     db, doc, threats = doc_db

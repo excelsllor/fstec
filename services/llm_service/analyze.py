@@ -242,6 +242,10 @@ def _finalize(text, letter, iocs, vulns, ner, summary, classification,
                 "theme": t.theme, "archive_name": t.archive_name, "exe_name": t.exe_name,
                 "malware_type": t.malware_type, "description": t.description,
                 "measures": t.measures} for t in letter.threats]
+    if classification == "compromise" and threats and any(
+            t.get("threat_type") in {"phishing", "malware_attack", "clickfix", "vulnerability"}
+            for t in threats):
+        classification = "hacker"
     vuln_items = [{"bdu_id": v.bdu_id, "cve_id": v.cve_id, "description": v.description,
                    "software": v.software, "version": v.version, "severity": v.severity} for v in vulns]
     if vuln_items and not threats and classification in ("hacker", "other"):

@@ -1109,7 +1109,8 @@ function normMeasure(s: string): string {
   return s.toLowerCase().replace(/\s+/g, " ").replace(/[;.\s]+$/g, "").trim();
 }
 
-function buildHighlightedHtml(text: string, iocs: IoCResponse[], measureOptions: string[], baseMeasures: string[]): string {
+function buildHighlightedHtml(text: string, iocs: IoCResponse[], measureOptions: string[],
+                              baseMeasures: string[], aiMeasures: string[] = []): string {
   const escaped = escapeHtml(text);
   const patterns: { re: RegExp; cls: string }[] = [];
 
@@ -1126,15 +1127,19 @@ function buildHighlightedHtml(text: string, iocs: IoCResponse[], measureOptions:
   // базовые меры (из default-шаблона типа угрозы) — синяя подсветка;
   // компенсирующие/нетипичные меры, не входящие в базовый набор, — оранжевая
   const baseSet = new Set((baseMeasures || []).map(normMeasure));
+  const aiSet = new Set((aiMeasures || []).map(normMeasure));
   for (const measure of measureOptions) {
     if (measure && measure.length > 15) {
-      const cls = baseSet.has(normMeasure(measure)) ? "hl-measure" : "hl-measure-unknown";
+      const key = normMeasure(measure);
+      const cls = aiSet.has(key) ? "hl-measure-ai"
+        : baseSet.has(key) ? "hl-measure" : "hl-measure-unknown";
       patterns.push({ re: new RegExp(measure.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), cls });
     }
   }
 
   const marks: { start: number; end: number; cls: string; rank: number }[] = [];
-  const rank = (cls: string) => (cls === "hl-measure" ? 1 : 0);
+  const rank = (cls: string) =>
+    cls === "hl-measure-ai" ? 2 : cls === "hl-measure" ? 1 : 0;
   for (const { re, cls } of patterns) {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -1175,6 +1180,11 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
       description: string;
       measures: string[];
       measures_preview: string[];
+      measure_annotations?: Array<{
+        text: string;
+        source: string;
+        candidate_id?: number | null;
+      }>;
       threat_type: string;
       measure_options: string[];
       base_measures: string[];
@@ -1265,6 +1275,18 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
     ? preview.sections.flatMap((s) => s.measure_options || []).filter(Boolean)
     : [];
 
+  const aiMeasures = preview
+    ? Array.from(
+        new Map(
+          preview.sections
+            .flatMap((s) => s.measure_annotations || [])
+            .filter((a) => a.source === "new" && a.text)
+            .map((a) => [normMeasure(a.text), a] as const)
+        ).values()
+      )
+    : [];
+  const aiKeys = new Set(aiMeasures.map((a) => normMeasure(a.text)));
+
   const unknownMeasures = preview
     ? Array.from(
         new Set(
@@ -1272,6 +1294,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
             .flatMap((s) => s.measure_options || [])
             .filter(Boolean)
             .filter((opt) => opt.length > 15)
+            .filter((opt) => !aiKeys.has(normMeasure(opt)))
             .filter((opt) => {
               const base = new Set(preview!.sections.flatMap((sec) => (sec.base_measures || []).map(normMeasure)).filter(Boolean));
               return !base.has(normMeasure(opt));
@@ -1338,6 +1361,28 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
         </Button>
       </Box>
 
+      {aiMeasures.length > 0 && (
+        <Alert severity="warning" icon={<AutoFixHighIcon />} sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: "bold", mb: 0.5 }}>
+            В ответе есть меры, сгенерированные ИИ ({aiMeasures.length})
+          </Typography>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Они выделены фиолетовым и не входят в базовую библиотеку. Проверьте их перед сохранением
+            и отправкой ответа.
+          </Typography>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+            {aiMeasures.map((a) => (
+              <Box key={normMeasure(a.text)} sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}>
+                <Chip label="ИИ" size="small" color="secondary" sx={{ mt: 0.2 }} />
+                <Typography variant="caption" sx={{ whiteSpace: "normal", wordBreak: "break-word" }}>
+                  {a.text}
+                </Typography>
+              </Box>
+            ))}
+          </Box>
+        </Alert>
+      )}
+
       {!preview ? (
         <Alert severity="info">Нажмите «Сгенерировать заново» для создания ответа</Alert>
       ) : (
@@ -1356,6 +1401,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
                 "& .hl-domain": { backgroundColor: "#d3f9d8" },
                 "& .hl-email": { backgroundColor: "#ffec99" },
                 "& .hl-measure": { backgroundColor: "#e7f5ff", borderBottom: "1px dashed #1976d2" },
+                "& .hl-measure-ai": { backgroundColor: "#f3e8ff", borderBottom: "2px solid #7b1fa2" },
                 "& .hl-measure-unknown": { backgroundColor: "#ffe8cc", borderBottom: "1px dashed #f76707" },
                 "& textarea::selection": { backgroundColor: "rgba(25, 118, 210, 0.3)" },
               }}
@@ -1376,7 +1422,7 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
                   lineHeight: "inherit",
                   color: "#000",
                 }}
-                dangerouslySetInnerHTML={{ __html: buildHighlightedHtml(editText, letter.iocs, allMeasureOptions, preview ? preview.sections.flatMap((s) => s.base_measures || []).filter(Boolean) : []) + "\n" }}
+                dangerouslySetInnerHTML={{ __html: buildHighlightedHtml(editText, letter.iocs, allMeasureOptions, preview ? preview.sections.flatMap((s) => s.base_measures || []).filter(Boolean) : [], aiMeasures.map((a) => a.text)) + "\n" }}
               />
               <textarea
                 ref={textareaRef}
@@ -1457,6 +1503,43 @@ function ResponseTab({ letter, onGenerate }: { letter: LetterResponse; onGenerat
                   </AccordionDetails>
                 </Accordion>
               ))}
+
+              <Divider sx={{ my: 2 }} />
+
+              <Typography variant="subtitle2" sx={{ mb: 1, color: "secondary.main" }}>
+                Меры, сгенерированные ИИ ({aiMeasures.length}) — требуют проверки
+              </Typography>
+              {aiMeasures.length > 0 ? (
+                <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mb: 2 }}>
+                  {aiMeasures.map((a) => (
+                    <Button
+                      key={normMeasure(a.text)}
+                      size="small"
+                      variant="outlined"
+                      color="secondary"
+                      sx={{
+                        textAlign: "left",
+                        justifyContent: "flex-start",
+                        fontSize: "0.72rem",
+                        textTransform: "none",
+                        whiteSpace: "normal",
+                        wordBreak: "break-word",
+                        p: 0.5,
+                        lineHeight: 1.3,
+                      }}
+                      onClick={() => copyToClipboard(a.text)}
+                      title={`Сгенерировано LLM. Клик — копировать.\n${a.text}`}
+                    >
+                      <Chip label="ИИ" size="small" color="secondary" sx={{ mr: 1 }} />
+                      {a.text}
+                    </Button>
+                  ))}
+                </Box>
+              ) : (
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+                  Нет мер, сгенерированных ИИ
+                </Typography>
+              )}
 
               <Divider sx={{ my: 2 }} />
 

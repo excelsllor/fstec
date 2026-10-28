@@ -363,6 +363,18 @@ def _norm_measure(text: str) -> str:
     return " ".join("".join(ch if ch.isalnum() else " " for ch in t).split())
 
 
+def _explicit_measure_is_fragment(text: str) -> bool:
+    low = " ".join((text or "").lower().split())
+    if not low:
+        return True
+    if low.startswith(("необходимости", "следует", "требуется")):
+        return True
+    if re.search(r"^необходимо\s+(?:принять|реализовать|перейти|использовать|обращать|"
+                 r"организовать|ограничить|обеспечить|осуществить)", low):
+        return True
+    return bool(re.search(r"(?:меры\s+защиты.*указанн\w*\s+в\s+пункт|пунктах?\s+\d+(?:\.\d+)?)", low))
+
+
 _CORE_ORDER_KEYS = ("песочниц", "антивирус", "url-адрес", "имени домена",
                     "проинструктирован", "учетн",
                     "ограничение обращений", "настройк")
@@ -386,7 +398,10 @@ def _core_texts(library: list[dict] | None) -> list[str]:
 
 def _is_phishing_block(blk: dict) -> bool:
     desc = (blk.get("description") or "").lower()
-    return (blk.get("threat_type") or "").lower() == "phishing" or "фишинг" in desc
+    ttype = (blk.get("threat_type") or "").lower()
+    if "clickfix" in ttype or "clickfix" in desc:
+        return False
+    return ttype == "phishing" or "фишинг" in desc
 
 
 def _measure_signature(blk: dict) -> tuple:
@@ -412,7 +427,6 @@ def _reference_measure_plan(blocks: list[dict], library: list[dict] | None,
         reduced.append(monitoring)
 
     picked: list[list[dict]] = []
-    seen: set[tuple] = set()
     any_phishing = False
     for idx, blk in enumerate(blocks):
         if _is_phishing_block(blk):
@@ -425,12 +439,7 @@ def _reference_measure_plan(blocks: list[dict], library: list[dict] | None,
                 sel = list(core)
                 any_phishing = True
         else:
-            sig = _measure_signature(blk)
-            if sig not in seen:
-                seen.add(sig)
-                sel = list(reduced)
-            else:
-                sel = [restrict]
+            sel = list(reduced)
         picked.append(sel)
     if picked and not any_phishing:
         # Гарантируем, что полный core есть хотя бы в одном блоке письма.
@@ -619,20 +628,32 @@ def _norm_cve_key(value) -> str:
 
 
 def _append_letter_extras(plan_blocks: list[dict], letter_number: str, addr_count: int) -> None:
-    """Добавляет по-писемные меры (например, адресные ограничения) в первый блок."""
+    """Добавляет по-писемные меры (например, адресные ограничения) в целевой блок."""
     extras = _load_letter_extras().get((letter_number or "").replace("/", "-"), [])
     if not extras or not plan_blocks:
         return
-    first = plan_blocks[0]
-    sw0 = (first.get("software") or "").strip()
-    existing = {_norm_measure(m["text"]) for m in (first.get("measures") or [])}
-    for t in extras:
-        txt = _inflect_measure(t, addr_count, sw0)
+    for item in extras:
+        if isinstance(item, dict):
+            text = str(item.get("text") or "")
+            target = item.get("block")
+        else:
+            text = str(item)
+            target = None
+        text = text.strip()
+        if not text:
+            continue
+        try:
+            block = plan_blocks[int(target) - 1] if target is not None else plan_blocks[0]
+        except (ValueError, IndexError):
+            block = plan_blocks[0]
+        software = (block.get("software") or "").strip()
+        existing = {_norm_measure(m["text"]) for m in (block.get("measures") or [])}
+        txt = _inflect_measure(text, addr_count, software)
         key = _norm_measure(txt)
         if key in existing:
             continue
         existing.add(key)
-        first.setdefault("measures", []).append(
+        block.setdefault("measures", []).append(
             {"text": txt, "source": "library", "measure_id": None})
 
 
@@ -763,9 +784,6 @@ def _apply_llm_plan(llm_plan: dict | None, lib_by_id: dict, frag_by_key: dict,
         return None
     core = _core_sorted([m for m in (library or [])
                          if "core" in [t.strip() for t in (m.get("tags") or "").split(",") if t.strip()]])
-    plan_type = (llm_plan.get("template_key") or "").lower()
-    selected = (_reference_measure_plan(blocks, library, addr_count)
-                if plan_type == "hacker" else None)
     built: dict[int, dict] = {}
     by_index = {i: b for i, b in enumerate(blocks)}
     for entry in llm_plan["blocks"] or []:
@@ -842,9 +860,6 @@ def _apply_llm_plan(llm_plan: dict | None, lib_by_id: dict, frag_by_key: dict,
                 seen_core.add(key)
                 merged.append({"text": txt, "source": "library", "measure_id": m.get("id")})
             measures = merged
-        if selected is not None and idx < len(selected):
-            measures = selected[idx]
-            new_measures = []
         built[idx] = {
             "number": src.get("number") or int(n), "threat_id": src.get("id"),
             "fragment_key": frag_key, "intro": intro, "threat_type": src.get("threat_type", ""),
@@ -863,16 +878,13 @@ def _apply_llm_plan(llm_plan: dict | None, lib_by_id: dict, frag_by_key: dict,
         sw = (src.get("software") or "").strip()
         ttype = src.get("threat_type") or ""
         intro = _template_intro(src)
-        if selected is not None and idx < len(selected):
-            measures = selected[idx]
+        if ttype == "vulnerability":
+            texts = [m["text"] for m in (library or [])
+                     if m.get("threat_type") == "vulnerability"][:2]
         else:
-            if ttype == "vulnerability":
-                texts = [m["text"] for m in (library or [])
-                         if m.get("threat_type") == "vulnerability"][:2]
-            else:
-                texts = [m["text"] for m in core][:9]
-            measures = [{"text": _inflect_measure(t, addr_count, sw),
-                         "source": "library", "measure_id": None} for t in texts]
+            texts = [m["text"] for m in core][:9]
+        measures = [{"text": _inflect_measure(t, addr_count, sw),
+                     "source": "library", "measure_id": None} for t in texts]
         built[idx] = {
             "number": src.get("number") or idx + 1, "threat_id": src.get("id"),
             "fragment_key": "", "intro": intro, "threat_type": ttype,
@@ -1004,11 +1016,15 @@ def _finalize_plan(llm_plan: dict | None, db, letter_type: str, blocks: list[dic
                 "measures": measures, "new_measures": [],
             }]}
 
-    explicit = {
-        b.get("id"): [_inflect_measure(m.strip(), addr_count, (b.get("software") or "").strip())
-                       for m in (b.get("explicit_measures") or []) if m.strip()]
-        for b in blocks if b.get("explicit_measures")
-    }
+    explicit = {}
+    for b in blocks:
+        values = [m.strip() for m in (b.get("explicit_measures") or []) if m.strip()]
+        if not values or any(_explicit_measure_is_fragment(m) for m in values):
+            continue
+        explicit[b.get("id")] = [
+            _inflect_measure(m, addr_count, (b.get("software") or "").strip())
+            for m in values
+        ]
 
     plan = None
     if llm_plan:

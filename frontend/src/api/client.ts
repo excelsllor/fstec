@@ -271,6 +271,11 @@ export const lettersApi = {
         description: string;
         measures: string[];
         measures_preview: string[];
+        measure_annotations?: Array<{
+          text: string;
+          source: string;
+          candidate_id?: number | null;
+        }>;
         threat_type: string;
         measure_options: string[];
         base_measures: string[];

@@ -551,6 +551,36 @@ def _load_letter_intros() -> dict:
     return _LETTER_INTROS
 
 
+_LETTER_MEASURE_PLANS: dict | None = None
+
+
+def _load_letter_measure_plans() -> dict:
+    global _LETTER_MEASURE_PLANS
+    if _LETTER_MEASURE_PLANS is None:
+        from pathlib import Path
+        path = Path(__file__).resolve().parent.parent.parent / "data" / "generator" / "letter_measure_plans.json"
+        try:
+            import json
+            _LETTER_MEASURE_PLANS = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            _LETTER_MEASURE_PLANS = {}
+    return _LETTER_MEASURE_PLANS
+
+
+def _apply_letter_measure_plan(plan: dict, letter_number: str, addr_count: int) -> None:
+    key = (letter_number or "").replace("/", "-").strip()
+    measures = _load_letter_measure_plans().get(key)
+    blocks = plan.get("blocks") or []
+    if not measures or len(measures) != len(blocks):
+        return
+    for block, texts in zip(blocks, measures):
+        block["measures"] = [
+            {"text": t, "source": "library", "measure_id": None}
+            for t in texts
+        ]
+        block["new_measures"] = []
+
+
 def _use_llm_for_reply(letter_type: str, letter_number: str) -> bool:
     mode = os.environ.get("FSTEC_REPLY_LLM_MODE", "always").strip().lower()
     if mode == "never":
@@ -1333,6 +1363,7 @@ def _reply_result(plan: dict, templates: dict | None, letter_number: str, letter
                   org_name: str, addr_count: int, active_vulns: list[dict],
                   addresses: list[str] | None) -> dict:
     """Рендер текста/docx + сборка plan_json. Общая часть generate_reply*."""
+    _apply_letter_measure_plan(plan, letter_number, addr_count)
     text, _meta = render_reply(plan=plan, templates=templates, letter_number=letter_number,
                               letter_date=letter_date, org_name=org_name,
                               addr_count=addr_count, active_vulns=active_vulns or [],

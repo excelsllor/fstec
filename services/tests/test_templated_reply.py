@@ -260,9 +260,83 @@ def test_fragment_explicit_measures_do_not_override(doc_db):
                ]}]
     plan = plan_reply(db=db, letter_type="hacker", blocks=blocks,
                       addr_count=1, use_llm=False)
+    _apply_global_measure_policy(plan, blocks, "hacker")
     texts = [m["text"] for m in plan["blocks"][0]["measures"]]
     assert "необходимо реализовать меры защиты, указанные в пунктах 1.1-1.7" not in texts
-    assert any("песочниц" in t for t in texts)
+    assert any("обеспечивается ограничение обращений к указанным адресам" in t.lower()
+               for t in texts)
+    assert not any("песочниц" in t for t in texts)
+
+
+def test_hacker_uses_source_measures_as_primary(doc_db):
+    db, doc, threats = doc_db
+    blocks = [{"id": threats[0].id, "number": 1, "threat_type": "phishing",
+               "theme": "Договор", "group_name": "Vortex Werewolf",
+               "archive_name": "ishod.zip", "description": "фишинг",
+               "explicit_measures": [
+                   "Обеспечить ограничение обращений к указанным адресам",
+                   "Проводить проверку почтовых вложений антивирусным средством",
+                   "Необходимо ограничить доступ к указанным адресам",
+                   "Не открывать и не загружать почтовые вложения писем с тематикой, "
+                   "относящейся к деятельности органа",
+                   "Кроме того, необходимо осуществить настройку правил мониторинга, "
+                   "нацеленной на органы государственной власти, во вложениях указанных писем",
+               ]}]
+    plan = plan_reply(db=db, letter_type="hacker", blocks=blocks,
+                      addr_count=1, use_llm=False)
+    _apply_global_measure_policy(plan, blocks, "hacker")
+    texts = [m["text"].lower() for m in plan["blocks"][0]["measures"]]
+    assert texts[0] == "обеспечивается ограничение обращений к указанным адресам;"
+    assert any("проводится проверка почтовых вложений" in t for t in texts)
+    assert any("ограничивается доступ к указанным адресам" in t for t in texts)
+    assert any("тематикой, не относящейся к деятельности органа" in t for t in texts)
+    assert not any("нацеленной на органы государственной власти" in t for t in texts)
+    assert not any("песочниц" in t for t in texts)
+
+
+def test_hacker_does_not_render_ioc_from_measures_or_intro(doc_db, monkeypatch):
+    monkeypatch.setenv("FSTEC_MEASURE_POLICY", "source")
+    db, doc, threats = doc_db
+    blocks = [{"id": threats[0].id, "number": 1, "threat_type": "phishing",
+               "theme": "Договор", "group_name": "Vortex Werewolf",
+               "archive_name": "ishod.zip",
+               "description": "фишинг; сетевой индикатор — 10[.]20[.]30[.]40; "
+                              "хэш 2e1f4cc2f8a267028ad903f61c1fe046a379f2be953ba9638ea1f011a56dc864",
+               "explicit_measures": [
+                   "Обеспечить ограничение обращений к указанным адресам: 10[.]20[.]30[.]40",
+                   "Осуществлять мониторинг событий по хэшу "
+                   "2e1f4cc2f8a267028ad903f61c1fe046a379f2be953ba9638ea1f011a56dc864",
+                   "Проводить проверку почтовых вложений антивирусным средством",
+               ]}]
+    plan = plan_reply(db=db, letter_type="hacker", blocks=blocks,
+                      addr_count=1, use_llm=False)
+    _apply_global_measure_policy(plan, blocks, "hacker")
+    texts = [m["text"].lower() for m in plan["blocks"][0]["measures"]]
+    assert not any("10[.]20[.]30[.]40" in t or "2e1f4cc2" in t for t in texts)
+    assert "10[.]20[.]30[.]40" not in (plan["blocks"][0]["intro"] or "").lower()
+    assert any("ограничение обращений" in t for t in texts)
+    assert any("мониторинг" in t for t in texts)
+    assert any("проверка почтовых вложений" in t for t in texts)
+
+
+def test_combined_hacker_renders_vulnerability_section(doc_db):
+    db, doc, _ = doc_db
+    plan = {"template_key": "hacker", "blocks": [{
+        "number": 1, "threat_id": 1, "intro": "фишинг",
+        "threat_type": "phishing",
+        "measures": [{"text": "проверка вложений;", "source": "library",
+                      "measure_id": None}],
+    }]}
+    vulns = [{
+        "bdu_id": "BDU:2026-0001", "software": "Samba", "severity": "high",
+        "description": "Уязвимость Samba связана с ошибкой.",
+        "cmdb_match": False, "is_applicable": False,
+    }]
+    text, _ = render_reply(plan=plan, templates=load_reply_resources(db)[2],
+                           letter_number="9/combined", active_vulns=vulns)
+    assert "Уязвимости программного обеспечения:" in text
+    assert "BDU:2026-0001" in text
+    assert "Samba не используется." in text
 
 
 def test_generate_reply_plan_json_and_candidates(doc_db):

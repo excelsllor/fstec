@@ -71,6 +71,31 @@ def test_match_product_aliases():
     assert match_product("Gitea", "установка Git-сервера Gitea") is True
 
 
+def test_match_product_rejects_component_variants():
+    assert match_product("Linux", "Linux")
+    assert match_product("wazuh-agent", "Wazuh")
+    assert match_product("GitLab EE", "GitLab")
+    assert match_product("python3-django", "Django")
+    assert match_product("python3-PyYAML", "PyYAML")
+    assert match_product("python3-urllib3", "urllib3")
+    assert match_product("perl-XML-Parser", "XML::Parser")
+    assert not match_product("GitLab Runner", "GitLab")
+    assert not match_product("util-linux", "Linux")
+    assert not match_product("libselinux", "Linux")
+    assert not match_product("netcat-openbsd", "OpenBSD")
+    assert not match_product("libraw1394", "RAW-")
+    assert not match_product("xml-common", "XML-")
+    assert not match_product("python2-netaddr", "NET Framework")
+    assert not match_product("net-tools", "NET Framework")
+    assert not match_product("Microsoft Edge Update", "Microsoft Edge")
+    assert not match_product("linux-firmware-whence", "Linux")
+    assert not match_product("Windows Subsystem for Linux", "Linux")
+    assert not match_product("Kaspersky Endpoint Security 11.3.0 для Linux", "Linux")
+    assert not match_product("MindFusion XML Viewer", "XML-")
+    assert not match_product("XML редактор 2", "XML-")
+    assert not match_product("XML Конвертер 2", "XML-")
+
+
 def test_match_product_mariadb_case_insensitive():
     assert match_product("mariadb", "MariaDB")
     assert match_product("mariadb", "mariadb")

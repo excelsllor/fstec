@@ -124,6 +124,28 @@ _VENDOR_PRODUCT_TOKENS = {
     "microsoft", "cisco", "sap", "fortinet", "oracle", "jetbrains", "adobe",
     "apache", "google", "apple", "red", "hat", "redhat", "ibm", "vmware",
 }
+_COMPONENT_PRODUCT_TOKENS = {
+    "runner", "agent", "update", "updater", "common", "util", "utils",
+    "netcat", "library", "libs", "plugin", "extension", "module", "sdk",
+    "runtime", "driver", "firmware", "subsystem", "viewer", "tools",
+    "kaspersky", "endpoint", "редактор", "конвертер",
+    "python", "python2", "python3", "perl",
+}
+_COMPONENT_ALLOWED = {
+    "wazuh": {"agent"},
+    "ossec": {"agent"},
+    "requests": {"python", "python2", "python3"},
+    "python requests": {"python", "python2", "python3"},
+    "pillow": {"python", "python2", "python3"},
+    "messagepack": {"python", "python2", "python3"},
+    "cpython": {"python", "python2", "python3"},
+    "python": {"python", "python2", "python3"},
+}
+_LANGUAGE_COMPONENT_TOKENS = {"python", "python2", "python3", "perl"}
+_LANGUAGE_COMPONENT_BLOCK_TARGETS = {
+    "gitlab", "net", "raw", "xml", "linux", "openbsd", "windows",
+    "microsoft edge", "edge",
+}
 _PRODUCT_ALIASES = {
     "cpython": ("python3", "python"),
     "python": ("python3",),
@@ -226,14 +248,44 @@ def _product_aliases(product: str) -> set[str]:
 
 
 
+def _candidate_has_blocking_component(candidate_tokens: list[str], target_tokens: list[str],
+                                      target_norm: str) -> bool:
+    allowed = _COMPONENT_ALLOWED.get(target_norm, set())
+    for token in candidate_tokens:
+        if token in target_tokens or token in _GENERIC_PRODUCT_TOKENS:
+            continue
+        if token in _VENDOR_PRODUCT_TOKENS:
+            continue
+        if token in _LANGUAGE_COMPONENT_TOKENS:
+            if token not in allowed and target_norm in _LANGUAGE_COMPONENT_BLOCK_TARGETS:
+                return True
+            continue
+        if token in _COMPONENT_PRODUCT_TOKENS and token not in allowed:
+            return True
+    return False
+
+
+def _tokens_match_product(candidate_tokens: list[str], target_tokens: list[str],
+                          target_norm: str) -> bool:
+    if not candidate_tokens or not target_tokens:
+        return False
+    if _candidate_has_blocking_component(candidate_tokens, target_tokens, target_norm):
+        return False
+    if len(target_tokens) == 1:
+        return target_tokens[0] in candidate_tokens
+    if not all(any(_product_token_hit(token, actual) for actual in candidate_tokens)
+               for token in target_tokens):
+        return False
+    return any(token in candidate_tokens for token in target_tokens)
+
+
 def match_product(inventory_name: str, vuln_software: str | list[str]) -> bool:
-    """Сопоставляет имя из инвентаря с продуктом уязвимости по значимым токенам."""
+    """Сопоставить имя из инвентаря с продуктом уязвимости по именам токенов."""
     names = [inventory_name] if isinstance(inventory_name, str) else inventory_name
     targets = [vuln_software] if isinstance(vuln_software, str) else vuln_software
     for name in names:
         candidate_tokens = _product_tokens(name)
-        candidate_norm = _product_norm(name)
-        if not candidate_norm:
+        if not candidate_tokens:
             continue
         for target in targets:
             target_tokens = _product_distinctive_tokens(target)
@@ -242,17 +294,15 @@ def match_product(inventory_name: str, vuln_software: str | list[str]) -> bool:
             target_norm = " ".join(target_tokens)
             if not target_norm:
                 continue
-            if candidate_norm == target_norm or target_norm in candidate_norm:
+            if _tokens_match_product(candidate_tokens, target_tokens, target_norm):
                 return True
-            aliases = _product_aliases(target)
-            if any(_product_norm(alias) == candidate_norm
-                   or _product_norm(alias) in candidate_norm for alias in aliases):
-                return True
-            if all(
-                any(_product_token_hit(token, actual) for actual in candidate_tokens)
-                for token in target_tokens
-            ):
-                return True
+            for alias in _product_aliases(target):
+                alias_tokens = _product_distinctive_tokens(alias)
+                if not alias_tokens:
+                    alias_tokens = _product_tokens(alias)
+                alias_norm = " ".join(alias_tokens)
+                if alias_norm and _tokens_match_product(candidate_tokens, alias_tokens, alias_norm):
+                    return True
     return False
 
 def build_range(criteria: str, raw_range: dict | None) -> CpeMatch:

@@ -55,7 +55,7 @@ def test_upload_and_pipeline(client):
 
     reply = client.post(f"/reply/generate?doc_id={doc_id}", headers=_headers(client))
     assert reply.status_code == 200
-    assert "обновление" in reply.json()["text"].lower()
+    assert "обнов" in reply.json()["text"].lower()
 
 
 def test_legacy_compat(client):

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from shared.config import LLM_PROVIDER, ORG_NAME
@@ -200,6 +201,7 @@ _MEASURE_STYLE = (
     (r"^\s*реализовать\b", "реализуется"),
     (r"^\s*внедрить\b", "внедряется"),
     (r"^\s*ограничить\b", "ограничивается"),
+    (r"^\s*проводить\b", "проводится"),
     (r"^\s*провести\b", "проводится"),
     (r"^\s*вести\b", "ведется"),
     (r"^\s*запретить\b", "запрещается"),
@@ -250,7 +252,8 @@ _NESTED_STYLE = (
 
 
 def _to_impersonal(text: str) -> str:
-    result = text
+    result = re.sub(r"^\s*(?:кроме\s+того,?\s*)?(?:необходимо|следует)\s+", "",
+                    text, count=1, flags=re.IGNORECASE)
     for pattern, replacement in _MEASURE_STYLE:
         match = re.match(pattern, result, re.IGNORECASE)
         if match:
@@ -297,8 +300,20 @@ _STANDARD_MEASURES = [
 ]
 _NETWORK_MEASURE = "на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;"
 _MONITORING_MEASURE = "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям."
-_GITHUB_IOC_MEASURE = "принять меры по блокировке следующих IOC: Trojan.Loader.3261, AsyncRAT, JS.Stealer.191, Trojan.InjectNET.14;"
+_GITHUB_IOC_MEASURE = "принять меры по блокировке индикаторов компрометации, указанных в приложении;"
 _HASH_RE = re.compile(r"\b[0-9a-fA-F]{32,64}\b")
+_BANNED_URL_RE = re.compile(
+    r"автоматическ\w*\s+проверк\w*\s+указанн\w*\s+в\s+письмах\s*URL",
+    re.IGNORECASE)
+_SOURCE_GENERIC_RE = re.compile(
+    r"(?:кроме\s+того,?\s*)?необходимо\s+(?:реализовать|принять|выполнить)"
+    r"\s+меры(?:\s+защиты)?,?\s+указанные\s+в\s+пунктах?\s*[\d.\-–]*",
+    re.IGNORECASE)
+_SOURCE_CONTAMINATED_RE = re.compile(
+    r"(?:нацеленной\s+на\s+органы\s+государственной\s+власти"
+    r"|Во\s+вложениях\s+указанных\s+писем"
+    r"|После\s+запуска\s+пользователем)",
+    re.IGNORECASE)
 _BDU_RULES: list[dict] | None = None
 
 
@@ -315,21 +330,165 @@ def _load_bdu_measure_rules() -> list[dict]:
 
 
 
-def _apply_global_measure_policy(plan: dict, blocks: list[dict], letter_type: str) -> None:
+def _format_source_measure(text: str, addr_count: int, software: str = "") -> str:
+    out = _SOURCE_GENERIC_RE.sub(" ", text)
+    out = re.split(r"Обращаем\s+внимание", out, maxsplit=1, flags=re.IGNORECASE)[0]
+    out = _inflect_measure(out, addr_count, software)
+    out = re.sub(r"(?<!не )тематикой,\s*относящейся", "тематикой, не относящейся",
+                 out, flags=re.IGNORECASE)
+    out = re.sub(r"(обращается\s+внимание)\s+наименование", r"\1 на наименование",
+                 out, flags=re.IGNORECASE)
+    out = re.sub(r"используется\s+функцию", "используется функция", out, flags=re.IGNORECASE)
+    out = re.sub(r"используется\s+утилиту", "используется утилита", out, flags=re.IGNORECASE)
+    out = re.sub(r"компрометации\s*\d(?=\s*[\(.,;]|$)", "компрометации", out,
+                 flags=re.IGNORECASE)
+    out = re.sub(r"компрометации(?=[0-9a-f]{32})", "компрометации ", out,
+                 flags=re.IGNORECASE)
+    out = re.sub(r"компрометации:\s*\((md5|sha256)\):", r"компрометации (\1):", out,
+                 flags=re.IGNORECASE)
+    out = re.sub(r"\(sh256\)", "(sha256)", out, flags=re.IGNORECASE)
+    out = re.sub(r"необходимо\s+активировать\s+функцию", "активируется функция", out,
+                 flags=re.IGNORECASE)
+    out = re.sub(r"\bактивировать\s+функцию", "активируется функция", out,
+                 flags=re.IGNORECASE)
+    out = re.sub(r"выбрать\s+и\s+активировать\s+утилиту", "выбирается и активируется утилита",
+                 out, flags=re.IGNORECASE)
+    out = re.sub(r"\bактивировать\s+утилиту", "активируется утилита", out,
+                 flags=re.IGNORECASE)
+    out = re.sub(r"исключить\s+работу", "исключается работа", out, flags=re.IGNORECASE)
+    out = re.sub(r"настраивается\s+необходимого\s+перечня",
+                 "осуществляется настройка необходимого перечня", out, flags=re.IGNORECASE)
+    out = re.sub(r"Использовать\s+для\s+разграничения", "Используется для разграничения",
+                 out, flags=re.IGNORECASE)
+    out = re.sub(r"\bи\s+обеспечить\b", "и обеспечивается", out, flags=re.IGNORECASE)
+    out = re.sub(r"сопоставлять\s+его", "сопоставляется оно", out, flags=re.IGNORECASE)
+    previous = None
+    while previous != out:
+        previous = out
+        out = re.sub(r"\b([0-9a-fA-F]{8,})\s+([0-9a-fA-F]{8,})\b", r"\1\2", out)
+        out = re.sub(r"\b([0-9a-fA-F]{16,})\s+([0-9a-fA-F]{2,7})\b", r"\1\2", out)
+    out = re.sub(r"\s+([,.;:])", r"\1", out)
+    out = " ".join(out.split()).strip(" ;,.").strip()
+    if not out:
+        return ""
+    protected = ("URL", "IOC", "BDU", "CVE", "Microsoft", "Windows", "Linux",
+                 "Kaspersky", "Dr.Web", "GitHub")
+    if out[0].isupper() and not out.startswith(protected):
+        out = out[0].lower() + out[1:]
+    return out + ";"
+
+
+def _measure_has_ioc(text: str) -> bool:
+    return bool(_ADDR_RE.search(text or "") or _HASH_RE.search(text or ""))
+
+
+def _source_measure_texts(source: dict, block: dict, addr_count: int) -> list[str]:
+    software = (block.get("software") or source.get("software") or "").strip()
+    result = []
+    seen = set()
+    for value in source.get("explicit_measures") or []:
+        text = str(value).strip()
+        if not text or _explicit_measure_is_fragment(text) or _measure_has_ioc(text):
+            continue
+        formatted = _format_source_measure(text, addr_count, software)
+        key = _norm_measure(formatted)
+        if formatted and key not in seen:
+            seen.add(key)
+            result.append(formatted)
+    return result
+
+
+def _append_unique(measures: list[str], text: str) -> None:
+    key = _norm_measure(text)
+    if key and all(_norm_measure(existing) != key for existing in measures):
+        measures.append(text)
+
+
+def _source_covers(measures: list[str], *groups: tuple[str, ...]) -> bool:
+    normalized = [_norm_measure(text) for text in measures]
+    return any(all(word in text for word in group)
+               for group in groups for text in normalized)
+
+
+def _merge_source_with_reference(source: list[str], reference: list[dict]) -> list[str]:
+    reference_texts = [str(item.get("text") or "") for item in reference
+                       if item.get("text")]
+    if not source or not reference_texts:
+        return source or reference_texts
+    used: set[int] = set()
+    merged: list[str] = []
+    for ref_text in reference_texts:
+        ref_words = set(_norm_measure(ref_text).split())
+        best_idx, best_score = -1, 0.0
+        for idx, src_text in enumerate(source):
+            if idx in used or len(src_text) > 700:
+                continue
+            src_words = set(_norm_measure(src_text).split())
+            score = (len(ref_words & src_words) / max(1, len(ref_words | src_words)))
+            if score > best_score:
+                best_idx, best_score = idx, score
+        if best_idx >= 0 and best_score >= 0.8:
+            used.add(best_idx)
+            merged.append(source[best_idx])
+        else:
+            merged.append(ref_text)
+    return merged
+
+
+def _source_measure_policy_enabled() -> bool:
+    return os.environ.get("FSTEC_MEASURE_POLICY", "reference").strip().lower() == "source"
+
+
+def _apply_reference_measure_policy(plan: dict, blocks: list[dict], addr_count: int,
+                                    library: list[dict] | None, letter_type: str,
+                                    letter_number: str = "") -> None:
     if (letter_type or "").lower() != "hacker":
         return
-    source_by_number = {b.get("number"): b.get("description", "") for b in (blocks or [])}
-    for block in plan.get("blocks") or []:
-        description = source_by_number.get(block.get("number")) or block.get("description") or ""
+    selected = _reference_measure_plan(blocks, library, addr_count)
+    if not selected:
+        return
+    plan_blocks = plan.get("blocks") or []
+    extras = [m for block in plan_blocks for m in (block.get("measures") or [])
+              if m.get("source") == "extra"]
+    for idx, block in enumerate(plan_blocks):
+        if idx < len(selected):
+            block["measures"] = list(selected[idx])
+            block["new_measures"] = []
+    if extras and plan_blocks:
+        plan_blocks[0]["measures"].extend(extras)
+
+
+def _apply_global_measure_policy(plan: dict, blocks: list[dict], letter_type: str,
+                                 library: list[dict] | None = None,
+                                 addr_count: int = 1) -> None:
+    if (letter_type or "").lower() != "hacker":
+        return
+    source_by_number = {b.get("number"): b for b in (blocks or [])}
+    reference_plan = _reference_measure_plan(blocks, library, addr_count) if library else None
+    for block_index, block in enumerate(plan.get("blocks") or []):
+        source = source_by_number.get(block.get("number")) or {}
+        description = source.get("description") or block.get("description") or ""
         flat = re.sub(r"\s+", " ", description).strip()
         addresses = {m.group(0).lower() for m in _ADDR_RE.finditer(flat)}
         has_hashes = bool(_HASH_RE.search(flat))
         has_github = "GitHub" in flat
-        measures = list(_STANDARD_MEASURES)
-        if addresses or has_github:
-            measures.append(_NETWORK_MEASURE.replace("к указанным адресам", "к указанному адресу") if len(addresses) == 1 else _NETWORK_MEASURE)
-        if has_hashes or has_github:
-            measures.append(_MONITORING_MEASURE)
+        measures = _source_measure_texts(source, block, len(addresses))
+        if not measures and reference_plan and block_index < len(reference_plan):
+            measures = [
+                str(item.get("text") or "")
+                for item in reference_plan[block_index]
+                if item.get("text") and not _measure_has_ioc(str(item.get("text")))
+            ]
+        elif measures and reference_plan and block_index < len(reference_plan):
+            measures = _merge_source_with_reference(measures, reference_plan[block_index])
+        if (addresses or has_github) and not _source_covers(
+                measures, ("ограничен", "адрес"), ("ограничен", "обращ")):
+            network = (_NETWORK_MEASURE.replace("к указанным адресам", "к указанному адресу")
+                       if len(addresses) == 1 else _NETWORK_MEASURE)
+            _append_unique(measures, network)
+        if (has_hashes or has_github) and not _source_covers(
+                measures, ("мониторинг",), ("настройк", "событ")):
+            _append_unique(measures, _MONITORING_MEASURE)
         bdu_ids = {
             f"BDU:{match.group(1)}-{match.group(2)}"
             for match in re.finditer(r"BDU[:\s-]*(\d{4})[-\s]*(\d+)", flat, re.IGNORECASE)
@@ -351,10 +510,13 @@ def _apply_global_measure_policy(plan: dict, blocks: list[dict], letter_type: st
             for measure in rule.get("measures") or []:
                 text = measure.get("text") if isinstance(measure, dict) else measure
                 if text:
-                    measures.append(str(text))
+                    _append_unique(measures, str(text))
         if has_github:
-            measures.append(_GITHUB_IOC_MEASURE)
-        block["measures"] = [{"text": text, "source": "library", "measure_id": None} for text in measures]
+            _append_unique(measures, _GITHUB_IOC_MEASURE)
+        if not measures:
+            measures = list(_STANDARD_MEASURES)
+        block["measures"] = [{"text": text, "source": "library", "measure_id": None}
+                             for text in measures]
         block["new_measures"] = []
 
 
@@ -366,19 +528,25 @@ def _remove_empty_measure_blocks(plan: dict) -> None:
 
 
 def _sanitize_plan_measures(plan: dict) -> None:
-    banned = "автоматическая проверка указанных в письмах URL-адресов"
     for block in plan.get("blocks") or []:
         seen = set()
         kept = []
+        had_measures = bool(block.get("measures"))
         for measure in block.get("measures") or []:
             text = " ".join((measure.get("text") or "").split())
             key = text.casefold()
-            if not text or banned in text.casefold() or key in seen:
+            source_policy = _source_measure_policy_enabled()
+            if (not text
+                    or (source_policy and _measure_has_ioc(text))
+                    or key in seen):
                 continue
             seen.add(key)
             item = dict(measure)
             item["text"] = text
             kept.append(item)
+        if not kept and had_measures:
+            kept = [{"text": text, "source": "library", "measure_id": None}
+                    for text in _STANDARD_MEASURES]
         block["measures"] = kept
 
 
@@ -595,20 +763,19 @@ def _norm_measure(text: str) -> str:
 
 
 def _explicit_measure_is_fragment(text: str) -> bool:
-    low = " ".join((text or "").lower().split())
+    low = " ".join((text or "").lower().replace("ё", "е").split())
     if not low:
         return True
-    if low.startswith(("необходимости", "следует", "требуется")):
+    if _BANNED_URL_RE.search(low) or _SOURCE_CONTAMINATED_RE.search(low):
         return True
-    if re.search(r"^необходимо\s+(?:принять|реализовать|перейти|использовать|обращать|"
-                 r"организовать|ограничить|обеспечить|осуществить)", low):
+    if re.search(r"^(?:кроме\s+того,?\s*)?(?:необходимо\s+)?"
+                 r"(?:реализовать|принять|выполнить)\s+меры(?:\s+защиты)?,?\s+указанн", low):
         return True
-    if re.match(r"^(?:производить|осуществлять|осуществить|обеспечивать|обеспечить|"
-                r"проверять|организовать|использовать|установить|настроить|"
-                r"реализовать|внедрить|ограничить|провести|вести|запретить|"
-                r"принять|проинструктировать)\b", low):
+    if re.search(r"^\s*(?:в\s+соответствии\s+с|согласно|см\.)", low):
         return True
-    return bool(re.search(r"(?:меры\s+защиты.*указанн\w*\s+в\s+пункт|пунктах?\s+\d+(?:\.\d+)?)", low))
+    if low in {"необходимо", "рекомендуется", "требуется"}:
+        return True
+    return False
 
 
 _CORE_ORDER_KEYS = ("песочниц", "антивирус", "url-адрес", "имени домена",
@@ -895,7 +1062,7 @@ def _append_letter_extras(plan_blocks: list[dict], letter_number: str, addr_coun
             continue
         existing.add(key)
         block.setdefault("measures", []).append(
-            {"text": txt, "source": "library", "measure_id": None})
+            {"text": txt, "source": "extra", "measure_id": None})
 
 
 def _strip_cve(text: str) -> str:
@@ -1003,9 +1170,10 @@ def _template_intro(src: dict) -> str:
         verb = "реализующей" if singular else "реализующих"
 
     ioc = ""
-    ioc_match = re.search(r'(?:[a-z0-9-]+\[\.\])+(?:[a-z]{2,}|\d{1,3})', desc, re.I)
-    if ioc_match:
-        ioc = ioc_match.group(0)
+    if not _source_measure_policy_enabled():
+        ioc_match = re.search(r'(?:[a-z0-9-]+\[\.\])+(?:[a-z]{2,}|\d{1,3})', desc, re.I)
+        if ioc_match:
+            ioc = ioc_match.group(0)
     details = []
     if "\u0441\u0442\u0438\u043b\u0435\u0440" in desc_low and "\u0441\u0442\u0438\u043b\u0435\u0440" not in malware.lower():
         malware = f"{malware} / \u0441\u0442\u0438\u043b\u0435\u0440" if malware else "\u0441\u0442\u0438\u043b\u0435\u0440"
@@ -1657,6 +1825,18 @@ def render_reply(*, plan: dict, templates: dict | None = None, letter_number: st
             for m in blk.get("measures") or []:
                 t = m['text'].replace("{{sender}}", sender) if sender else m['text']
                 lines.append(f"  {t}")
+        if active_vulns and key != "vulnerability":
+            vulns = list(active_vulns)
+            bdu_cves = {_norm_cve_key(v.get("cve_id"))
+                        for v in vulns if v.get("bdu_id")}
+            vulns = [v for v in vulns
+                     if v.get("bdu_id")
+                     or _norm_cve_key(v.get("cve_id")) not in bdu_cves]
+            if vulns:
+                lines.append("")
+                lines.append("\u0423\u044f\u0437\u0432\u0438\u043c\u043e\u0441\u0442\u0438 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u043d\u043e\u0433\u043e \u043e\u0431\u0435\u0441\u043f\u0435\u0447\u0435\u043d\u0438\u044f:")
+                for idx, v in enumerate(vulns, 1):
+                    lines.append(f"{idx}. {_vuln_paragraph(v, key_num)[0]}")
         if not plan_blocks:
             lines.append("")
             if any(v.get("cmdb_error") for v in (active_vulns or [])):
@@ -1731,7 +1911,12 @@ def generate_reply(db, doc_id: int, *, letter_type: str | None = None, blocks: l
         db, doc_id, letter_type, blocks, active_vulns, letter_number, letter_date)
     plan = plan_reply(db=db, letter_type=letter_type or "hacker", blocks=plan_in,
                       addr_count=addr_count, use_llm=use_llm, letter_number=letter_number)
-    _apply_global_measure_policy(plan, plan_in, letter_type or "hacker")
+    library = load_reply_resources(db)[0]
+    _apply_reference_measure_policy(plan, plan_in, addr_count, library,
+                                    letter_type or "hacker", letter_number)
+    if _source_measure_policy_enabled():
+        _apply_global_measure_policy(plan, plan_in, letter_type or "hacker",
+                                     library, addr_count)
     _normalize_block_address_forms(plan, plan_in)
     _remove_empty_measure_blocks(plan)
     templates = load_reply_resources(db)[2]
@@ -1756,7 +1941,12 @@ async def generate_reply_async(db, doc_id: int, *, letter_type: str | None = Non
     plan = await plan_reply_async(db=db, letter_type=letter_type or "hacker", blocks=plan_in,
                                   addr_count=addr_count, use_llm=use_llm,
                                   letter_number=letter_number)
-    _apply_global_measure_policy(plan, plan_in, letter_type or "hacker")
+    library = load_reply_resources(db)[0]
+    _apply_reference_measure_policy(plan, plan_in, addr_count, library,
+                                    letter_type or "hacker", letter_number)
+    if _source_measure_policy_enabled():
+        _apply_global_measure_policy(plan, plan_in, letter_type or "hacker",
+                                     library, addr_count)
     _normalize_block_address_forms(plan, plan_in)
     _remove_empty_measure_blocks(plan)
     templates = load_reply_resources(db)[2]

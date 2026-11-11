@@ -20,6 +20,9 @@ backend/*.egg-info/
 *.pem
 *.env
 certs/
+pki/
+client/target/
+dist/
 
 # Rust / Tauri
 src-tauri/target/

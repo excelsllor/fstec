@@ -2,11 +2,12 @@
 исчерпание попыток → ExternalServiceError (обрабатывается caller'ом, документ не падает)."""
 import asyncio
 import logging
-import random
+import secrets
 
 from shared.config import SECURITY_RETRY_MAX
 
 logger = logging.getLogger("fstec.security.resilience")
+_rng = secrets.SystemRandom()
 
 
 class ExternalServiceError(Exception):
@@ -15,7 +16,7 @@ class ExternalServiceError(Exception):
 
 def backoff_seconds(attempt: int, base: tuple[int, ...] = (1, 2, 4)) -> float:
     delay = float(base[min(attempt, len(base) - 1)])
-    return delay * (1 + random.random() * 0.2)
+    return delay * (1 + _rng.random() * 0.2)
 
 
 async def retry_async(afn, *args, attempts: int | None = None, **kwargs):

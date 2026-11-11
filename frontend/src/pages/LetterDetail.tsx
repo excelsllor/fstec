@@ -32,6 +32,7 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  LinearProgress,
 } from "@mui/material";
 import {
   ArrowBack as BackIcon,
@@ -120,6 +121,26 @@ const letterStatusLabels: Record<string, string> = {
   deleted: "Удалено",
 };
 
+const processingStageLabels: Record<string, string> = {
+  uploaded: "Загрузка",
+  parsed: "Извлечение текста",
+  analyzed: "LLM-анализ",
+  assessed: "Проверка уязвимостей",
+  done: "Формирование отчёта",
+  completed: "Готово",
+  failed: "Ошибка",
+};
+
+const processingStageProgress: Record<string, number> = {
+  uploaded: 10,
+  parsed: 35,
+  analyzed: 60,
+  assessed: 80,
+  done: 100,
+  completed: 100,
+  failed: 100,
+};
+
 const entityTypeLabels: Record<string, string> = {
   organization: "Организация",
   deadline: "Срок",
@@ -203,7 +224,7 @@ function RiskChip({ level, title }: { level: RiskLevel; title: string }) {
 function RiskSummary({ summary }: { summary: { red: number; yellow: number; green: number; gray: number } }) {
   return (
     <Paper sx={{ p: 1.5, mb: 2, display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-      <Typography variant="subtitle2" sx={{ mr: 1 }}>Индикаторы уязвимостей (ТЗ 4.4):</Typography>
+      <Typography variant="subtitle2" sx={{ mr: 1 }}>Индикаторы уязвимостей:</Typography>
       {summary.red > 0 && <RiskChip level="red" title={`Критические (${summary.red})`} />}
       {summary.yellow > 0 && <RiskChip level="yellow" title={`Средние (${summary.yellow})`} />}
       {summary.green > 0 && <RiskChip level="green" title={`Низкие (${summary.green})`} />}
@@ -280,6 +301,7 @@ export default function LetterDetail() {
   const [snack, setSnack] = useState("");
   const [loadError, setLoadError] = useState("");
   const [regeneratingReport, setRegeneratingReport] = useState(false);
+  const previousStatus = useRef<string | undefined>(undefined);
 
   const load = async (view = false) => {
     setLoading(true);
@@ -295,6 +317,15 @@ export default function LetterDetail() {
   };
 
   useEffect(() => { load(true); }, [id]);
+
+  useEffect(() => {
+    if (!letter) return;
+    const previous = previousStatus.current;
+    if (previous && previous !== letter.status && letter.status === "completed") {
+      window.location.reload();
+    }
+    previousStatus.current = letter.status;
+  }, [letter]);
 
   useEffect(() => {
     if (!letter || ["completed", "failed", "error", "deleted"].includes(letter.status)) return;
@@ -448,6 +479,26 @@ export default function LetterDetail() {
         </Button>
       </Box>
 
+      {!["completed", "failed", "error", "deleted"].includes(letter.status) && (
+        <Paper sx={{ p: 2, mb: 2, borderRadius: 2 }}>
+          <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1 }}>
+            <Typography variant="subtitle2">Обработка письма</Typography>
+            <Typography variant="body2" color="text.secondary">
+              {Math.max(0, Math.min(100, letter.progress_percent ?? processingStageProgress[letter.processing_stage] ?? 0))}%
+            </Typography>
+          </Box>
+          <LinearProgress
+            variant="determinate"
+            value={Math.max(0, Math.min(100, letter.progress_percent ?? processingStageProgress[letter.processing_stage] ?? 0))}
+            sx={{ height: 8, borderRadius: 1 }}
+          />
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+            Этап: {processingStageLabels[letter.processing_stage] || letter.processing_stage || "в очереди"}
+            {letter.eta_seconds != null && letter.eta_seconds > 0 ? ` · осталось ~${letter.eta_seconds} с` : ""}
+          </Typography>
+        </Paper>
+      )}
+
       <RiskSummary summary={riskSummary} />
 
       {letter.parse_errors && (
@@ -514,13 +565,13 @@ function InfoTab({ letter }: { letter: LetterResponse }) {
           </Table>
           {summary && (
             <Box sx={{ mt: 2 }}>
-              <Typography variant="subtitle2" gutterBottom>Саммари (ТЗ 2.3)</Typography>
+              <Typography variant="subtitle2" gutterBottom>Краткое содержание</Typography>
               <Typography variant="body2">{summary.summary}</Typography>
             </Box>
           )}
           {entities.length > 0 && (
             <Box sx={{ mt: 2 }}>
-              <Typography variant="subtitle2" gutterBottom>Сущности (ТЗ 2.3.2)</Typography>
+              <Typography variant="subtitle2" gutterBottom>Сущности</Typography>
               <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
                 {entities.map((e) => (
                   <Chip key={e.id} size="small"
@@ -862,6 +913,7 @@ function VulnTab({ letter, onSaved }: { letter: LetterResponse; onSaved?: () => 
         applicability: data.applicability === "unknown" ? "" : data.applicability,
         applicability_notes: data.applicability_notes || "",
         action_details: data.action_details || "",
+        current_version: data.current_version || drafts[id]?.current_version || "",
       });
       setSnack("Заполнено по CMDB и библиотеке мер. Проверьте перед сохранением.");
     } catch (err: any) {

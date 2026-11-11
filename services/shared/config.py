@@ -142,6 +142,7 @@ LLM_ENABLE_THINKING = os.environ.get("FSTEC_LLM_ENABLE_THINKING", "0").lower() i
 # генерацию с обрывом схемы и ретраем (~320 с против ~17 с у двух отдельных
 # вызовов). Два раздельных вызова (analyze + extract_iocs) быстрее ~6x.
 LLM_MERGED_ANALYZE = os.environ.get("FSTEC_LLM_MERGED_ANALYZE", "0").lower() in ("1", "true", "yes")
+LLM_MERGED_VULN = os.environ.get("FSTEC_LLM_MERGED_VULN", "0").lower() in ("1", "true", "yes")
 # Включать извлечение IoC в merged-ответ LLM. Выкл -> IoC берутся только
 # детерминированным regex-проходом (быстро, меньше gen-токенов -> ниже латентность).
 # Внешний сервис-классификатор IoC (EuroBERT token-classification). Если задан,
@@ -164,7 +165,8 @@ VLLM_THINK_BUDGET = int(os.environ.get("FSTEC_VLLM_THINK_BUDGET", "2000"))
 # Раньше вызов был синхронным urllib и блокировал event loop на всё время генерации,
 # поэтому воркер обрабатывал строго одно письмо. Значения по умолчанию совпадают с
 # измеренным рабочим режимом vLLM на T4 (concurrency 10-12); поднимать выше VRAM не позволяет.
-LLM_MAX_CONCURRENCY = max(1, int(os.environ.get("FSTEC_LLM_CONCURRENCY", "8")))
+LLM_CONCURRENCY_CAP = max(1, int(os.environ.get("FSTEC_LLM_CONCURRENCY_CAP", "12")))
+LLM_MAX_CONCURRENCY = min(LLM_CONCURRENCY_CAP, max(1, int(os.environ.get("FSTEC_LLM_CONCURRENCY", "8"))))
 LLM_POOL_MAX_CONNECTIONS = max(1, int(os.environ.get("FSTEC_LLM_POOL_MAX", "16")))
 LLM_POOL_KEEPALIVE = max(1, int(os.environ.get("FSTEC_LLM_POOL_KEEPALIVE", "8")))
 # Контекст llama-server -c 16384: на ЛЕВЫЙ промпт (после _fit_context) остаётся
@@ -177,6 +179,9 @@ SUMMARY_MAX_CHARS = 500
 # RUBERT_MAX_TOKENS=2048 — измеренный оптимум: полный 8192 разбавляет mean-pooling
 # длинными блок-списками и в 6 раз медленнее (11/12 на обоих, 2.0с против 12.7с/письмо).
 RUBERT_MODEL = os.environ.get("FSTEC_RUBERT_MODEL", "deepvk/USER2-base")
+RUBERT_REVISION = os.environ.get(
+    "FSTEC_RUBERT_REVISION", "94bbff0cc696f26dc93b275fc874657727df0c29"
+).strip()
 RUBERT_DEVICE = os.environ.get("FSTEC_RUBERT_DEVICE", "cpu").lower()
 RUBERT_CONFIDENCE = float(os.environ.get("FSTEC_RUBERT_CONFIDENCE", "0.35"))
 RUBERT_MAX_TOKENS = int(os.environ.get("FSTEC_RUBERT_MAX_TOKENS", "2048"))
@@ -240,9 +245,21 @@ GLPI_APP_TOKEN = os.environ.get("GLPI_APP_TOKEN", "")
 GLPI_TIMEOUT_S = float(os.environ.get("GLPI_TIMEOUT_S", "8"))
 GLPI_MAX_SOFTWARE = max(1, int(os.environ.get("GLPI_MAX_SOFTWARE", "5")))
 GLPI_MAX_VERSIONS = max(1, int(os.environ.get("GLPI_MAX_VERSIONS", "25")))
+GLPI_INVENTORY_CACHE_TTL_S = max(0.0, float(os.environ.get("GLPI_INVENTORY_CACHE_TTL_S", "300")))
+GLPI_INVENTORY_CACHE_MAX = max(1, int(os.environ.get("GLPI_INVENTORY_CACHE_MAX", "512")))
+PARSE_CACHE_TTL_S = max(0.0, float(os.environ.get("FSTEC_PARSE_CACHE_TTL_S", "300")))
+PARSE_CACHE_MAX = max(1, int(os.environ.get("FSTEC_PARSE_CACHE_MAX", "128")))
+GLPI_DB_HOST = os.environ.get("GLPI_DB_HOST", "").strip()
+GLPI_DB_PORT = int(os.environ.get("GLPI_DB_PORT", "3306"))
+GLPI_DB_NAME = os.environ.get("GLPI_DB_NAME", "").strip()
+GLPI_DB_USER = os.environ.get("GLPI_DB_USER", "").strip()
+GLPI_DB_PASSWORD = os.environ.get("GLPI_DB_PASSWORD", "")
+GLPI_DB_CHARSET = os.environ.get("GLPI_DB_CHARSET", "utf8mb4").strip() or "utf8mb4"
+GLPI_DB_PREFIX = os.environ.get("GLPI_DB_PREFIX", "glpi_").strip() or "glpi_"
 
 # Порт gateway
 GATEWAY_PORT = int(os.environ.get("FSTEC_GATEWAY_PORT", "8666"))
+GATEWAY_HOST = os.environ.get("FSTEC_GATEWAY_HOST", "0.0.0.0")  # nosec B104
 
 # Отчётность (ТЗ 2.5)
 ORG_NAME = os.environ.get("FSTEC_ORG_NAME", "Правительства Липецкой области")

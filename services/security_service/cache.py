@@ -117,6 +117,6 @@ class RedisCache(Cache):
         if self._redis is not None:
             try:
                 await self._redis.aclose()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("redis close failed: %s", exc)
         await self._fallback.close()

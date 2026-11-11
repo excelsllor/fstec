@@ -39,7 +39,7 @@ def test_live_assess_stores_enriched(tmp_path):
         vulns = db.query(Vulnerability).filter(Vulnerability.document_id == doc_id).all()
         assert len(vulns) == 1
         v = vulns[0]
-        assert v.source == "nvd"                       # обогащение NVD
+        assert v.source == "bdu"                       # для BDU-письма BDU — источник истины
         assert v.cmdb_match is True
         assert v.current_version == "2.15.0"
         assert v.target_version == "2.17.0"            # фикс из BDU/описания

@@ -2,7 +2,7 @@
 external_errors, вывод fixed_version по регексу."""
 import asyncio
 
-from security_service.assessment import assess_document
+from security_service.assessment import _is_redos_linux, assess_document
 from security_service.cmdb_mock import MockCMDB
 from security_service.enriched import CpeMatch, EnrichedVuln, RangeSpec
 from tests.fakes import (BDU_ENRICHED, NVD_CRITICAL, VULN_RAW, FakeBDUClient,
@@ -26,6 +26,20 @@ def test_keep_all_and_match():
     assert a["source"] == "bdu"
     assert a["severity"] == "critical"
     assert "с 2.15.0 до 2.17.0" in a["recommendation"]
+
+
+def test_bdu_is_authoritative_for_cvss_and_severity():
+    nvd = EnrichedVuln(source="nvd", cve_id="CVE-2026-0001", severity="high",
+                       cvss_version="2.0", cvss_score=10.0)
+    bdu = EnrichedVuln(source="bdu", bdu_id="BDU:2026-0001", cve_id="CVE-2026-0001",
+                       severity="critical", cvss_version="3.1", cvss_score=8.8)
+    raw = {"bdu_id": "BDU:2026-0001", "cve_id": "CVE-2026-0001",
+           "description": "Уязвимость тест", "software": "Test", "severity": "unknown"}
+    ass = asyncio.run(_assess([raw], nvd=FakeNVDClient(nvd), bdu=FakeBDUClient(bdu)))
+    a = ass.assessed[0]
+    assert a["source"] == "bdu"
+    assert a["severity"] == "critical"
+    assert a["cvss_version"] == "3.1"
 
 
 def test_no_match_kept():
@@ -63,7 +77,62 @@ def test_range_does_not_match():
     ass = asyncio.run(_assess([openssl], nvd=FakeNVDClient(nvd_openssl), bdu=FakeBDUClient(None)))
     a = ass.assessed[0]
     assert a["cmdb_match"] is False                  # 1.1.1k < 3.0 (вне диапазона)
-    assert a["current_version"] == ""
+    assert a["current_version"] == "1.1.1k"
+    assert a["is_applicable"] is True
+    assert a["action_type"] == "skip"
+
+
+def test_vulnerability_payload_keeps_assessment_fields():
+    from shared.vulnerability_payload import vulnerability_payload
+    payload = vulnerability_payload({
+        "bdu_id": "BDU:2026-0001", "software": "Windows",
+        "cmdb_match": False, "is_applicable": True, "action_type": "update",
+        "applicability_notes": "note",
+    })
+    assert payload["is_applicable"] is True
+    assert payload["action_type"] == "update"
+    assert payload["applicability_notes"] == "note"
+
+
+def test_redos_linux_aliases():
+    for name in ("Linux", "Linux kernel", "Linux 6.1", "RED OS", "RED OS 8",
+                 "RedOS 7.3", "GNU/Linux", "операционная система Linux"):
+        assert _is_redos_linux(name), name
+    assert not _is_redos_linux("Linux-PAM")
+    assert not _is_redos_linux("Windows")
+
+
+def test_linux_is_treated_as_redos_when_absent_from_glpi():
+    raw = {
+        "bdu_id": "", "cve_id": "", "software": "Linux",
+        "description": "Уязвимость ядра Linux",
+        "severity": "high",
+    }
+    ass = asyncio.run(_assess([raw], enrich=False))
+    a = ass.assessed[0]
+    assert a["cmdb_match"] is False
+    assert a["is_applicable"] is True
+    assert a["action_type"] == "compensate"
+    assert "RED OS" in a["applicability_notes"]
+
+
+def test_raw_description_wins_when_bdu_description_names_other_product():
+    bdu = EnrichedVuln(
+        source="bdu", bdu_id="BDU:2026-16531",
+        description="Уязвимость библиотеки сериализации MessagePack",
+        severity="medium", cvss_score=5.0, cvss_version="3.1",
+    )
+    raw = {
+        "bdu_id": "BDU:2026-16531", "cve_id": "",
+        "software": "Windows",
+        "description": "Уязвимость командной оболочки Shell операционных систем Windows",
+        "severity": "high",
+    }
+    ass = asyncio.run(_assess([raw], nvd=None, bdu=FakeBDUClient(bdu)))
+    description = ass.assessed[0]["description"]
+    assert "Windows" in description
+    assert "MessagePack" not in description
+    assert ass.assessed[0]["severity"] == "high"
 
 
 def test_external_errors_collected():

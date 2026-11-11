@@ -92,7 +92,7 @@ KNOWN_GROUPS = [
 
 MALWARE_NAMES = [
     "Cobalt Strike", "Agent Tesla", "FormBook", "NanoCore",
-    "AsyncRAT", "RedLine", "Raccoon", "Vidar", "Lumma",
+    "NetSupport", "AsyncRAT", "RedLine", "Raccoon", "Vidar", "Lumma",
     "Hta", "hta",
 ]
 

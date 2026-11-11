@@ -1,0 +1,12 @@
+[Unit]
+Description=FSTEC service health guard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/raport/fstec-service/services
+EnvironmentFile=-/home/raport/.config/fstec-health.env
+ExecStart=/home/raport/fstec-service/scripts/fstec-healthcheck.sh
+TimeoutStartSec=90
+Nice=5

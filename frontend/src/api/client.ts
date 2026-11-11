@@ -19,7 +19,8 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const original = error.config;
-    if (error.response?.status === 401 && original && !original._retry
+    const hadAuth = Boolean(original?.headers?.Authorization);
+    if (error.response?.status === 401 && hadAuth && original && !original._retry
         && !String(original.url || "").includes("/api/auth/login")
         && !String(original.url || "").includes("/api/auth/refresh")) {
       const refresh = sessionStorage.getItem("fstec_refresh");
@@ -37,7 +38,7 @@ api.interceptors.response.use(
         }
       }
     }
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 && hadAuth) {
       sessionStorage.removeItem("fstec_token");
       sessionStorage.removeItem("fstec_refresh");
       sessionStorage.removeItem("fstec_user");
@@ -46,11 +47,11 @@ api.interceptors.response.use(
       }
     } else if (error.response?.status === 403) {
       window.dispatchEvent(new CustomEvent("fstec-api-error", {
-        detail: error.response?.data?.detail || "???????????? ????",
+        detail: error.response?.data?.detail || "Недостаточно прав",
       }));
     } else if (error.response?.status >= 500 || !error.response) {
       window.dispatchEvent(new CustomEvent("fstec-api-error", {
-        detail: error.response?.data?.detail || "?????? ???????",
+        detail: error.response?.data?.detail || "Ошибка сервера",
       }));
     }
     return Promise.reject(error);
@@ -154,6 +155,7 @@ export interface VulnerabilityResponse {
 export interface VulnerabilityAutofillResult {
   action_type: string;
   applicability: "true" | "false" | "unknown";
+  current_version?: string;
   action_details: string;
   applicability_notes: string;
   source?: string;

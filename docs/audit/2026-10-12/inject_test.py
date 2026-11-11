@@ -13,7 +13,9 @@ import httpx
 from docx import Document as Docx
 
 GW = os.environ.get("GW", "http://api-gateway:8666")
-PW = open(os.environ["PW_FILE"], encoding="utf-8").read().strip()
+PW = os.environ.get("PW", "").strip()
+if not PW:
+    raise SystemExit("Set PW environment variable")
 
 MARKER = "INJECTION_PWNED_7f3a1"
 
@@ -84,7 +86,7 @@ def main() -> int:
         doc_id = r.json()["id"]
 
         deadline = time.time() + 240
-        status = None
+        status = stage = None
         while time.time() < deadline:
             g = c.get(GW + f"/documents/{doc_id}", headers=H)
             if g.status_code == 200:

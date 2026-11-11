@@ -27,12 +27,14 @@ _OVERRIDES: dict[str, object] = {}
 _enrich: bool | None = None
 _nvd: NVDClient | None = None
 _bdu: BDUClient | None = None
+_cmdb_instance = None
 
 
 def set_test_clients(nvd=None, bdu=None, cmdb=None) -> None:
-    global _enrich
+    global _enrich, _cmdb_instance
     _OVERRIDES.clear()
     _enrich = None
+    _cmdb_instance = None
     if nvd is not None:
         _OVERRIDES["nvd"] = nvd
     if bdu is not None:
@@ -55,6 +57,15 @@ def _get_nvd() -> NVDClient | None:
     if _nvd is None:
         _nvd = NVDClient(cache=get_cache())
     return _nvd
+
+
+def _get_cmdb_instance():
+    global _cmdb_instance
+    if _OVERRIDES.get("cmdb") is not None:
+        return _OVERRIDES["cmdb"]
+    if _cmdb_instance is None:
+        _cmdb_instance = get_cmdb() or None
+    return _cmdb_instance
 
 
 def _get_bdu() -> BDUClient | None:
@@ -103,8 +114,19 @@ def _store_assessments(db: Session, doc: Document, assessed: list[dict]) -> None
             target_version=_clip(a.get("target_version", ""), _VULN_LIMITS["target_version"]),
             source=_clip(a.get("source", "manual"), _VULN_LIMITS["source"]),
             recommendation=a.get("recommendation", templates.get("update", "")),
+            is_applicable=a.get("is_applicable"),
+            applicability_notes=_clip(a.get("applicability_notes", ""), 1500),
             action_type=_clip(a.get("action_type", ""), _VULN_LIMITS["action_type"]),
         )
+        details = templates.get(rec.action_type, "")
+        for key, value in (
+            ("{{software}}", rec.software), ("{software}", rec.software),
+            ("{{current_version}}", rec.current_version), ("{current_version}", rec.current_version),
+            ("{{target_version}}", rec.target_version), ("{target_version}", rec.target_version),
+            ("{{fixed_version}}", rec.target_version), ("{fixed_version}", rec.target_version),
+        ):
+            details = details.replace(key, value or "")
+        rec.action_details = _clip(details, 1500)
         db.add(rec)
 
 
@@ -134,24 +156,20 @@ def _persist_assessment(doc_id: int, assessment) -> None:
 async def handle_parsed_prefetch(topic: str, key: str, payload: dict) -> None:
     """Прогревает BDU/NVD-кэш в отдельной consumer group, пока LLM анализирует письмо."""
     text = payload.get("all_text") or payload.get("text") or ""
-    if not text.strip() or (text.count("BDU:") + text.count("BDU ")) < 3:
+    if not text.strip():
         return
     try:
         vulns = await run_blocking(extract_vulns, text)
         bdu = _get_bdu()
         nvd = _get_nvd()
         jobs = []
-        bdu_count = 0
-        for v in vulns[:80]:
+        for v in vulns[:200]:
             bdu_id = (v.get("bdu_id", "") if isinstance(v, dict) else getattr(v, "bdu_id", "") or "").strip()
             cve_id = (v.get("cve_id", "") if isinstance(v, dict) else getattr(v, "cve_id", "") or "").strip()
             if bdu and bdu_id:
-                bdu_count += 1
                 jobs.append(bdu.get_bdu(bdu_id))
             if nvd and cve_id:
                 jobs.append(nvd.get_cve(cve_id))
-        if bdu_count < 3:
-            return
         if jobs:
             await bounded_gather(jobs, SECURITY_LOOKUP_CONCURRENCY, name="security-prefetch")
             logger.info("Prefetched %d security sources for doc %s", len(jobs), payload.get("document_id"))
@@ -165,7 +183,7 @@ async def handle_analyzed(topic: str, key: str, payload: dict) -> None:
 
     nvd = _OVERRIDES.get("nvd", _get_nvd())
     bdu = _OVERRIDES.get("bdu", _get_bdu())
-    cmdb = _OVERRIDES.get("cmdb") or get_cmdb() or None
+    cmdb = _get_cmdb_instance()
 
     enrich = _enrich if _enrich is not None else (SECURITY_MODE == "live")
     assessment = await assess_document(

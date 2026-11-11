@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 
 from shared.config import LLM_PROVIDER, ORG_NAME
 from shared.generator.response_generator import _clean_theme, render_reply_docx
@@ -20,6 +21,36 @@ logger = logging.getLogger("fstec.reply")
 
 _PLAN_CACHE: dict[str, dict] = {}
 _PLAN_CACHE_MAX = 128
+_STATIC_CACHE_SIGNATURE = None
+_GENERATOR_FILES = (
+    "letter_measures.json", "letter_extra_measures.json", "letter_headers.json",
+    "letter_vuln_tails.json", "letter_vuln_inserts.json", "letter_intros.json",
+    "letter_measure_plans.json", "vuln_status_overrides.json",
+    "bdu_measure_rules.json",
+)
+
+
+def _static_cache_signature():
+    base = Path(__file__).resolve().parent.parent.parent / "data" / "generator"
+    result = []
+    for name in _GENERATOR_FILES:
+        try:
+            result.append((name, (base / name).stat().st_mtime_ns))
+        except OSError:
+            result.append((name, -1))
+    return tuple(result)
+
+
+def _refresh_static_caches() -> None:
+    global _STATIC_CACHE_SIGNATURE
+    signature = _static_cache_signature()
+    if signature == _STATIC_CACHE_SIGNATURE:
+        return
+    _STATIC_CACHE_SIGNATURE = signature
+    for name in ("_LETTER_MEASURES", "_LETTER_EXTRAS", "_LETTER_HEADERS",
+                 "_VULN_TAILS", "_VULN_INSERTS", "_LETTER_INTROS",
+                 "_LETTER_MEASURE_PLANS", "_VULN_STATUS", "_BDU_RULES"):
+        globals()[name] = None
 
 
 def _plan_cache_key(letter_type: str, blocks: list[dict], addr_count: int,
@@ -29,6 +60,7 @@ def _plan_cache_key(letter_type: str, blocks: list[dict], addr_count: int,
         "letter_type": letter_type, "blocks": blocks, "addr_count": addr_count,
         "letter_number": letter_number, "use_llm": use_llm,
         "library": library, "fragments": fragments,
+        "static_cache": _static_cache_signature(),
     }, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -154,9 +186,93 @@ def _norm_date(dt: str) -> str:
 
 _SOFTWARE_FALLBACK = "указанное программное обеспечение"
 
+_MEASURE_STYLE = (
+    (r"^\s*производить\b", "производится"),
+    (r"^\s*осуществлять\b", "осуществляется"),
+    (r"^\s*осуществить\b", "осуществляется"),
+    (r"^\s*обеспечивать\b", "обеспечивается"),
+    (r"^\s*обеспечить\b", "обеспечивается"),
+    (r"^\s*проверять\b", "проверяется"),
+    (r"^\s*организовать\b", "организуется"),
+    (r"^\s*использовать\b", "используется"),
+    (r"^\s*установить\b", "устанавливается"),
+    (r"^\s*настроить\b", "настраивается"),
+    (r"^\s*реализовать\b", "реализуется"),
+    (r"^\s*внедрить\b", "внедряется"),
+    (r"^\s*ограничить\b", "ограничивается"),
+    (r"^\s*провести\b", "проводится"),
+    (r"^\s*вести\b", "ведется"),
+    (r"^\s*запретить\b", "запрещается"),
+    (r"^\s*не\s+открывать\s+и\s+не\s+загружать\b", "не допускается открывать и загружать"),
+    (r"^\s*не\s+открывать\b", "не допускается открывать"),
+    (r"^\s*не\s+загружать\b", "не допускается загружать"),
+    (r"^\s*не\s+допускать\b", "не допускается"),
+    (r"^\s*принять\b", "принимаются"),
+    (r"^\s*проинструктировать\b", "проинструктированы"),
+)
+
+
+def _match_style_case(source: str, replacement: str) -> str:
+    if source.isupper():
+        return replacement.upper()
+    if source[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
+_OBJECT_STYLE = (
+    (r"\bавтоматическую\s+проверку\b", "автоматическая проверка"),
+    (r"\bпроверку\b", "проверка"),
+    (r"\bработу\b", "работа"),
+    (r"\bнастройку\b", "настройка"),
+    (r"\bоценку\b", "оценка"),
+    (r"\bобработку\b", "обработка"),
+    (r"\bзащиту\b", "защита"),
+    (r"\bутилиту\b", "утилита"),
+    (r"\bфункцию\b", "функция"),
+    (r"\bсистему\b", "система"),
+    (r"\bинформацию\b", "информация"),
+    (r"\bугрозу\b", "угроза"),
+    (r"\bполитику\b", "политика"),
+)
+
+_NESTED_STYLE = (
+    (r"необходимо\s+использовать\b", "используется"),
+    (r"необходимо\s+перейти\b", "выполняется переход"),
+    (r"необходимо\s+обращать\s+внимание\b", "обращается внимание"),
+    (r"необходимо\s+организовать\b", "организуется"),
+    (r"необходимо\s+осуществить\b", "осуществляется"),
+    (r"необходимо\s+принять\b", "принимаются"),
+    (r"необходимо\s+обеспечить\b", "обеспечивается"),
+    (r"необходимо\s+задействовать\b", "задействуется"),
+    (r"(?:при\s+)?необходимости\s+осуществить\s+настройку\b", "при необходимости настраивается"),
+)
+
+
+def _to_impersonal(text: str) -> str:
+    result = text
+    for pattern, replacement in _MEASURE_STYLE:
+        match = re.match(pattern, result, re.IGNORECASE)
+        if match:
+            matched = match.group(0)
+            leading = matched[:len(matched) - len(matched.lstrip())]
+            result = (leading + _match_style_case(matched.lstrip(), replacement)
+                      + result[match.end():])
+            break
+    for pattern, replacement in _OBJECT_STYLE:
+        updated = re.sub(pattern, replacement, result, count=1, flags=re.IGNORECASE)
+        if updated != result:
+            result = updated
+            break
+    for pattern, replacement in _NESTED_STYLE:
+        def repl(match: re.Match[str]) -> str:
+            return _match_style_case(match.group(0), replacement)
+        result = re.sub(pattern, repl, result, flags=re.IGNORECASE)
+    return result
+
 
 def _inflect_measure(text: str, addr_count: int, software: str = "") -> str:
-    out = text
+    out = _to_impersonal(text)
     if addr_count == 1:
         out = out.replace("указанным адресам", "указанному адресу")
     if "{{software}}" in out:
@@ -166,6 +282,121 @@ def _inflect_measure(text: str, addr_count: int, software: str = "") -> str:
         # неразрешённых плейсхолдеров ниже по тексту.
         out = out.replace("{{software}}", (software or "").strip() or _SOFTWARE_FALLBACK)
     return out
+
+
+_ADDR_RE = re.compile(r'(?:(?:\d{1,3}\[\.\]){3}\d{1,3}|[a-z0-9][a-z0-9-]*(?:\[\.\][a-z0-9-]+)+)', re.I)
+
+
+_STANDARD_MEASURES = [
+    "производится автоматическая проверка вложений с использованием имеющейся «песочницы» (sandbox) для выявления вредоносной активности на этапе приема письма почтовым сервером;",
+    "производится проверка почтовых вложений с использованием сертифицированного средства антивирусной защиты с использованием функции «Защита от почтовых угроз»;",
+    "в целях идентификации отправителя производится проверка имени домена отправителя электронного письма;",
+    "организовано получение почтовых вложений только от известных отправителей, ведется список адресов электронной почты органов (организаций), с которыми осуществляется взаимодействие;",
+    "сотрудники проинструктированы о запрете открывать и загружать почтовые вложения писем с тематикой, не относящейся к рабочей деятельности;",
+    "работы с электронной почтой производятся только с учетных записей пользователей операционной системы с минимальными возможными привилегиями;",
+]
+_NETWORK_MEASURE = "на уровне сетевых средств защиты информации обеспечено ограничение обращений к указанным адресам;"
+_MONITORING_MEASURE = "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям."
+_GITHUB_IOC_MEASURE = "принять меры по блокировке следующих IOC: Trojan.Loader.3261, AsyncRAT, JS.Stealer.191, Trojan.InjectNET.14;"
+_HASH_RE = re.compile(r"\b[0-9a-fA-F]{32,64}\b")
+_BDU_RULES: list[dict] | None = None
+
+
+def _load_bdu_measure_rules() -> list[dict]:
+    global _BDU_RULES
+    if _BDU_RULES is None:
+        path = Path(__file__).resolve().parent.parent.parent / "data" / "generator" / "bdu_measure_rules.json"
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            _BDU_RULES = value if isinstance(value, list) else []
+        except Exception:
+            _BDU_RULES = []
+    return _BDU_RULES
+
+
+
+def _apply_global_measure_policy(plan: dict, blocks: list[dict], letter_type: str) -> None:
+    if (letter_type or "").lower() != "hacker":
+        return
+    source_by_number = {b.get("number"): b.get("description", "") for b in (blocks or [])}
+    for block in plan.get("blocks") or []:
+        description = source_by_number.get(block.get("number")) or block.get("description") or ""
+        flat = re.sub(r"\s+", " ", description).strip()
+        addresses = {m.group(0).lower() for m in _ADDR_RE.finditer(flat)}
+        has_hashes = bool(_HASH_RE.search(flat))
+        has_github = "GitHub" in flat
+        measures = list(_STANDARD_MEASURES)
+        if addresses or has_github:
+            measures.append(_NETWORK_MEASURE.replace("к указанным адресам", "к указанному адресу") if len(addresses) == 1 else _NETWORK_MEASURE)
+        if has_hashes or has_github:
+            measures.append(_MONITORING_MEASURE)
+        bdu_ids = {
+            f"BDU:{match.group(1)}-{match.group(2)}"
+            for match in re.finditer(r"BDU[:\s-]*(\d{4})[-\s]*(\d+)", flat, re.IGNORECASE)
+        }
+        for rule in _load_bdu_measure_rules():
+            if not rule.get("active", True):
+                continue
+            rule_ids = {str(value).upper() for value in rule.get("bdu_ids") or []}
+            if not bdu_ids.intersection(rule_ids):
+                continue
+            required_software = [
+                str(value).lower() for value in rule.get("software_any") or [] if str(value).strip()
+            ]
+            if required_software and not any(value in flat.lower() for value in required_software):
+                continue
+            rule_type = str(rule.get("threat_type") or "").lower()
+            if rule_type and rule_type != str(block.get("threat_type") or "").lower():
+                continue
+            for measure in rule.get("measures") or []:
+                text = measure.get("text") if isinstance(measure, dict) else measure
+                if text:
+                    measures.append(str(text))
+        if has_github:
+            measures.append(_GITHUB_IOC_MEASURE)
+        block["measures"] = [{"text": text, "source": "library", "measure_id": None} for text in measures]
+        block["new_measures"] = []
+
+
+def _remove_empty_measure_blocks(plan: dict) -> None:
+    blocks = plan.get("blocks") or []
+    kept = [block for block in blocks if block.get("measures")]
+    if len(kept) != len(blocks):
+        plan["blocks"] = kept
+
+
+def _sanitize_plan_measures(plan: dict) -> None:
+    banned = "автоматическая проверка указанных в письмах URL-адресов"
+    for block in plan.get("blocks") or []:
+        seen = set()
+        kept = []
+        for measure in block.get("measures") or []:
+            text = " ".join((measure.get("text") or "").split())
+            key = text.casefold()
+            if not text or banned in text.casefold() or key in seen:
+                continue
+            seen.add(key)
+            item = dict(measure)
+            item["text"] = text
+            kept.append(item)
+        block["measures"] = kept
+
+
+
+def _normalize_block_address_forms(plan: dict, blocks: list[dict]) -> None:
+    descriptions = {b.get("number"): b.get("description", "") for b in (blocks or [])}
+    for block in plan.get("blocks") or []:
+        description = descriptions.get(block.get("number")) or block.get("description") or ""
+        count = len({m.group(0).lower() for m in _ADDR_RE.finditer(description)})
+        if count == 0:
+            continue
+        for measure in block.get("measures") or []:
+            text = measure.get("text") or ""
+            if count == 1:
+                text = text.replace("\u043a \u0443\u043a\u0430\u0437\u0430\u043d\u043d\u044b\u043c \u0430\u0434\u0440\u0435\u0441\u0430\u043c", "\u043a \u0443\u043a\u0430\u0437\u0430\u043d\u043d\u043e\u043c\u0443 \u0430\u0434\u0440\u0435\u0441\u0443")
+            else:
+                text = text.replace("\u043a \u0443\u043a\u0430\u0437\u0430\u043d\u043d\u043e\u043c\u0443 \u0430\u0434\u0440\u0435\u0441\u0443", "\u043a \u0443\u043a\u0430\u0437\u0430\u043d\u043d\u044b\u043c \u0430\u0434\u0440\u0435\u0441\u0430\u043c")
+            measure["text"] = text
 
 
 def _extract_ctx(block: dict) -> dict:
@@ -372,6 +603,11 @@ def _explicit_measure_is_fragment(text: str) -> bool:
     if re.search(r"^необходимо\s+(?:принять|реализовать|перейти|использовать|обращать|"
                  r"организовать|ограничить|обеспечить|осуществить)", low):
         return True
+    if re.match(r"^(?:производить|осуществлять|осуществить|обеспечивать|обеспечить|"
+                r"проверять|организовать|использовать|установить|настроить|"
+                r"реализовать|внедрить|ограничить|провести|вести|запретить|"
+                r"принять|проинструктировать)\b", low):
+        return True
     return bool(re.search(r"(?:меры\s+защиты.*указанн\w*\s+в\s+пункт|пунктах?\s+\d+(?:\.\d+)?)", low))
 
 
@@ -429,9 +665,9 @@ def _reference_measure_plan(blocks: list[dict], library: list[dict] | None,
     picked: list[list[dict]] = []
     any_phishing = False
     for idx, blk in enumerate(blocks):
+        details = any(blk.get(k) for k in
+                      ("group_name", "theme", "archive_name", "exe_name", "malware_type"))
         if _is_phishing_block(blk):
-            details = any(blk.get(k) for k in
-                          ("group_name", "theme", "archive_name", "exe_name", "malware_type"))
             if not details and idx >= 8:
                 # Поздний обезличенный фишинговый блок в эталонах идёт без core.
                 sel = [restrict]
@@ -440,6 +676,11 @@ def _reference_measure_plan(blocks: list[dict], library: list[dict] | None,
                 any_phishing = True
         else:
             sel = list(reduced)
+            if (not details and idx >= 7
+                    and (blk.get("threat_type") or "").lower() == "malware_attack"):
+                # В хвосте эталона для обезличенных malware-блоков остаётся
+                # только ограничение обращений; иначе письмо раздувается.
+                sel = [restrict]
         picked.append(sel)
     if picked and not any_phishing:
         # Гарантируем, что полный core есть хотя бы в одном блоке письма.
@@ -761,24 +1002,33 @@ def _template_intro(src: dict) -> str:
         activity = "целевые компьютерные атаки"
         verb = "реализующей" if singular else "реализующих"
 
-    tail = ""
+    ioc = ""
+    ioc_match = re.search(r'(?:[a-z0-9-]+\[\.\])+(?:[a-z]{2,}|\d{1,3})', desc, re.I)
+    if ioc_match:
+        ioc = ioc_match.group(0)
+    details = []
+    if "\u0441\u0442\u0438\u043b\u0435\u0440" in desc_low and "\u0441\u0442\u0438\u043b\u0435\u0440" not in malware.lower():
+        malware = f"{malware} / \u0441\u0442\u0438\u043b\u0435\u0440" if malware else "\u0441\u0442\u0438\u043b\u0435\u0440"
     if theme:
-        # В эталонах при наличии тематики архив/файл обычно уже не перечисляют.
-        tail += f" с тематикой «{theme}»"
-    elif archive:
-        tail += f", во вложениях которых прикреплен архив с наименованием «{archive}»"
+        details.append(f"\u0442\u0435\u043c\u0430 \u2014 \u00ab{theme}\u00bb")
+    if archive:
+        details.append(f"\u0432\u043b\u043e\u0436\u0435\u043d\u0438\u0435\u043c \u044f\u0432\u043b\u044f\u0435\u0442\u0441\u044f \u0444\u0430\u0439\u043b-\u044f\u0440\u043b\u044b\u043a \u00ab{archive}\u00bb")
     elif exe:
-        tail += f", во вложениях которых прикреплен файл с наименованием «{exe}»"
-    elif malware and kind != "malware":
-        tail += f", с применением вредоносного программного обеспечения «{malware}»"
-
+        details.append(f"\u0432\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u2014 \u00ab{exe}\u00bb")
+    if malware:
+        details.append(f"\u0442\u0438\u043f \u0412\u041f\u041e \u2014 {malware}")
+    if ioc:
+        details.append(f"\u0441\u0435\u0442\u0435\u0432\u043e\u0439 \u0438\u043d\u0434\u0438\u043a\u0430\u0442\u043e\u0440 \u2014 {ioc}")
+    tail = ("; ".join(details)) if details else ""
+    if tail:
+        tail = ", " + tail
     return f"{subject}, {verb} {activity}{tail}"
 
 
 def _apply_llm_plan(llm_plan: dict | None, lib_by_id: dict, frag_by_key: dict,
                     blocks: list[dict], addr_count: int,
                     library: list[dict] | None = None,
-                    letter_number: str = "") -> dict:
+                    letter_number: str = "", letter_type: str = "") -> dict:
     """Нормализация LLM-плана: валидация id/фрагментов + склонение мер."""
     if not llm_plan:
         return None
@@ -847,9 +1097,28 @@ def _apply_llm_plan(llm_plan: dict | None, lib_by_id: dict, frag_by_key: dict,
             measures = kept
             new_measures = [nm for nm in new_measures
                             if nm.get("measure_id") in kept_ids or nm["source"] == "new"][:1]
+        elif core and letter_type == "hacker":
+            # Hacker-письма: распределение мер как в эталонах (полный core для
+            # фишинговых блоков и сокращённый набор для повторов), а не полный
+            # core в каждом блоке. Иначе модель раздувает письмо повторами.
+            reference_plan = _reference_measure_plan(blocks, library, addr_count)
+            if reference_plan and idx < len(reference_plan):
+                measures = reference_plan[idx]
+                new_measures = []
+            else:
+                seen_core = {_norm_measure(m["text"]) for m in measures}
+                merged = []
+                for m in core:
+                    txt = _inflect_measure(m["text"], addr_count, sw)
+                    key = _norm_measure(txt)
+                    if key in seen_core:
+                        continue
+                    seen_core.add(key)
+                    merged.append({"text": txt, "source": "library", "measure_id": m.get("id")})
+                measures = merged
         elif core:
-            # Hacker-письма: эталонные ответы повторяют полный набор базовых мер в каждом
-            # разделе, поэтому ядро библиотеки добавляем к выбору модели (без дублей).
+            # Для остальных типов сохраняем прежнее поведение: ядро библиотеки
+            # добавляется к выбору модели без дублей.
             seen_core = {_norm_measure(m["text"]) for m in measures}
             merged = []
             for m in core:
@@ -968,6 +1237,7 @@ async def plan_reply_async(*, db, letter_type: str, blocks: list[dict], addr_cou
                            use_llm: bool | None = None, letter_number: str = "") -> dict:
     """Асинхронный twin plan_reply(): тот же план, но ожидание vLLM не блокирует
     event loop, поэтому воркер может держать несколько писем в работе одновременно."""
+    _refresh_static_caches()
     if letter_type not in {"hacker", "compromise", "vulnerability", "other"}:
         letter_type = "hacker" if blocks else "other"
     library, fragments, _ = load_reply_resources(db)
@@ -1029,7 +1299,7 @@ def _finalize_plan(llm_plan: dict | None, db, letter_type: str, blocks: list[dic
     plan = None
     if llm_plan:
         plan = _apply_llm_plan(llm_plan, lib_by_id, frag_by_key, blocks, addr_count, library,
-                               letter_number=letter_number)
+                               letter_number=letter_number, letter_type=letter_type)
     if plan is None:
         if letter_type == "vulnerability":
             # LLM недоступен/пусто → пустой план, рендер пойдёт по BDU-описаниям (_vuln_paragraph)
@@ -1056,7 +1326,8 @@ def _finalize_plan(llm_plan: dict | None, db, letter_type: str, blocks: list[dic
 
 def plan_reply(*, db, letter_type: str, blocks: list[dict], addr_count: int,
                use_llm: bool | None = None, letter_number: str = "") -> dict:
-    """План ответа: LLM (один вызов/письмо) или детерминированный fallback."""
+    """Точка входа: LLM (если включён/доступен) или детерминированный fallback."""
+    _refresh_static_caches()
     if letter_type not in {"hacker", "compromise", "vulnerability", "other"}:
         letter_type = "hacker" if blocks else "other"
     library, fragments, _ = load_reply_resources(db)
@@ -1210,9 +1481,10 @@ def _vuln_paragraph(v: dict, letter_number: str = "") -> list[str]:
     software = " ".join((v.get("software") or "").split())
 
     product, tail = "", ""
-    m = re.search(r"Уязвимость\s+(.+?)\s+связан[аы]?\s+с\s+(.+)", desc, re.I)
+    m = re.search(r"Уязвимость\s+(.+?)\s+связан\w*\s+с\s+(.+)", desc, re.I)
     if m:
         product = m.group(1).strip().rstrip(",")
+        product = re.split(r"\s*\((?:BDU|CVE)\b", product, maxsplit=1, flags=re.I)[0].strip()
         tail = m.group(2).strip().rstrip(",").split(".", 1)[0].strip()
     if not product:
         product = software or "программного обеспечения"
@@ -1254,17 +1526,42 @@ def _vuln_paragraph(v: dict, letter_number: str = "") -> list[str]:
         return [f"{first} {' '.join(override.split())}"]
     cmdb_match = v.get("cmdb_match")
     not_in_cmdb = cmdb_match is False or str(cmdb_match).strip().lower() in {"false", "0", "no"}
+    applicable = v.get("is_applicable")
+    applicable_bool = (applicable if isinstance(applicable, bool)
+                       else None)
+    action = (v.get("action_type") or "").strip().lower()
     dlow = desc.lower()
-    if not_in_cmdb:
-        # БД заказчика: ПО не найдено → считаем, что оно не используется.
-        status = f"{_status_subject(software, product)} не используется."
-    else:
+    if not (cmdb_match is True or applicable_bool is True):
         for marker in ("не применяется", "не используется", "не подвержена"):
             if marker in dlow:
                 start = dlow.find(marker)
                 chunk = desc[start:start + 240].split(".", 1)[0].strip().rstrip(",")
                 status = chunk.capitalize() + "."
                 break
+    if not status:
+        if applicable_bool is True:
+            recommendation = (v.get("recommendation") or "").lower()
+            if action in ("update", "compensate") or "обнов" in recommendation:
+                fixed = " ".join((v.get("fixed_version") or v.get("target_version") or "").split())
+                status = (f"В целях предотвращения возможности эксплуатации данной уязвимости "
+                          f"ведутся работы по обновлению {product} до "
+                          f"{fixed or 'неуязвимой версии'}.")
+            elif not_in_cmdb and action == "skip":
+                current = " ".join((v.get("current_version") or "").split())
+                status = (f"ПО <{product}> {current} обнаружено в GLPI (список ПО); "
+                          "установленная версия вне уязвимого диапазона, обновление не требуется.")
+            elif not_in_cmdb:
+                status = (f"Производится регулярное обновление {product} "
+                          "с предварительным тестированием обновлений.")
+            else:
+                status = ("Используемая версия ПО не подвержена данной уязвимости.")
+        elif applicable_bool is False and not_in_cmdb:
+            status = f"{_status_subject(software, product)} не используется."
+        elif not_in_cmdb:
+            status = f"{_status_subject(software, product)} не используется."
+        elif action == "update":
+            status = ("В целях предотвращения возможности эксплуатации данной уязвимости "
+                      f"ведутся работы по обновлению {product} до неуязвимой версии.")
     if not status:
         status = ("В целях предотвращения возможности эксплуатации данной уязвимости "
                   f"ведутся работы по обновлению {product} до неуязвимой версии.")
@@ -1316,8 +1613,11 @@ def render_reply(*, plan: dict, templates: dict | None = None, letter_number: st
             if cve_key:
                 inserts_cve.setdefault(cve_key, []).extend(item.get("lines") or [])
         if vulns:
-            for v in vulns:
-                lines.append(_vuln_paragraph(v, key_num)[0])
+            for idx, v in enumerate(vulns, 1):
+                paragraph = _vuln_paragraph(v, key_num)[0]
+                if idx > 1:
+                    lines.append("")
+                lines.append(f"{idx}. {paragraph}")
                 lines.extend(inserts_bdu.get(_norm_bdu_key(v.get("bdu_id")), []))
                 lines.extend(inserts_cve.get(_norm_cve_key(v.get("cve_id")), []))
         else:
@@ -1380,6 +1680,8 @@ def _reply_result(plan: dict, templates: dict | None, letter_number: str, letter
                   addresses: list[str] | None) -> dict:
     """Рендер текста/docx + сборка plan_json. Общая часть generate_reply*."""
     _apply_letter_measure_plan(plan, letter_number, addr_count)
+    _sanitize_plan_measures(plan)
+    _remove_empty_measure_blocks(plan)
     text, _meta = render_reply(plan=plan, templates=templates, letter_number=letter_number,
                               letter_date=letter_date, org_name=org_name,
                               addr_count=addr_count, active_vulns=active_vulns or [],
@@ -1429,6 +1731,9 @@ def generate_reply(db, doc_id: int, *, letter_type: str | None = None, blocks: l
         db, doc_id, letter_type, blocks, active_vulns, letter_number, letter_date)
     plan = plan_reply(db=db, letter_type=letter_type or "hacker", blocks=plan_in,
                       addr_count=addr_count, use_llm=use_llm, letter_number=letter_number)
+    _apply_global_measure_policy(plan, plan_in, letter_type or "hacker")
+    _normalize_block_address_forms(plan, plan_in)
+    _remove_empty_measure_blocks(plan)
     templates = load_reply_resources(db)[2]
     return _reply_result(plan, templates, letter_number, letter_date, org_name,
                          addr_count, active_vulns, addresses)
@@ -1451,6 +1756,9 @@ async def generate_reply_async(db, doc_id: int, *, letter_type: str | None = Non
     plan = await plan_reply_async(db=db, letter_type=letter_type or "hacker", blocks=plan_in,
                                   addr_count=addr_count, use_llm=use_llm,
                                   letter_number=letter_number)
+    _apply_global_measure_policy(plan, plan_in, letter_type or "hacker")
+    _normalize_block_address_forms(plan, plan_in)
+    _remove_empty_measure_blocks(plan)
     templates = load_reply_resources(db)[2]
     return _reply_result(plan, templates, letter_number, letter_date, org_name,
                          addr_count, active_vulns, addresses)

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=ФСТЭК Сервис
+Comment=Клиент сервиса обработки писем
+Exec=@EXEC@
+Terminal=false
+Categories=Office;Network;

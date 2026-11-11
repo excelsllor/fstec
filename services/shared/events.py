@@ -91,7 +91,10 @@ class VulnerabilityAssessed(BaseModel):
     current_version: str = ""
     target_version: str = ""
     recommendation: str = ""
-    source: str = "manual"         # nvd | bdu | manual (Фаза 3, phase1_json_schemas.md §4)
+    source: str = "manual"
+    is_applicable: bool | None = None
+    action_type: str = ""
+    applicability_notes: str = ""         # nvd | bdu | manual (Фаза 3, phase1_json_schemas.md §4)
 
 
 class SecurityAssessed(BaseModel):

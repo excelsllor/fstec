@@ -139,7 +139,7 @@ def _norm_ip(value: str) -> str | None:
         ipaddress.ip_address(s)
         return s.lower()
     except ValueError:
-        pass
+        logger.debug("value is not a bare IP address: %s", s)
     # IPv4 с портом (host:port). Обрезать хвост по ':' можно только если
     # остаток не является IPv6 (иначе сломаем валидный адрес вида 2001:db8::1).
     host = s.rsplit(":", 1)[0]
@@ -190,7 +190,8 @@ def _json_chunks(s: str):
                 continue
             try:
                 json.loads(chunk)
-            except Exception:
+            except Exception as exc:
+                logger.debug("JSON candidate rejected: %s", exc)
                 continue
             yield chunk
             return
@@ -201,7 +202,8 @@ def _json_chunks(s: str):
     for j in range(len(s), i, -1):
         try:
             data = json.loads(s[i:j])
-        except Exception:
+        except Exception as exc:
+            logger.debug("JSON suffix candidate rejected: %s", exc)
             continue
         if isinstance(data, dict):
             yield s[i:j]
@@ -326,18 +328,13 @@ class VLLMProvider(LLMProvider):
     def _chat(self, system: str, user: str, max_tokens: int | None = None, fit: bool = True,
               thinking: bool | None = None, timeout_s: float | None = None,
               guided_json: dict | None = None, force_guided: bool = False) -> str:
-        import json
-        import ssl
-        import urllib.request
-
-        body = json.dumps(self._payload(system, user, max_tokens, fit, thinking, guided_json, force_guided)).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}/chat/completions", data=body,
-            headers={"Content-Type": "application/json"},
-        )
-        ctx = ssl.create_default_context(cafile=VLLM_CA_FILE) if VLLM_CA_FILE else None
-        with urllib.request.urlopen(req, timeout=timeout_s if timeout_s is not None else self.timeout_s, context=ctx) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        payload = self._payload(system, user, max_tokens, fit, thinking, guided_json, force_guided)
+        with httpx.Client(timeout=timeout_s if timeout_s is not None else self.timeout_s,
+                          verify=VLLM_CA_FILE or True) as client:
+            resp = client.post(f"{self.base_url}/chat/completions", json=payload,
+                               headers={"Content-Type": "application/json"})
+            resp.raise_for_status()
+            data = resp.json()
         return self._record(data)
 
     async def achat(self, system: str, user: str, max_tokens: int | None = None, fit: bool = True,
@@ -394,7 +391,8 @@ class VLLMProvider(LLMProvider):
             for chunk in _json_chunks(cand):
                 try:
                     data = json.loads(chunk)
-                except Exception:
+                except Exception as exc:
+                    logger.debug("LLM JSON chunk rejected: %s", exc)
                     continue
                 if isinstance(data, (dict, list)):
                     return data

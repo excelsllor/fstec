@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import logging
+import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -10,14 +11,43 @@ from shared.bus import get_event_bus
 from shared.config import ORG_NAME, REPORT_DIR
 from shared.db import SessionLocal, init_db
 from shared.events import ReportReady, ReplyGenerated
+from shared.vulnerability_payload import vulnerability_payload
+from shared.generator.addresses import unique_addresses
 from shared.generator.indicator_card import build_indicator_card, report_filename
 from shared.generator.response_generator import render_reply_docx
+from shared.generator.response_store import replace_response
 from shared.models import (
     Document, GeneratedResponse, IoC, Report, Threat, Vulnerability,
 )
 from shared.worker import configure_logging, register_handlers, serve_forever
 
 logger = logging.getLogger("fstec.reporting")
+
+_BDU_TEXT_RE = re.compile(r"BDU[:\s-]*(\d{4})[-\s]*(\d+)", re.I)
+_CVE_TEXT_RE = re.compile(r"CVE[-\s]*(\d{4})[-\s]*(\d+)", re.I)
+
+
+def _source_ids(doc) -> tuple[set[str], set[str]]:
+    text = "\n".join(x for x in (doc.all_text, doc.original_text) if x)
+    bdu = {f"BDU:{a}-{b}" for a, b in _BDU_TEXT_RE.findall(text)}
+    cve = {f"CVE-{a}-{b}" for a, b in _CVE_TEXT_RE.findall(text)}
+    return bdu, cve
+
+
+def _filter_assessed(assessed: list[dict], source_bdu: set[str], source_cve: set[str]) -> list[dict]:
+    """Убирает записи, которых нет в исходном письме (NVD/LLM-дубли и лишние BDU)."""
+    if not source_bdu and not source_cve:
+        return assessed
+    out = []
+    for v in assessed:
+        bdu = str(v.get("bdu_id") or "").strip().upper()
+        cve = str(v.get("cve_id") or "").strip().upper()
+        if not bdu and not cve:
+            out.append(v)
+            continue
+        if (bdu and bdu in source_bdu) or (cve and cve in source_cve):
+            out.append(v)
+    return out
 
 
 def _now():
@@ -34,31 +64,20 @@ async def handle_assessed(topic: str, key: str, payload: dict) -> None:
             logger.warning("Document %s not found, skip report", doc_id)
             return
 
+        source_bdu, source_cve = _source_ids(doc)
+        db_vulns = (db.query(Vulnerability).filter(Vulnerability.document_id == doc_id)
+                    .order_by(Vulnerability.id).all())
+        assessed_vulns = [vulnerability_payload(v) for v in db_vulns] or assessed_vulns
+        assessed_vulns = _filter_assessed(assessed_vulns, source_bdu, source_cve)
+
         ioc = db.query(IoC).filter(IoC.document_id == doc_id).all()
+        addresses = unique_addresses(ioc)
         ips = [i.value for i in ioc if i.ioc_type in ("ip", "ip_cidr")]
         ipv6 = [i.value for i in ioc if i.ioc_type == "ipv6"]
         domains = [i.value for i in ioc if i.ioc_type == "domain"]
         emails = [i.value for i in ioc if i.ioc_type == "email"]
 
-        vulns = [{
-            "cve_id": v.get("cve_id", ""),
-            "bdu_id": v.get("bdu_id", ""),
-            "description": v.get("description", ""),
-            "software": v.get("software", ""),
-            "severity": v.get("severity", "unknown"),
-            "cvss_score": v.get("cvss_score"),
-            "cvss_version": v.get("cvss_version", ""),
-            "affected_range": v.get("affected_range", ""),
-            "fixed_version": v.get("fixed_version", ""),
-            "patch_url": v.get("patch_url", ""),
-            "current_version": v.get("current_version", ""),
-            "target_version": v.get("target_version", ""),
-            "recommendation": v.get("recommendation", ""),
-            "cmdb_match": v.get("cmdb_match", False),
-            "cmdb_error": v.get("cmdb_error", ""),
-            "is_applicable": v.get("is_applicable"),
-            "source": v.get("source", "manual"),
-        } for v in assessed_vulns]
+        vulns = [vulnerability_payload(v) for v in assessed_vulns]
 
         # 2.5.1 РљР°СЂС‚РѕС‡РєР° РёРЅРґРёРєР°С‚РѕСЂРѕРІ
         card_bytes = build_indicator_card(
@@ -97,8 +116,8 @@ async def handle_assessed(topic: str, key: str, payload: dict) -> None:
         # иначе обработчики упрутся в очередь пула (см. shared/db.py).
         rep = await generate_reply_async(
             db=db, doc_id=doc.id, letter_type=doc.letter_type, blocks=blocks,
-            addr_count=len(domains) + len(ips), active_vulns=[v for v in vulns],
-            addresses=sorted({*domains, *ips}),
+            addr_count=len(addresses), active_vulns=[v for v in vulns],
+            addresses=addresses,
         )
         if rep["candidates"]:
             for i, c in enumerate(rep["candidates"]):
@@ -111,9 +130,11 @@ async def handle_assessed(topic: str, key: str, payload: dict) -> None:
         reply_path = report_dir / ans_fname
         reply_path.write_bytes(reply_docx)
 
-        db.add(GeneratedResponse(document_id=doc.id, content=reply_text,
-                                 edited_content=base64.b64encode(reply_docx).decode("ascii"),
-                                 plan_json=rep["plan_json"]))
+        replace_response(
+            db, doc.id, content=reply_text,
+            edited_content=base64.b64encode(reply_docx).decode("ascii"),
+            plan_json=rep["plan_json"],
+        )
 
         doc.processing_stage = "done"
         doc.status = "completed"

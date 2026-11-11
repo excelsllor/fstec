@@ -1,6 +1,6 @@
 import io
-import xml.etree.ElementTree as ET
 import zipfile
+from lxml import etree as ET
 
 from shared.parsers._xml_guard import guard_zip_xml
 from shared.parsers.base import ParseResult
@@ -20,7 +20,8 @@ def parse_odt(content: bytes) -> ParseResult:
         zf = zipfile.ZipFile(io.BytesIO(content))
         xml_bytes = zf.read("content.xml")
         zf.close()
-        root = ET.fromstring(xml_bytes)
+        parser = ET.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
+        root = ET.fromstring(xml_bytes, parser=parser)
         text_parts = []
         tables = []
         body = root.find(".//office:body", NS)

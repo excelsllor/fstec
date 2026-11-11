@@ -5,6 +5,7 @@
 определяет живость процесса через psutil.pid_exists.
 """
 import json
+import logging
 import os
 import time
 
@@ -12,6 +13,7 @@ from pathlib import Path
 
 from shared.config import DATA_DIR
 
+logger = logging.getLogger(__name__)
 _REG_DIR = None
 
 
@@ -27,9 +29,17 @@ def _path(name: str) -> Path:
     return _dir() / f"{name}.json"
 
 
+def _write_registry(name: str, data: dict) -> None:
+    """???????? ?????????? heartbeat, ????? ??????????? ?? ?????? ?????? JSON."""
+    p = _path(name)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, p)
+
+
 def register_service(name: str) -> None:
     data = {"pid": os.getpid(), "started": time.time(), "last_seen": time.time()}
-    _path(name).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    _write_registry(name, data)
 
 
 def touch_service(name: str) -> None:
@@ -42,7 +52,7 @@ def touch_service(name: str) -> None:
         data["pid"] = os.getpid()
         data["last_seen"] = time.time()
         data.setdefault("started", time.time())
-        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        _write_registry(name, data)
     except Exception:
         register_service(name)
 
@@ -57,8 +67,8 @@ def read_services() -> list[dict]:
             alive = False
             try:
                 alive = pid is not None and psutil.pid_exists(int(pid))
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("registry pid check failed for %s: %s", p, exc)
             out.append({
                 "name": p.stem,
                 "pid": pid,
@@ -66,6 +76,7 @@ def read_services() -> list[dict]:
                 "last_seen": data.get("last_seen"),
                 "alive": alive,
             })
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("registry file %s ignored: %s", p, exc)
             continue
     return out

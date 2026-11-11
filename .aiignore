@@ -1,0 +1,17 @@
+services/tests/
+services/tools/
+services/data/
+docs/audit/
+frontend/node_modules/
+frontend/dist/
+frontend/dist-package/
+src-tauri/target/
+src-tauri/gen/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.ruff_cache/
+**/.hypothesis/
+**/.schemathesis/
+**/*.log

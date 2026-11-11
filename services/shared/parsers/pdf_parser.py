@@ -1,6 +1,11 @@
 import io
+import logging
+
 import pdfplumber
+
 from shared.parsers.base import ParseResult
+
+logger = logging.getLogger(__name__)
 
 
 def parse_pdf(content: bytes) -> ParseResult:
@@ -26,8 +31,8 @@ def parse_pdf(content: bytes) -> ParseResult:
                             cleaned.append(cleaned_row)
                         if cleaned:
                             tables.append(cleaned)
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("PDF page %s extraction failed: %s", i + 1, exc)
         result.text = "\n".join(text_parts)
         result.page_texts = text_parts
         result.tables = tables

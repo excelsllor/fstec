@@ -140,7 +140,8 @@ def _mime(ext: str) -> str:
 
 def upload_and_wait(headers, filename: str, content: bytes, mime: str, timeout_s: float = 120) -> dict:
     files = {"files": (filename, content, mime)}
-    r = requests.post(f"{GATEWAY}/upload", files=files, headers=headers, timeout=30)
+    auth_headers = {"Authorization": str(headers.get("Authorization") or "")}
+    r = requests.post(f"{GATEWAY}/upload", files=files, headers=auth_headers, timeout=30)
     if r.status_code != 201:
         fail(f"upload {filename}: {r.status_code} {r.text}")
     doc_id = r.json()["id"]

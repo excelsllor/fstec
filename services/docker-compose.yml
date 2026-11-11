@@ -153,7 +153,8 @@ services:
       FSTEC_LLM_TIMEOUT_S: ${FSTEC_LLM_TIMEOUT_S:-300}
       FSTEC_PLAN_MAX_TOKENS: ${FSTEC_PLAN_MAX_TOKENS:-4000}
       FSTEC_LLM_MERGED_ANALYZE: ${FSTEC_LLM_MERGED_ANALYZE:-0}
-      FSTEC_LLM_MERGED_IOCS: ${FSTEC_LLM_MERGED_IOCS:-1}
+      FSTEC_LLM_MERGED_VULN: ${FSTEC_LLM_MERGED_VULN:-1}
+      FSTEC_LLM_MERGED_IOCS: ${FSTEC_LLM_MERGED_IOCS:-0}
       FSTEC_BERT_PRIMARY_IOCS: ${FSTEC_BERT_PRIMARY_IOCS:-0}
       FSTEC_DEDUPE_PROMPT_LINES: ${FSTEC_DEDUPE_PROMPT_LINES:-0}
       FSTEC_LLM_DISABLE_GUIDED: ${FSTEC_LLM_DISABLE_GUIDED:-0}
@@ -168,12 +169,31 @@ services:
       FSTEC_KAFKA_PARTITIONS: ${FSTEC_KAFKA_PARTITIONS:-12}
       FSTEC_KAFKA_GROUP: ${FSTEC_KAFKA_GROUP:-fstec}
       # РџСѓР» Р‘Р”: РѕР±СЂР°Р±РѕС‚С‡РёРєРё РґРµСЂР¶Р°С‚ СЃРµСЃСЃРёСЋ РІРѕ РІСЂРµРјСЏ РѕР¶РёРґР°РЅРёСЏ vLLM.
-      FSTEC_DB_POOL_SIZE: ${FSTEC_DB_POOL_SIZE:-10}
+      FSTEC_DB_POOL_SIZE: ${FSTEC_DB_POOL_SIZE:-24}
       FSTEC_DB_MAX_OVERFLOW: ${FSTEC_DB_MAX_OVERFLOW:-20}
       # CMDB/GLPI: gateway РёСЃРїРѕР»СЊР·СѓРµС‚ РґР»СЏ РІРєР»Р°РґРєРё В«Р”РёР°РіРЅРѕСЃС‚РёРєР°В», security вЂ” РґР»СЏ РёРЅРІРµРЅС‚Р°СЂСЏ РџРћ
       CMDB_PROVIDER: ${CMDB_PROVIDER:-rest}
       GLPI_URL: ${GLPI_URL:-}
       GLPI_API: ${GLPI_API:-v1}
+      GLPI_AUTH: ${GLPI_AUTH:-basic}
+      GLPI_USERNAME: ${GLPI_USERNAME:-}
+      GLPI_PASSWORD: ${GLPI_PASSWORD:-}
+      GLPI_USER_TOKEN: ${GLPI_USER_TOKEN:-}
+      GLPI_CLIENT_ID: ${GLPI_CLIENT_ID:-}
+      GLPI_CLIENT_SECRET: ${GLPI_CLIENT_SECRET:-}
+      GLPI_SCOPE: ${GLPI_SCOPE:-api}
+      GLPI_APP_TOKEN: ${GLPI_APP_TOKEN:-}
+      GLPI_TIMEOUT_S: ${GLPI_TIMEOUT_S:-8}
+      GLPI_MAX_SOFTWARE: ${GLPI_MAX_SOFTWARE:-5}
+      GLPI_MAX_VERSIONS: ${GLPI_MAX_VERSIONS:-25}
+      GLPI_DB_HOST: ${GLPI_DB_HOST:-}
+      GLPI_DB_PORT: ${GLPI_DB_PORT:-3306}
+      GLPI_DB_NAME: ${GLPI_DB_NAME:-}
+      GLPI_DB_USER: ${GLPI_DB_USER:-}
+      GLPI_DB_PASSWORD: ${GLPI_DB_PASSWORD:-}
+      GLPI_DB_CHARSET: ${GLPI_DB_CHARSET:-utf8mb4}
+      GLPI_DB_PREFIX: ${GLPI_DB_PREFIX:-glpi_}
+      SSL_CERT_FILE: /etc/fstec/public-ca.crt
     configs:
       - source: kafka_ca
         target: /etc/fstec/kafka-ca.crt
@@ -181,6 +201,7 @@ services:
         target: /etc/fstec/vllm-ca.crt
     volumes:
       - data:/app/data
+      - /etc/pki/tls/certs/ca-bundle.crt:/etc/fstec/public-ca.crt:ro
     ports:
       - "127.0.0.1:8666:8666"
     command: ["uvicorn", "api_gateway.main:app", "--host", "0.0.0.0", "--port", "8666",
@@ -205,6 +226,8 @@ services:
       FSTEC_OCR_ENABLED: ${FSTEC_OCR_ENABLED:-true}
       FSTEC_OCR_ENGINE: ${FSTEC_OCR_ENGINE:-tesseract}
       FSTEC_OCR_DEVICE: ${FSTEC_OCR_DEVICE:-cpu}
+      FSTEC_BUS_CONCURRENCY: ${FSTEC_INGEST_BUS_CONCURRENCY:-16}
+      FSTEC_DB_POOL_SIZE: ${FSTEC_INGEST_DB_POOL_SIZE:-20}
     # Р Р°Р·Р±РѕСЂ С„Р°Р№Р»РѕРІ Рё OCR вЂ” С‚СЏР¶С‘Р»С‹Рµ Р±Р»РѕРєРёСЂСѓСЋС‰РёРµ РѕРїРµСЂР°С†РёРё; РѕРЅРё РІС‹РїРѕР»РЅСЏСЋС‚СЃСЏ РІ
     # РїСѓР»Рµ РїРѕС‚РѕРєРѕРІ (shared.concurrency.run_blocking), РїРѕСЌС‚РѕРјСѓ РЅРµСЃРєРѕР»СЊРєРѕ РїРёСЃРµРј
     # СЂР°Р·Р±РёСЂР°СЋС‚СЃСЏ РѕРґРЅРѕРІСЂРµРјРµРЅРЅРѕ Рё РЅРµ Р±Р»РѕРєРёСЂСѓСЋС‚ РїСЂРёС‘Рј СЃРѕР±С‹С‚РёР№.
@@ -235,14 +258,14 @@ services:
       # РџРѕС‚РѕР»РѕРє РѕРґРЅРѕРІСЂРµРјРµРЅРЅС‹С… Р·Р°РїСЂРѕСЃРѕРІ РІ vLLM. Р”РµСЂР¶РёРј РµРіРѕ РЅР° СѓСЂРѕРІРЅРµ, РєРѕС‚РѕСЂС‹Р№
       # СЂРµР°Р»СЊРЅРѕ РїРµСЂРµРІР°СЂРёРІР°РµС‚ T4 (measured AWQ: concurrency 10-12), РёРЅР°С‡Рµ
       # РѕС‡РµСЂРµРґСЊ Р·Р°РїСЂРѕСЃРѕРІ РІ vLLM СЂР°СЃС‚С‘С‚ Рё p99 РІР·Р»РµС‚Р°РµС‚.
-      FSTEC_LLM_CONCURRENCY: ${FSTEC_LLM_CONCURRENCY:-8}
+      FSTEC_LLM_CONCURRENCY: ${FSTEC_LLM_CONCURRENCY:-12}
       FSTEC_REPLY_LLM_MODE: ${FSTEC_REPLY_LLM_MODE:-always}
       FSTEC_LLM_POOL_MAX: ${FSTEC_LLM_POOL_MAX:-16}
       FSTEC_LLM_WARMUP_ENABLED: ${FSTEC_LLM_WARMUP_ENABLED:-1}
       FSTEC_LLM_WARMUP_INTERVAL_S: ${FSTEC_LLM_WARMUP_INTERVAL_S:-300}
       FSTEC_LLM_WARMUP_TIMEOUT_S: ${FSTEC_LLM_WARMUP_TIMEOUT_S:-60}
-      FSTEC_BUS_CONCURRENCY: ${FSTEC_LLM_BUS_CONCURRENCY:-10}
-      FSTEC_DB_POOL_SIZE: ${FSTEC_LLM_DB_POOL_SIZE:-12}
+      FSTEC_BUS_CONCURRENCY: ${FSTEC_LLM_BUS_CONCURRENCY:-12}
+      FSTEC_DB_POOL_SIZE: ${FSTEC_LLM_DB_POOL_SIZE:-24}
       FSTEC_DB_MAX_OVERFLOW: ${FSTEC_LLM_DB_MAX_OVERFLOW:-20}
     command: ["python", "-m", "llm_service.worker"]
     configs:
@@ -284,12 +307,22 @@ services:
       GLPI_TIMEOUT_S: ${GLPI_TIMEOUT_S:-8}
       GLPI_MAX_SOFTWARE: ${GLPI_MAX_SOFTWARE:-5}
       GLPI_MAX_VERSIONS: ${GLPI_MAX_VERSIONS:-25}
+      GLPI_DB_HOST: ${GLPI_DB_HOST:-}
+      GLPI_DB_PORT: ${GLPI_DB_PORT:-3306}
+      GLPI_DB_NAME: ${GLPI_DB_NAME:-}
+      GLPI_DB_USER: ${GLPI_DB_USER:-}
+      GLPI_DB_PASSWORD: ${GLPI_DB_PASSWORD:-}
+      GLPI_DB_CHARSET: ${GLPI_DB_CHARSET:-utf8mb4}
+      GLPI_DB_PREFIX: ${GLPI_DB_PREFIX:-glpi_}
       # Р’РѕСЂРєРµСЂ РѕР±СЂР°Р±Р°С‚С‹РІР°РµС‚ РЅРµСЃРєРѕР»СЊРєРѕ РїРёСЃРµРј РѕРґРЅРѕРІСЂРµРјРµРЅРЅРѕ; РІРЅСѓС‚СЂРё РєР°Р¶РґРѕРіРѕ РїРёСЃСЊРјР°
       # СѓСЏР·РІРёРјРѕСЃС‚Рё РѕР±РѕРіР°С‰Р°СЋС‚СЃСЏ РїР°С‡РєР°РјРё РїРѕ СЌС‚РѕРјСѓ Р»РёРјРёС‚Сѓ, С‡С‚РѕР±С‹ РЅРµ Р»РѕРІРёС‚СЊ 429 РѕС‚ NVD.
-      FSTEC_SECURITY_CONCURRENCY: ${FSTEC_SECURITY_CONCURRENCY:-6}
-      FSTEC_SECURITY_POOL_MAX: ${FSTEC_SECURITY_POOL_MAX:-12}
-      FSTEC_BUS_CONCURRENCY: ${FSTEC_SECURITY_BUS_CONCURRENCY:-6}
-      FSTEC_DB_POOL_SIZE: ${FSTEC_SECURITY_DB_POOL_SIZE:-10}
+      FSTEC_SECURITY_CONCURRENCY: ${FSTEC_SECURITY_CONCURRENCY:-8}
+      FSTEC_SECURITY_POOL_MAX: ${FSTEC_SECURITY_POOL_MAX:-16}
+      FSTEC_BUS_CONCURRENCY: ${FSTEC_SECURITY_BUS_CONCURRENCY:-8}
+      FSTEC_DB_POOL_SIZE: ${FSTEC_SECURITY_DB_POOL_SIZE:-20}
+      GLPI_INVENTORY_CACHE_TTL_S: ${GLPI_INVENTORY_CACHE_TTL_S:-300}
+      GLPI_INVENTORY_CACHE_MAX: ${GLPI_INVENTORY_CACHE_MAX:-512}
+      SSL_CERT_FILE: /etc/fstec/public-ca.crt
     command: ["python", "-m", "security_service.worker"]
     configs:
       - source: kafka_ca
@@ -298,6 +331,7 @@ services:
         target: /etc/fstec/vllm-ca.crt
     volumes:
       - data:/app/data
+      - /etc/pki/tls/certs/ca-bundle.crt:/etc/fstec/public-ca.crt:ro
 
   audit-service:
     build: { context: ., dockerfile: Dockerfile, args: { SERVICE: audit_service } }
@@ -334,10 +368,10 @@ services:
       # РџР»Р°РЅРёСЂРѕРІР°РЅРёРµ РѕС‚РІРµС‚Р° РґРµСЂР¶РёС‚ Рё СЃРµСЃСЃРёСЋ Р‘Р”, Рё РѕР¶РёРґР°РЅРёРµ vLLM вЂ” РїСѓР» Рё
       # РєРѕРЅРєСѓСЂРµРЅС‚РЅРѕСЃС‚СЊ СЃРѕРіР»Р°СЃРѕРІР°РЅС‹ СЃ llm-service, РёРЅР°С‡Рµ reporting СЃС‚Р°РЅРµС‚ СѓР·РєРёРј
       # РјРµСЃС‚РѕРј РїР°Р№РїР»Р°Р№РЅР°.
-      FSTEC_LLM_CONCURRENCY: ${FSTEC_LLM_CONCURRENCY:-8}
+      FSTEC_LLM_CONCURRENCY: ${FSTEC_LLM_CONCURRENCY:-12}
       FSTEC_REPLY_LLM_MODE: ${FSTEC_REPLY_LLM_MODE:-always}
-      FSTEC_BUS_CONCURRENCY: ${FSTEC_REPORTING_BUS_CONCURRENCY:-10}
-      FSTEC_DB_POOL_SIZE: ${FSTEC_REPORTING_DB_POOL_SIZE:-12}
+      FSTEC_BUS_CONCURRENCY: ${FSTEC_REPORTING_BUS_CONCURRENCY:-12}
+      FSTEC_DB_POOL_SIZE: ${FSTEC_REPORTING_DB_POOL_SIZE:-24}
       FSTEC_DB_MAX_OVERFLOW: ${FSTEC_REPORTING_DB_MAX_OVERFLOW:-20}
     command: ["python", "-m", "reporting_service.worker"]
     configs:
@@ -364,6 +398,8 @@ services:
     volumes:
       - ../certs/server.crt:/etc/nginx/certs/server.crt:ro
       - ../certs/server.key:/etc/nginx/certs/server.key:ro
+      - ../certs/chain.pem:/etc/nginx/certs/chain.pem:ro
+      - ../frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
 
 configs:
   kafka_ca:

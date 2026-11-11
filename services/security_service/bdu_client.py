@@ -107,7 +107,7 @@ class BDUClient:
             async with httpx.AsyncClient(**kwargs) as client:
                 resp = await client.get(url, params={"unid": bdu_id}, headers=headers)
         else:
-            client = get_client("bdu", timeout=10.0)
+            client = get_client("bdu", timeout=10.0, follow_redirects=True)
             resp = await client.get(url, params={"unid": bdu_id}, headers=headers)
         if resp.status_code == 404:
             return None
@@ -167,7 +167,7 @@ class BDUClient:
         bdu_id = (bdu_id or "").strip()
         if not bdu_id:
             return None
-        key = f"bdu:{bdu_id}"
+        key = f"bdu:v3:{bdu_id}"
         cached = await self.cache.get(key)
         if cached is not None:
             if cached is EMPTY or not cached:
@@ -183,29 +183,43 @@ class BDUClient:
         return obj
 
 
+_CVSS_VERSION_PRIORITY = {"3.1": 4, "4.0": 3, "3.0": 2, "2.0": 1}
+
+
 def _severity_from_critu(critu: str) -> str:
-    low = (critu or "").lower()
-    for ru, en in _SEVERITY_RU.items():
-        if ru in low:
-            return en
+    text = critu or ""
+    lines = [x for x in re.split(r"[\r\n]+", text) if x.strip()]
+    preferred = _cvss_from_critu(text)[1]
+    candidates = [x for x in lines if preferred and f"CVSS {preferred}" in x] or lines or [text]
+    for line in candidates:
+        low = line.lower()
+        for ru, en in _SEVERITY_RU.items():
+            if ru in low:
+                return en
     return "unknown"
 
 
 def _cvss_from_critu(critu: str) -> tuple[float | None, str]:
-    """Ищет оценки вида «CVSS 3.1 составляет 10» в тексте уровня опасности. При равных
-    оценках предпочитает старшую версию методики (3.x > 2.0)."""
-    best = None
-    best_ver = ""
+    """Ищет оценки вида «CVSS 3.1 составляет 10».
+
+    Для BDU приоритетна версия методики, а не максимальная оценка: в карточках
+    одновременно встречаются CVSS 2.0 и CVSS 3.1, а ответы ФСТЭК используют 3.1.
+    Поэтому сначала выбирается старшая доступная версия (3.1 → 4.0 → 3.0 → 2.0),
+    затем максимальная оценка внутри этой версии.
+    """
+    matches = []
     for m in re.finditer(r"CVSS\s*(\d(?:\.\d)?)\s*[^0-9]{0,24}?(\d{1,2}(?:\.\d)?)", critu or "", re.I):
         try:
             score = float(m.group(2))
         except ValueError:
             continue
-        cand_ver = m.group(1)
-        if (best is None or score > best or
-                (score == best and best_ver and float(cand_ver) > float(best_ver))):
-            best, best_ver = score, cand_ver
-    return best, best_ver
+        matches.append((m.group(1), score))
+    if not matches:
+        return None, ""
+    best_ver = max((v for v, _ in matches),
+                   key=lambda v: (_CVSS_VERSION_PRIORITY.get(v, 0), float(v)))
+    scores = [score for version, score in matches if version == best_ver]
+    return max(scores), best_ver
 
 
 def _cpe_matches_from_model(model: dict) -> list[CpeMatch]:
@@ -241,7 +255,12 @@ def _parse_from_model(model: dict, page: str, path_id: str) -> EnrichedVuln | No
     desc = str(model.get("vul_desc", "") or "")
     name = str(model.get("vul_name", "") or "")
     cvss_score, cvss_ver = _cvss_from_critu(critu)
-    fixed = _fixed_from_text((model.get("vul_vmer") and str(model["vul_vmer"])) + "\n" + desc)
+    # ?? ???????? BDU ?????? vul_critu ??????? ???????? ??? CVSS 3.0,
+    # ???? ? cvsses3 ????? ?????? CVSS 3.1. ??? ?????? ????? ?????????? 3.1.
+    if cvss_ver in ("3.0", "3.1") and model.get("cvsses3"):
+        cvss_ver = "3.1"
+    vmer = str(model.get("vul_vmer") or "")
+    fixed = _fixed_from_text(vmer + "\n" + desc)
     refs = [ln.strip() for ln in re.split(r"[\r\n]+", str(model.get("vul_link", "") or ""))
             if ln.strip().startswith(("http://", "https://"))]
     patch = next((u for u in refs if not u.startswith((BDU_API_BASE, "https://bdu.fstec.ru", "http://fstec.ru"))), "")

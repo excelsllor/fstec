@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from shared.extractor.patterns import (
     KNOWN_GROUPS, MALWARE_NAMES,
     ARCHIVE_NAMES, EXE_NAMES, THEME_PATTERN,
@@ -43,6 +44,14 @@ def analyze_letter(text: str, tables: list | None = None) -> LetterInfo:
     if info.letter_type in ("hacker", "compromise"):
         info.threats = _parse_threats(text)
     return info
+
+
+def letter_number_from_filename(filename: str) -> str:
+    stem = Path(filename or "").stem
+    match = re.search(r"(?:№|N|No\.?)?\s*(?<![\d-])(\d{1,2})\s*[-_/]\s*(\d{1,4})(?!\d)", stem, re.IGNORECASE)
+    if match:
+        return f"{int(match.group(1))}/{int(match.group(2))}"
+    return ""
 
 
 def _extract_letter_number(text: str) -> str:
@@ -113,7 +122,7 @@ def _parse_threats(text: str) -> list[ThreatInfo]:
     threat_starts = []
     for i, line in enumerate(lines):
         stripped = line.strip()
-        m = re.match(r"^(\d{1,2})\.\s+([^\d])", stripped)
+        m = re.match(r"^(\d{1,2})\.\s*([^\d])", stripped)
         if m and threat_keywords.match(stripped[m.start(2):]):
             start_pos = sum(len(lines[j]) + 1 for j in range(i))
             threat_starts.append((int(m.group(1)), start_pos, i))
@@ -126,21 +135,28 @@ def _parse_threats(text: str) -> list[ThreatInfo]:
         section = normalized[start_pos:end_pos]
         threat = ThreatInfo(number=num, description=section.strip())
         threat.threat_type = _detect_threat_type(section)
+        flat = re.sub(r"\s+", " ", section).strip()
         for group in KNOWN_GROUPS:
-            if group.lower() in section.replace("\xa0", " ").lower():
+            if group.lower() in flat.lower():
                 threat.group_name = group
                 break
-        theme_m = THEME_PATTERN.search(section)
+        theme_m = THEME_PATTERN.search(flat)
         if theme_m:
             threat.theme = theme_m.group(1)
-        archive_m = ARCHIVE_NAMES.search(section)
+        archive_m = ARCHIVE_NAMES.search(flat)
+        if not archive_m:
+            archive_m = re.search(r'[\u00ab"]([^\u00bb"]+\.lnk)[\u00bb"]', flat, re.I)
         if archive_m:
             threat.archive_name = archive_m.group(1)
-        exe_m = EXE_NAMES.search(section)
+        exe_m = EXE_NAMES.search(flat)
+        if not exe_m:
+            exe_m = re.search(r'[\u00ab"]([^\u00bb"]+\.lnk)[\u00bb"]', flat, re.I)
         if exe_m:
             threat.exe_name = exe_m.group(1)
+        elif threat.archive_name.lower().endswith(".lnk"):
+            threat.exe_name = threat.archive_name
         for mw in MALWARE_NAMES:
-            if mw.lower() in section.lower():
+            if mw.lower() in flat.lower():
                 threat.malware_type = mw
                 break
         threat.measures = _extract_measures(section)
@@ -149,7 +165,20 @@ def _parse_threats(text: str) -> list[ThreatInfo]:
 
 
 def _extract_measures(section: str) -> list[str]:
-    """Return complete directive sentences, not PDF line fragments."""
+    section = re.sub(r"(?m)^\s*\d{1,3}\s*$", "", section or "")
+    numbered = list(re.finditer(r"(?<!\d)(\d+\.\d+)\.\s+", section))
+    if len(numbered) >= 2:
+        out: list[str] = []
+        for idx, match in enumerate(numbered):
+            end = numbered[idx + 1].start() if idx + 1 < len(numbered) else len(section)
+            chunk = section[match.start():end]
+            chunk = re.sub(r"^\d+\.\d+\.\s*", "", chunk)
+            chunk = re.sub(r"\s+", " ", chunk).strip(" .;")
+            if len(chunk) >= 10 and chunk not in out:
+                out.append(chunk)
+        if out:
+            return out[:50]
+
     text = re.sub(r"\s*\n\s*", " ", section or "")
     text = re.sub(r"\s+", " ", text).strip()
     marker = re.compile(
@@ -162,9 +191,9 @@ def _extract_measures(section: str) -> list[str]:
         r"|\u043f\u0440\u043e\u0438\u0437\u0432\u0435\u0434\u0435\u043d[\u0430-\u044f\u0451]+)",
         re.IGNORECASE,
     )
-    bad = re.compile(r"(?:\u043f\u0440\u0438\\s+\u0440\u0435\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u0438.*\u0432\u0440\u0435\u0434\u043e\u043d\u043e\u0441\u043d)", re.IGNORECASE)
+    bad = re.compile(r"(?:\u043f\u0440\u0438\s+\u0440\u0435\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u0438.*\u0432\u0440\u0435\u0434\u043e\u043d\u043e\u0441\u043d)", re.IGNORECASE)
     sentences = re.split(r"(?<=[.!?;])\s+", text)
-    out: list[str] = []
+    out = []
     for sentence in sentences:
         s = sentence.strip()
         if not s or bad.search(s):
@@ -176,6 +205,7 @@ def _extract_measures(section: str) -> list[str]:
         if len(clause) >= 10 and clause not in out:
             out.append(clause)
     return out[:50]
+
 def _detect_threat_type(section: str) -> str:
     s = section.lower()
     if re.search(r"(?:bd|бд)у[:\s]|cve-\d{4}", s):

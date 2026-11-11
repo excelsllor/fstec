@@ -196,7 +196,7 @@ def ocr_embedded_images_bytes(content: bytes, lang: str = "rus") -> tuple[str, l
 def ocr_office_bytes(content: bytes, suffix: str = ".docx", lang: str = "rus") -> tuple[str, list[str]]:
     """Convert DOC/DOCX/RTF to PDF with LibreOffice, then OCR the PDF."""
     import shutil
-    import subprocess
+    import subprocess  # nosec B404
     import tempfile
 
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
@@ -207,7 +207,7 @@ def ocr_office_bytes(content: bytes, suffix: str = ".docx", lang: str = "rus") -
         src = Path(td) / f"input{suffix}"
         src.write_bytes(content)
         try:
-            proc = subprocess.run(
+            proc = subprocess.run(  # nosec B603
                 [soffice, "--headless", "--convert-to", "pdf", "--outdir", td, str(src)],
                 capture_output=True, timeout=90, check=False,
             )

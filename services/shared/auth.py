@@ -10,7 +10,8 @@ import bcrypt
 import redis
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError
 from sqlalchemy.orm import Session
 
 from shared.config import (
@@ -117,7 +118,7 @@ def get_current_user(
             raise credentials_exception
         if not username or is_token_revoked(token):
             raise credentials_exception
-    except JWTError:
+    except InvalidTokenError:
         raise credentials_exception
 
     user = db.query(User).filter(User.username == username).first()

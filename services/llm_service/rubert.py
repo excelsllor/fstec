@@ -7,7 +7,8 @@
 """
 import logging
 
-from shared.config import RUBERT_CONFIDENCE, RUBERT_DEVICE, RUBERT_MAX_TOKENS, RUBERT_MODEL
+from shared.config import (RUBERT_CONFIDENCE, RUBERT_DEVICE, RUBERT_MAX_TOKENS,
+                           RUBERT_MODEL, RUBERT_REVISION)
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +64,8 @@ class RuBERTClassifier:
         try:
             import torch
             from transformers import AutoModel, AutoTokenizer
-            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self._model = AutoModel.from_pretrained(self.model_name)
+            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name, revision=RUBERT_REVISION)
+            self._model = AutoModel.from_pretrained(self.model_name, revision=RUBERT_REVISION)
             self._model.eval()
             device = "cuda" if self.device == "gpu" and torch.cuda.is_available() else "cpu"
             if device == "cuda":

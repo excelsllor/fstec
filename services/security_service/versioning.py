@@ -111,31 +111,149 @@ def _cpe_matches_product(v_vendor: str, v_product: str, i_vendor: str, i_product
     return (vv == iv or not vv or not iv) and (vp == ip or not vp or not ip)
 
 
-def product_names(name: str) -> set[str]:
-    """Нормализованные варианты имени продукта для fuzzy-матча."""
-    n = (name or "").lower().strip()
-    out = {n}
-    for sep in (",", " ", "\t"):
-        if sep in n:
-            out.add(n.split(sep)[0])
-    # 'Apache Log4j' → 'log4j'; 'openssl' → 'openssl'
-    return {n for n in out if n}
+_GENERIC_PRODUCT_TOKENS = {
+    "уязвимость", "уязвимости", "библиотека", "библиотеки", "компонент",
+    "компонента", "компоненты", "программное", "обеспечение", "средство",
+    "средства", "платформа", "платформы", "приложение", "приложения",
+    "модуль", "модуля", "пакет", "пакета", "сервис", "сервиса",
+    "http", "https", "vulnerability", "security", "component", "library",
+    "extension", "plugin", "module", "package", "software", "system",
+    "framework", "application", "project", "the", "and", "for", "with",
+}
+_VENDOR_PRODUCT_TOKENS = {
+    "microsoft", "cisco", "sap", "fortinet", "oracle", "jetbrains", "adobe",
+    "apache", "google", "apple", "red", "hat", "redhat", "ibm", "vmware",
+}
+_PRODUCT_ALIASES = {
+    "cpython": ("python3", "python"),
+    "python": ("python3",),
+    "python requests": ("python3-requests", "python-requests"),
+    "requests": ("python3-requests", "python-requests"),
+    "pillow": ("python3-pillow", "python-pillow"),
+    "messagepack": ("python3-msgpack", "python-msgpack"),
+    "librsvg": ("librsvg2",),
+    "cifs": ("cifs-utils",),
+    "cifs cifs utils": ("cifs-utils",),
+    "curl": ("curl", "libcurl"),
+    "go crypto": ("golang",),
+    "go": ("golang",),
+    "microsoft office": ("office",),
+    "office": ("office",),
+    "freerdp": ("freerdp",),
+    "php": ("php",),
+    "openssl": ("openssl",),
+    "gitlab": ("gitlab",),
+    "system v": ("sysvinit",),
+    "openbsd": ("openbsd",),
+}
+
+
+def _product_tokens(value: str) -> list[str]:
+    text = (value or "").lower().replace("ё", "е")
+    return [token for token in re.split(r"[^0-9a-zа-я]+", text) if token]
+
+
+def _is_latin_token(token: str) -> bool:
+    return bool(re.fullmatch(r"[0-9A-Za-z]+", token or ""))
+
+
+def _effective_product_tokens(value: str) -> list[str]:
+    tokens = _product_tokens(value)
+    latin = [token for token in tokens if _is_latin_token(token)]
+    return latin or tokens
+
+
+def _product_distinctive_tokens(value: str) -> list[str]:
+    tokens = _effective_product_tokens(value)
+    distinctive = [t for t in tokens if t not in _GENERIC_PRODUCT_TOKENS
+                   and t not in _VENDOR_PRODUCT_TOKENS and len(t) >= 2]
+    return distinctive or tokens
+
+
+def _product_token_hit(expected: str, actual: str) -> bool:
+    if not expected or not actual:
+        return False
+    if expected == actual:
+        return True
+    if len(expected) >= 3 and expected in actual:
+        return True
+    return False
+
+
+def _product_raw_tokens(value: str) -> list[str]:
+    return [token for token in re.split(r"[^0-9A-Za-zА-Яа-яЁё]+", value or "") if token]
+
+
+def product_search_terms(product: str) -> list[str]:
+    raw_tokens = _product_raw_tokens(product)
+    latin_raw = [token for token in raw_tokens if _is_latin_token(token)]
+    raw_tokens = latin_raw or raw_tokens
+    tokens = [token.lower().replace("ё", "е") for token in raw_tokens]
+    full = " ".join(tokens)
+    selected = [
+        raw for raw in raw_tokens
+        if raw.lower() not in _GENERIC_PRODUCT_TOKENS
+        and raw.lower() not in _VENDOR_PRODUCT_TOKENS
+        and len(raw) >= 2
+    ] or raw_tokens
+    primary: list[str] = []
+    aliases: set[str] = set()
+    seen: set[str] = set()
+    for raw in selected:
+        key = raw.lower()
+        if key not in seen:
+            primary.append(raw)
+            seen.add(key)
+        aliases.update(_PRODUCT_ALIASES.get(key, ()))
+    aliases.update(_PRODUCT_ALIASES.get(full, ()))
+    for key, values in _PRODUCT_ALIASES.items():
+        if key == full or key in tokens:
+            aliases.update(values)
+    ordered = primary + sorted(
+        (value for value in aliases if value and value.lower() not in seen),
+        key=lambda value: (len(value), value.lower()),
+    )
+    return ordered
+
+
+def _product_norm(value: str) -> str:
+    return " ".join(_product_tokens(value))
+
+
+def _product_aliases(product: str) -> set[str]:
+    full = " ".join(_effective_product_tokens(product))
+    return set(_PRODUCT_ALIASES.get(full, ()))
+
 
 
 def match_product(inventory_name: str, vuln_software: str | list[str]) -> bool:
-    """Подстрочный fuzzy-матч имени продукта (normalized): 'openssl' ∈ 'openssl project'."""
+    """Сопоставляет имя из инвентаря с продуктом уязвимости по значимым токенам."""
     names = [inventory_name] if isinstance(inventory_name, str) else inventory_name
     targets = [vuln_software] if isinstance(vuln_software, str) else vuln_software
-    for n in names:
-        for t in targets:
-            nn = (n or "").lower().strip()
-            tt = (t or "").lower().strip()
-            if not nn or not tt:
+    for name in names:
+        candidate_tokens = _product_tokens(name)
+        candidate_norm = _product_norm(name)
+        if not candidate_norm:
+            continue
+        for target in targets:
+            target_tokens = _product_distinctive_tokens(target)
+            if not target_tokens:
+                target_tokens = _product_tokens(target)
+            target_norm = " ".join(target_tokens)
+            if not target_norm:
                 continue
-            if nn in tt or tt in nn:
+            if candidate_norm == target_norm or target_norm in candidate_norm:
+                return True
+            aliases = _product_aliases(target)
+            if any(_product_norm(alias) == candidate_norm
+                   or _product_norm(alias) in candidate_norm for alias in aliases):
+                return True
+            if all(
+                any(_product_token_hit(token, actual) for actual in candidate_tokens)
+                for token in target_tokens
+            ):
                 return True
     return False
-
 
 def build_range(criteria: str, raw_range: dict | None) -> CpeMatch:
     """Из cpeMatch-узла NVD (versionStart*/versionEnd*) собирает CpeMatch с диапазонами."""

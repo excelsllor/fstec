@@ -146,7 +146,7 @@ class SqliteEventBus(EventBus):
             try:
                 await task
             except (asyncio.CancelledError, Exception):
-                pass
+                logger.debug("task cancelled during bus shutdown", exc_info=True)
         self._tasks = []
         if self._conn is not None:
             self._conn.close()
@@ -302,7 +302,7 @@ class KafkaEventBus(EventBus):
             try:
                 await task
             except (asyncio.CancelledError, Exception):
-                pass
+                logger.debug("consumer cancelled during bus shutdown", exc_info=True)
         self._consumers = []
         if self._producer:
             await self._producer.stop()
@@ -379,8 +379,8 @@ class KafkaEventBus(EventBus):
                 # 1 партиции -> партиция уходит «пустому» -> вечный простой.
                 try:
                     await asyncio.wait_for(consumer.stop(), timeout=10)
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("consumer stop after cancellation failed: %s", exc)
                 raise
             except Exception:
                 logger.exception("Kafka consumer start failed for %s; retry in 3s", topic)

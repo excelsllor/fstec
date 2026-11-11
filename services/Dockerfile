@@ -15,7 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip==26.2.2 \
+    && pip install --no-cache-dir -r requirements.txt
 
 # PaddleOCR (GPU) — только для ingest-service (WITH_OCR=true); тянет CUDA-колёса, поэтому опционально.
 ARG WITH_OCR=false
@@ -28,6 +29,7 @@ COPY .env.example ./
 
 ARG SERVICE
 COPY ${SERVICE} ./${SERVICE}
+COPY security_service ./security_service
 COPY tools ./tools
 
 # llm_service кладём во все образы: он лёгкий (чистый Python + httpx из requirements.txt),

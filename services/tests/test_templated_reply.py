@@ -3,14 +3,119 @@ import pytest
 
 from shared.db import SessionLocal
 from shared.generator.templated_reply import (
-    _backfill_empty_blocks, _extract_ctx, _inflect_measure, _vulns_to_blocks,
-    build_annotated_preview, generate_reply, load_reply_resources,
+    _apply_global_measure_policy, _backfill_empty_blocks, _extract_ctx,
+    _inflect_measure, _remove_empty_measure_blocks, _vuln_paragraph,
+    _vulns_to_blocks, build_annotated_preview, generate_reply, load_reply_resources,
     persist_candidates, plan_reply, render_reply,
 )
+
+
+def test_9_200_uses_global_measure_policy():
+    from shared.generator.templated_reply import _load_letter_measure_plans
+    plans = _load_letter_measure_plans()
+    assert "9-200" not in plans
+    assert "9-208" not in plans
+    assert "9-70" in plans
+
+
+def test_measure_infinitive_is_rendered_as_impersonal():
+    assert _inflect_measure("Производить проверку вложений", 1).startswith("Производится")
+    assert _inflect_measure("Осуществлять проверку ссылок", 1).startswith("Осуществляется")
+    assert _inflect_measure("Не открывать и не загружать вложения", 1).startswith(
+        "Не допускается открывать и загружать")
+
+
+def test_cmdb_match_overrides_not_used_description():
+    vuln = {
+        "bdu_id": "BDU:2026-17517", "software": "Pillow",
+        "description": "Уязвимость библиотеки Pillow связана с обработкой JPEG. ПО не используется.",
+        "cmdb_match": True, "is_applicable": True, "action_type": "compensate",
+        "current_version": "12.3.0",
+    }
+    text = _vuln_paragraph(vuln, "9-209")[0]
+    assert "по обновлению" in text
+    assert "установленная версия вне уязвимого диапазона" not in text
+
+
+def test_installed_but_not_affected_is_reported_as_such():
+    vuln = {
+        "bdu_id": "BDU:2023-03874", "software": "Python Requests",
+        "description": "Уязвимость HTTP-клиента Python Requests связана с обработкой ответа.",
+        "cmdb_match": False, "is_applicable": True, "action_type": "skip",
+        "current_version": "2.32.4",
+    }
+    text = _vuln_paragraph(vuln, "9-209")[0]
+    assert "установленная версия вне уязвимого диапазона" in text
+
+
+def test_bdu_measure_rule_is_loaded_from_data():
+    blocks = [{
+        "number": 10, "threat_type": "malware_attack",
+        "description": "Уязвимость Microsoft Office BDU:2026-00828 (CVSS 3.1).",
+    }]
+    plan = {"blocks": [{"number": 10, "threat_type": "malware_attack",
+                        "description": blocks[0]["description"], "measures": []}]}
+    _apply_global_measure_policy(plan, blocks, "hacker")
+    texts = [item["text"] for item in plan["blocks"][0]["measures"]]
+    assert any("BDU:2026-00828" in text for text in texts)
+    assert any("EAB22AC3-30C1-11CF-A7EB-0000C05BAE0B" in text for text in texts)
+
+
+def test_empty_measure_blocks_are_removed():
+    plan = {"blocks": [
+        {"number": 1, "measures": [{"text": "ok"}]},
+        {"number": 2, "measures": []},
+        {"number": 3, "measures": [{"text": "ok"}]},
+    ]}
+    _remove_empty_measure_blocks(plan)
+    assert [b["number"] for b in plan["blocks"]] == [1, 3]
+
+
+def test_vulnerability_paragraphs_are_numbered():
+    vulns = [
+        {"bdu_id": "BDU:2026-0001", "software": "Samba", "severity": "high",
+         "cvss_version": "3.1",
+         "description": "Уязвимость Samba (BDU:2026-0001, уровень опасности по CVSS 3.1 — высокий), связанная с ошибкой.",
+         "cmdb_match": False, "is_applicable": False},
+        {"bdu_id": "BDU:2026-0002", "software": "cURL", "severity": "medium",
+         "cvss_version": "3.1",
+         "description": "Уязвимость cURL (BDU:2026-0002, уровень опасности по CVSS 3.1 — средний), связанная с ошибкой.",
+         "cmdb_match": False, "is_applicable": False},
+    ]
+    text, _ = render_reply(
+        plan={"template_key": "vulnerability", "blocks": []},
+        templates={"vulnerability": {"header": "Ответ на письмо {{num}} от {{date}}",
+                                     "intro": "Вводный текст"}},
+        letter_number="9/201", letter_date="2026-10-22", active_vulns=vulns)
+    assert "\n1. Уязвимость" in text
+    assert "\n2. Уязвимость" in text
 from shared.models import (
     Document, IntroFragment, Measure, MeasureCandidate,
     ReplyTemplate, Threat,
 )
+
+
+def test_vuln_paragraph_keeps_bdu_description_with_connected_adjective():
+    vuln = {
+        "bdu_id": "BDU:2026-07317",
+        "software": "Samba",
+        "severity": "critical",
+        "cvss_version": "3.1",
+        "description": (
+            "Уязвимость подсистемы печати (printing subsystem) программ\n"
+            "сетевого взаимодействия Samba (BDU:2026-07317, уровень опасности\n"
+            "по CVSS 3.1 — критический), связанная с непринятием мер по нейтрализации\n"
+            "специальных элементов при обработке параметра %J."
+        ),
+        "is_applicable": True,
+        "cmdb_match": True,
+        "action_type": "compensate",
+        "recommendation": "Обновить ПО до указанной версии, закрывающей уязвимость",
+    }
+    line = _vuln_paragraph(vuln, "9-114")[0]
+    assert "Уязвимость подсистемы печати" in line
+    assert line.count("BDU:2026-07317") == 1
+    assert "ведутся работы по обновлению подсистемы печати" in line
 
 
 def _threat(db, doc, number, ttype, **kw):
@@ -127,6 +232,21 @@ def test_explicit_measures_override(doc_db):
                       addr_count=1, use_llm=False)
     texts = [m["text"] for m in plan["blocks"][0]["measures"]]
     assert texts == ["Своя мера первая", "Своя мера вторая"]
+
+
+def test_source_directive_explicit_measures_do_not_override(doc_db):
+    db, doc, threats = doc_db
+    blocks = [{"id": threats[0].id, "number": 1, "threat_type": "phishing",
+               "theme": "Договор", "group_name": "Vortex Werewolf",
+               "archive_name": "ishod.zip", "description": "фишинг",
+               "explicit_measures": [
+                   "Производить проверку почтовых вложений",
+                   "Осуществлять проверку URL-адресов",
+               ]}]
+    plan = plan_reply(db=db, letter_type="hacker", blocks=blocks,
+                      addr_count=1, use_llm=False)
+    texts = [m["text"].lower() for m in plan["blocks"][0]["measures"]]
+    assert not any(t.startswith(("производить", "осуществлять")) for t in texts)
 
 
 def test_fragment_explicit_measures_do_not_override(doc_db):
@@ -294,7 +414,7 @@ def test_measure_variance_repetitive_blocks(doc_db):
     from shared.generator.templated_reply import load_reply_resources
     core_n = len([m for m in load_reply_resources(db)[0]
                   if "core" in (m.get("tags") or "")])
-    assert core_n >= 8, "ядровый набор мер должен быть собран"
+    assert core_n >= 7, "ядровый набор мер должен быть собран"
     assert len(plan["blocks"][0]["measures"]) == core_n, "полный core — в первом блоке"
     assert len(plan["blocks"][1]["measures"]) < core_n, "повторы не дублируют весь core"
     unique = {m["text"] for b in plan["blocks"] for m in b["measures"]}

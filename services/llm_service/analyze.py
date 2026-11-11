@@ -9,11 +9,12 @@ import re
 from sqlalchemy.orm import Session
 
 from shared.events import AnalysisIocs, DocumentAnalyzed
-from shared.config import LLM_MERGED_ANALYZE, IOC_CLASSIFIER_URL, BERT_PRIMARY_IOCS, DEDUPE_PROMPT_LINES
+from shared.config import (LLM_MERGED_ANALYZE, LLM_MERGED_VULN, IOC_CLASSIFIER_URL,
+                           BERT_PRIMARY_IOCS, DEDUPE_PROMPT_LINES)
 from shared.extractor.ioc_extractor import (
     INTERNAL_EMAILS, IoCResult, _clean_domain, _valid_domain, extract_iocs,
 )
-from shared.extractor.letter_analyzer import analyze_letter
+from shared.extractor.letter_analyzer import analyze_letter, letter_number_from_filename
 from shared.extractor.ner import extract_standard_ner
 from shared.extractor.patterns import EMAIL_PATTERN
 from shared.extractor.summary import summarize_heuristic
@@ -157,13 +158,13 @@ async def analyze_async(provider: LLMProvider, text: str) -> tuple[DocumentAnaly
     merged_used = False
     is_vuln_doc = classification == "vulnerability" or len(vulns) >= 3
     bert_primary = (is_vuln_doc and BERT_PRIMARY_IOCS
-                    and bool(IOC_CLASSIFIER_URL) and len(text) <= 20000)
+                    and bool(IOC_CLASSIFIER_URL))
     if bert_primary:
         # BERT видит весь текст (<=20k), regex дополняет; отдельный LLM-IoC
         # вызов не нужен. Если BERT упадёт — fallback ниже.
         llm_io = None
         llm_result = await _maybe("analyze", llm_text, hint=classification)
-    elif (LLM_MERGED_ANALYZE and not is_vuln_doc
+    elif (LLM_MERGED_ANALYZE and (not is_vuln_doc or LLM_MERGED_VULN)
             and callable(getattr(provider, "analyze_and_extract", None))):
         merged_used = True
         merged = await _maybe("analyze_and_extract", llm_text, hint=classification)
@@ -203,7 +204,7 @@ async def _classifier_iocs_async(text: str):
     from shared.extractor.ioc_extractor import IoCResult
     try:
         async with httpx.AsyncClient(timeout=45) as client:
-            resp = await client.post(IOC_CLASSIFIER_URL, json={"text": text[:20000]})
+            resp = await client.post(IOC_CLASSIFIER_URL, json={"text": text})
             if resp.status_code != 200:
                 return None
             d = resp.json()
@@ -385,7 +386,8 @@ def _expand_parent_domains(iocs: IoCResult) -> None:
 
 
 def persist_analysis(db: Session, doc: Document, event: DocumentAnalyzed) -> None:
-    doc.letter_number = event.letter_number
+    number = (event.letter_number or "").strip()
+    doc.letter_number = number or letter_number_from_filename(str(doc.source_filename or ""))
     doc.letter_date = event.letter_date
     doc.letter_type = event.classification
     doc.processing_stage = "analyzed"

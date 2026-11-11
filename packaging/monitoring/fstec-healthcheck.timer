@@ -1,0 +1,13 @@
+[Unit]
+Description=Run FSTEC health guard every 30 seconds
+After=network-online.target
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+Unit=fstec-healthcheck.service
+
+[Install]
+WantedBy=timers.target

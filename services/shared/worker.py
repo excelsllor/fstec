@@ -22,7 +22,10 @@ async def serve_forever(bus: EventBus, heartbeat_name: str | None = None, heartb
 
         async def _beat():
             while True:
-                touch_service(heartbeat_name)
+                try:
+                    touch_service(heartbeat_name)
+                except Exception:
+                    logger.warning("heartbeat write failed for %s", heartbeat_name, exc_info=True)
                 await asyncio.sleep(heartbeat_s)
 
         asyncio.create_task(_beat())

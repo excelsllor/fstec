@@ -10,6 +10,7 @@
 Транспорт можно подменить (тесты). Токены кэшируются и обновляются при 401.
 """
 import base64
+import copy
 import logging
 import time
 
@@ -17,10 +18,12 @@ import httpx
 
 from security_service.cmdb import InventoryItem
 from security_service.http_pool import get_client
+from security_service.versioning import match_product, product_search_terms
 from shared.config import (GLPI_API, GLPI_APP_TOKEN, GLPI_AUTH, GLPI_CLIENT_ID,
-                           GLPI_CLIENT_SECRET, GLPI_MAX_SOFTWARE, GLPI_MAX_VERSIONS,
-                           GLPI_PASSWORD, GLPI_SCOPE, GLPI_TIMEOUT_S, GLPI_URL,
-                           GLPI_USER_TOKEN, GLPI_USERNAME)
+                           GLPI_CLIENT_SECRET, GLPI_INVENTORY_CACHE_MAX,
+                           GLPI_INVENTORY_CACHE_TTL_S, GLPI_MAX_SOFTWARE,
+                           GLPI_MAX_VERSIONS, GLPI_PASSWORD, GLPI_SCOPE,
+                           GLPI_TIMEOUT_S, GLPI_URL, GLPI_USER_TOKEN, GLPI_USERNAME)
 
 logger = logging.getLogger("fstec.security.glpi")
 
@@ -58,9 +61,10 @@ class GlpiCMDB:
         self.max_software = max(1, int(max_software))
         self.max_versions = max(1, int(max_versions))
         self.transport = transport
-        self._session_token = ""
-        self._access_token = ""
+        self._session_token = ""  # nosec B105
+        self._access_token = ""  # nosec B105
         self._access_expires_at = 0.0
+        self._inventory_cache: dict[str, tuple[float, list[InventoryItem]]] = {}
 
     # ---------------- HTTP ----------------
 
@@ -119,21 +123,30 @@ class GlpiCMDB:
         return []
 
     async def _find_v1(self, product: str) -> list[InventoryItem]:
-        rows = await self._v1_list("Software/", {
-            "searchText[name]": product,
-            "expand_dropdowns": "true",
-            "range": f"0-{_V1_LIST_LIMIT - 1}",
-        })
+        rows_by_id: dict[int, dict] = {}
+        for term in product_search_terms(product):
+            rows = await self._v1_list("Software/", {
+                "searchText[name]": term,
+                "expand_dropdowns": "true",
+                "range": f"0-{_V1_LIST_LIMIT - 1}",
+            })
+            for sw in rows:
+                if isinstance(sw, dict) and sw.get("id") is not None:
+                    rows_by_id[int(sw["id"])] = sw
         out: list[InventoryItem] = []
-        for sw in rows[: self.max_software]:
-            if not isinstance(sw, dict):
-                continue
+        matched = 0
+        for sw in rows_by_id.values():
+            if matched >= self.max_software:
+                break
             name = str(sw.get("name") or "")
+            if not match_product(name, product):
+                continue
             vendor = str(sw.get("manufacturers_id") or "")
             category = str(sw.get("softwarecategories_id") or "")
             sw_id = sw.get("id")
             if sw_id is None:
                 continue
+            matched += 1
             versions = await self._v1_list(f"Software/{sw_id}/SoftwareVersion", {
                 "expand_dropdowns": "true",
                 "range": f"0-{self.max_versions - 1}",
@@ -192,16 +205,28 @@ class GlpiCMDB:
                     return data[key]
         return []
 
-    async def _find_v2(self, product: str) -> list[InventoryItem]:
-        rows = await self._v2_list("v2/Assets/Software", {
-            "filter": f"name=ilike={product}",
-            "limit": _V2_PAGE_LIMIT,
-        })
+    async def _v2_rows(self, product: str, *, wildcard: bool) -> dict[int, dict]:
+        rows_by_id: dict[int, dict] = {}
+        for term in product_search_terms(product):
+            value = f"*{term}*" if wildcard else term
+            rows = await self._v2_list("v2/Assets/Software", {
+                "filter": f"name=ilike={value}",
+                "limit": max(_V2_PAGE_LIMIT, self.max_software * 10),
+            })
+            for sw in rows:
+                if isinstance(sw, dict) and sw.get("id") is not None:
+                    rows_by_id[int(sw["id"])] = sw
+        return rows_by_id
+
+    async def _v2_items(self, rows_by_id: dict[int, dict], product: str) -> list[InventoryItem]:
         out: list[InventoryItem] = []
-        for sw in rows[: self.max_software]:
-            if not isinstance(sw, dict):
-                continue
+        matched = 0
+        for sw in rows_by_id.values():
+            if matched >= self.max_software:
+                break
             name = str(sw.get("name") or "")
+            if not match_product(name, product):
+                continue
             manufacturer = sw.get("manufacturer")
             vendor = str(manufacturer.get("name") or "") if isinstance(manufacturer, dict) else ""
             category = sw.get("category")
@@ -209,6 +234,7 @@ class GlpiCMDB:
             sw_id = sw.get("id")
             if sw_id is None:
                 continue
+            matched += 1
             versions = await self._v2_list(f"v2/Assets/Software/{sw_id}/Version",
                                            {"limit": self.max_versions})
             for v in versions[: self.max_versions]:
@@ -217,14 +243,34 @@ class GlpiCMDB:
                                              version=str(v.get("name") or "")))
         return out
 
+    async def _find_v2(self, product: str) -> list[InventoryItem]:
+        exact = await self._v2_rows(product, wildcard=False)
+        items = await self._v2_items(exact, product)
+        if items:
+            return items
+        wildcard = await self._v2_rows(product, wildcard=True)
+        return await self._v2_items(wildcard, product)
+
     # ---------------- InventoryClient ----------------
 
     async def find_many(self, product: str) -> list[InventoryItem]:
         if not product or not product.strip():
             return []
+        product = product.strip()
+        key = product.lower()
+        now = time.monotonic()
+        cached = self._inventory_cache.get(key)
+        if cached and GLPI_INVENTORY_CACHE_TTL_S > 0 and now - cached[0] < GLPI_INVENTORY_CACHE_TTL_S:
+            return copy.deepcopy(cached[1])
         if self.api == "v2":
-            return await self._find_v2(product.strip())
-        return await self._find_v1(product.strip())
+            result = await self._find_v2(product)
+        else:
+            result = await self._find_v1(product)
+        if GLPI_INVENTORY_CACHE_TTL_S > 0:
+            self._inventory_cache[key] = (now, copy.deepcopy(result))
+            while len(self._inventory_cache) > GLPI_INVENTORY_CACHE_MAX:
+                self._inventory_cache.pop(next(iter(self._inventory_cache)))
+        return result
 
     async def close(self) -> None:
         if self._session_token:
@@ -233,4 +279,4 @@ class GlpiCMDB:
                                headers={"Session-Token": self._session_token})
             except Exception:  # noqa: BLE001 — закрытие не должно ронять shutdown
                 logger.warning("GLPI killSession failed", exc_info=True)
-            self._session_token = ""
+            self._session_token = ""  # nosec B105

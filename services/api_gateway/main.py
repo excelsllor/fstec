@@ -12,6 +12,7 @@ import os
 import shutil
 import threading
 import time
+import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -37,6 +38,9 @@ from shared.config import (
 )
 from shared.db import SessionLocal, get_db, init_db
 from shared.events import DocumentsUploaded
+from shared.generator.addresses import unique_addresses
+from shared.generator.response_store import replace_response
+from shared.vulnerability_payload import vulnerability_payload
 from shared.models import (
     Attachment, AuditLog, BootstrapSecret, Document, DocumentTable, Entity, GeneratedResponse, Report,
     IoC, Measure, MeasureCandidate, MeasureTemplate, Report, Summary,
@@ -132,15 +136,30 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 
+def _utc_iso(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
+def _rfc5987_quote(value: str) -> str:
+    allowed = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+    return "".join(
+        chr(byte) if byte in allowed else f"%{byte:02X}"
+        for byte in value.encode("utf-8")
+    )
+
+
 def _content_disposition(filename: str) -> str:
     """Content-Disposition с ASCII-fallback и RFC 5987 (*=UTF-8'') для кириллицы."""
-    from urllib.parse import quote
-    try:
-        filename.encode("latin-1")
-        return f"attachment; filename={filename}"
-    except UnicodeEncodeError:
-        safe = filename.encode("ascii", "replace").decode("ascii") or "download"
-        return f"attachment; filename={safe}; filename*=UTF-8''{quote(filename)}"
+    cleaned = "".join(
+        ch for ch in str(filename or "").replace("\\", "_")
+        if ch >= " " and ch != "\x7f"
+    ).strip() or "download"
+    safe = cleaned.encode("ascii", "replace").decode("ascii")
+    return f"attachment; filename=\"{safe}\"; filename*=UTF-8''{_rfc5987_quote(cleaned)}"
 
 
 def _audit(db: Session, user: User | None, action: str, object_type: str = "",
@@ -207,7 +226,7 @@ def login(body: dict, request: Request, db: Session = Depends(get_db)):
     claims = {"sub": user.username, "role": user.role}
     token = create_access_token(claims)
     refresh = create_refresh_token(claims)
-    return {"access_token": token, "refresh_token": refresh, "token_type": "bearer",
+    return {"access_token": token, "refresh_token": refresh, "token_type": "bearer",  # nosec B105
             "role": user.role, "username": user.username}
 
 
@@ -255,7 +274,7 @@ def refresh_token(body: dict, db: Session = Depends(get_db)):
     new_refresh = create_refresh_token(claims)
     revoke_token(refresh)
     _audit(db, user, "refresh", "user", user.id)
-    return {"access_token": token, "refresh_token": new_refresh, "token_type": "bearer",
+    return {"access_token": token, "refresh_token": new_refresh, "token_type": "bearer",  # nosec B105
             "role": user.role, "username": user.username}
 
 
@@ -407,6 +426,14 @@ def _validate_file(uf: UploadFile):
     return size
 
 
+def _safe_upload_name(filename: str) -> str:
+    name = os.path.basename((filename or "").replace("\\", "/"))
+    name = "".join(ch for ch in name if ch >= " " and ch != "\x7f").strip()
+    if name in {"", ".", ".."}:
+        return ""
+    return name[:200]
+
+
 @app.post("/upload", status_code=201)
 async def upload(
     request: Request,
@@ -423,7 +450,9 @@ async def upload(
     for uf in files:
         sizes.append(_validate_file(uf))
 
-    main_name = Path(files[0].filename).name
+    main_name = _safe_upload_name(files[0].filename or "")
+    if not main_name:
+        raise HTTPException(status_code=400, detail="Некорректное имя основного файла")
     doc = Document(
         letter_type="other", status="uploaded", processing_stage="uploaded",
         source_filename=main_name,
@@ -439,13 +468,18 @@ async def upload(
 
     att_metas = []
     for idx, uf in enumerate(files):
-        name = Path(uf.filename).name
-        dest = doc_dir / f"{idx}_{name}"
+        name = _safe_upload_name(uf.filename or "")
+        if not name:
+            raise HTTPException(status_code=400, detail="Некорректное имя вложения")
+        ext = Path(name).suffix.lower()
+        dest = (doc_dir / f"{idx}_{uuid.uuid4().hex}{ext}").resolve()
+        if dest.parent != doc_dir.resolve():
+            raise HTTPException(status_code=400, detail="Некорректный путь вложения")
         with open(dest, "wb") as f:
             shutil.copyfileobj(uf.file, f)
         db.add(Attachment(
             document_id=doc.id, filename=name, file_path=str(dest),
-            file_type=Path(name).suffix.lower(), parse_status="pending", is_main=(idx == 0),
+            file_type=ext, parse_status="pending", is_main=(idx == 0),
         ))
         att_metas.append({"filename": name, "path": str(dest), "size": sizes[idx]})
 
@@ -715,26 +749,27 @@ def reply_generate(doc_id: int, request: Request, body: dict | None = None,
         "malware_type": t.malware_type, "description": t.description,
         "explicit_measures": [m.strip() for m in (t.measures or "").split("\n") if m.strip()],
     } for t in threat_rows]
-    vulns = [{"cve_id": v.cve_id, "bdu_id": v.bdu_id, "description": v.description or "",
-              "software": v.software, "severity": v.severity, "cvss_score": v.cvss_score,
-              "cvss_version": v.cvss_version or "", "current_version": v.current_version,
-              "target_version": v.target_version, "fixed_version": v.fixed_version,
-              "cmdb_match": v.cmdb_match, "recommendation": v.recommendation}
-             for v in db.query(Vulnerability).filter(Vulnerability.document_id == doc_id).all()]
+    vulns = [vulnerability_payload(v)
+             for v in (db.query(Vulnerability)
+                       .filter(Vulnerability.document_id == doc_id)
+                       .order_by(Vulnerability.id).all())]
     iocs = db.query(IoC).filter(IoC.document_id == doc_id).all()
-    addr_count = len({i.value.split(":")[0] for i in iocs if i.ioc_type in ("ip", "domain")})
+    addresses = unique_addresses(iocs)
+    addr_count = len(addresses)
 
     rep = generate_reply(db=db, doc_id=doc.id, letter_type=doc.letter_type, blocks=blocks,
-                         addr_count=addr_count, active_vulns=vulns)
+                         addr_count=addr_count, active_vulns=vulns,
+                         addresses=addresses)
     if rep["candidates"]:
         for i, c in enumerate(rep["candidates"]):
             rep["candidates"][i]["threat_id"] = (blocks[i]["id"] if i < len(blocks) else None)
         persist_candidates(db, doc.id, rep["candidates"])
 
-    resp = GeneratedResponse(document_id=doc_id, content=rep["text"],
-                             edited_content=base64.b64encode(rep["docx"]).decode("ascii"),
-                             plan_json=rep["plan_json"], created_by=user.id)
-    db.add(resp)
+    resp = replace_response(
+        db, doc_id, content=rep["text"],
+        edited_content=base64.b64encode(rep["docx"]).decode("ascii"),
+        plan_json=rep["plan_json"], created_by=user.id,
+    )
     _audit(db, user, "generate_reply", "document", doc_id, doc.source_filename, doc_id, request=request)
     db.commit()
     return {"id": resp.id, "document_id": doc_id, "status": "generated", "text": rep["text"],
@@ -855,7 +890,7 @@ def list_audit(skip: int = 0, limit: int = 200, action: str = "", document_id: i
         {"id": r.id, "user_id": r.user_id, "username": r.username, "action": r.action,
          "object_type": r.object_type, "object_id": r.object_id, "filename": r.filename,
          "document_id": r.document_id, "ip_address": r.ip_address,
-         "created_at": r.created_at.isoformat() if r.created_at else ""}
+         "created_at": _utc_iso(r.created_at)}
         for r in rows
     ]}
 
@@ -1031,11 +1066,47 @@ def autofill_vulnerability(letter_id: int, vuln_id: int, request: Request,
     if not vuln:
         raise HTTPException(status_code=404, detail="Vulnerability not found")
 
-    software = (vuln.software or "").strip()
-    current = (vuln.current_version or "").strip()
+    software = " ".join((vuln.software or "").split())
     target = (vuln.target_version or "").strip()
     fixed = (vuln.fixed_version or "").strip()
     version = target or fixed
+
+    if software:
+        try:
+            import asyncio
+            from security_service.assessment import _match_cmdb
+            from security_service.cmdb import get_cmdb
+            from security_service.http_pool import close_clients
+
+            try:
+                candidates = asyncio.run(get_cmdb().find_many(software))
+            finally:
+                try:
+                    asyncio.run(close_clients())
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("close_clients after autofill failed: %s", exc)
+            installed = [c for c in candidates if c.installed]
+            item, matched = _match_cmdb(None, installed, software, fixed_hint=fixed)
+            vuln.cmdb_match = matched
+            vuln.cmdb_error = ""
+            vuln.current_version = (item.version if item else
+                                    (installed[0].version if installed else ""))
+            vuln.is_applicable = bool(installed)
+            if installed:
+                vuln.applicability_notes = (
+                    f"ПО «{installed[0].name}» {vuln.current_version} найдено в GLPI (список ПО); "
+                    f"{installed[0].assets} запись в списке."
+                )
+            else:
+                vuln.applicability_notes = f"ПО «{software}» не найдено в установленном ПО GLPI."
+            db.commit()
+        except Exception as exc:  # noqa: BLE001 — CMDB недоступна (ТЗ 4.2)
+            logger.warning("autofill cmdb lookup failed for %r: %s", software, exc)
+            vuln.cmdb_error = f"cmdb:{software}:{str(exc)[:300]}"
+            vuln.is_applicable = None
+            db.commit()
+
+    current = (vuln.current_version or "").strip()
 
     if not software:
         applicability = "unknown"
@@ -1046,6 +1117,9 @@ def autofill_vulnerability(letter_id: int, vuln_id: int, request: Request,
     elif (vuln.cmdb_error or "").strip():
         applicability = "unknown"
         action_type = ""
+    elif vuln.is_applicable is True:
+        applicability = "true"
+        action_type = "skip"
     else:
         applicability = "false"
         action_type = "skip"
@@ -1061,24 +1135,32 @@ def autofill_vulnerability(letter_id: int, vuln_id: int, request: Request,
     ):
         details = details.replace(key, value)
     if action_type == "update" and version and version not in details:
-        details = details.rstrip() + f" Целевая версия: {version}."
+        details = details.rstrip() + f" Обновить до версии: {version}."
 
-    if applicability == "true":
+    if applicability == "true" and action_type == "update":
         current_part = f" {current}" if current else ""
-        notes = f"ПО «{software}»{current_part} обнаружено в CMDB; уязвимость применима."
+        notes = f"ПО «{software}»{current_part} обнаружено в GLPI; требуется обновление."
     elif applicability == "false":
-        notes = (f"Совпадений для ПО «{software}» в CMDB не найдено; "
-                 "уязвимость не применяется к инвентаризованному ПО.")
+        notes = (f"Использование ПО «{software}» в GLPI не найдено; "
+                 "обновление не требуется, рекомендуется периодическая проверка.")
+    elif applicability == "true":
+        notes = (f"ПО «{software}» {current} установлено в GLPI, но уязвимая версия "
+                 "не обнаружена; обновление не требуется.")
     elif not software:
-        notes = "Не указано ПО; применимость требует проверки."
+        notes = "ПО не указано; автоматический подбор невозможен."
     else:
         err = (vuln.cmdb_error or "").strip()[:300]
         suffix = f": {err}" if err else ""
-        notes = f"Не удалось проверить ПО «{software}» в CMDB{suffix}. Требуется ручная проверка."
+        notes = f"Не удалось проверить ПО «{software}» в GLPI{suffix}. Требуется ручная проверка."
+
+    vuln.action_type = action_type
+    vuln.action_details = details[:1500]
+    db.commit()
 
     result = {
         "action_type": action_type,
         "applicability": applicability,
+        "current_version": current,
         "action_details": details[:1500],
         "applicability_notes": notes[:1500],
         "source": "cmdb+library" if template else "cmdb",
@@ -1417,24 +1499,24 @@ def delete_vuln_template(vt_id: int, db: Session = Depends(get_db),
 # ---------------- Diagnostics ----------------
 
 def _probe_http(url: str, timeout: float = 3.0, insecure: bool = False) -> dict:
-    """Проверка доступности хоста. «Доступен» = получен любой HTTP-ответ (включая 4xx/5xx),
-    недоступен — только транспортные ошибки (DNS, таймаут, TLS, refused)."""
-    import urllib.error
-    import urllib.request
+    """Проверка доступности URL. <возврат> = успешный любой HTTP-ответ (включая 4xx/5xx),
+    недоступность - только сетевые ошибки (DNS, таймауты, TLS, refused)."""
+    import httpx
+    try:
+        parsed = httpx.URL(url)
+    except (TypeError, ValueError):
+        return {"reachable": False, "http_status": None, "latency_ms": 0,
+                "error": "unsupported URL scheme"}
+    if parsed.scheme not in ("http", "https") or not parsed.host:
+        return {"reachable": False, "http_status": None, "latency_ms": 0,
+                "error": "unsupported URL scheme"}
     start = time.time()
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "fstec-diagnostics"})
-        context = None
-        if insecure:
-            import ssl
-            context = ssl._create_unverified_context()
-        with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
-            return {"reachable": True, "http_status": resp.status,
-                    "latency_ms": round((time.time() - start) * 1000), "error": ""}
-    except urllib.error.HTTPError as e:  # сервер ответил не-2xx — хост доступен
-        return {"reachable": True, "http_status": e.code,
-                "latency_ms": round((time.time() - start) * 1000),
-                "error": f"HTTP {e.code}"}
+        with httpx.Client(timeout=timeout, verify=not insecure,
+                          follow_redirects=False) as client:
+            resp = client.get(url, headers={"User-Agent": "fstec-diagnostics"})
+        return {"reachable": True, "http_status": resp.status_code,
+                "latency_ms": round((time.time() - start) * 1000), "error": ""}
     except Exception as e:  # noqa: BLE001
         return {"reachable": False, "http_status": None,
                 "latency_ms": round((time.time() - start) * 1000),
@@ -1636,7 +1718,7 @@ if _FRONTEND_DIR.is_dir():
 
 if __name__ == "__main__":
     import uvicorn
-    from shared.config import GATEWAY_PORT
+    from shared.config import GATEWAY_HOST, GATEWAY_PORT
     from shared.registry import register_service
     register_service("gateway")
-    uvicorn.run(app, host="0.0.0.0", port=GATEWAY_PORT)
+    uvicorn.run(app, host=GATEWAY_HOST, port=GATEWAY_PORT)

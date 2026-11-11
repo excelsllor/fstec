@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 _clients: dict[str, httpx.AsyncClient] = {}
 
 
-def get_client(name: str, *, timeout: float = 10.0, connect: float = 5.0) -> httpx.AsyncClient:
+def get_client(name: str, *, timeout: float = 10.0, connect: float = 5.0,
+               follow_redirects: bool = False) -> httpx.AsyncClient:
     """Вернуть (или создать) долгоживущий клиент сервиса `name`."""
     client = _clients.get(name)
     if client is not None and not client.is_closed:
@@ -32,6 +33,7 @@ def get_client(name: str, *, timeout: float = 10.0, connect: float = 5.0) -> htt
         timeout=httpx.Timeout(timeout, connect=connect),
         limits=httpx.Limits(max_connections=SECURITY_POOL_MAX_CONNECTIONS,
                             max_keepalive_connections=SECURITY_POOL_MAX_CONNECTIONS),
+        follow_redirects=follow_redirects,
     )
     _clients[name] = client
     logger.debug("HTTP pool created: %s", name)

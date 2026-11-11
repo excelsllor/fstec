@@ -4,7 +4,7 @@ import asyncio
 from security_service.enriched import CpeMatch, RangeSpec
 from security_service.versioning import (build_range, compare_versions, in_range,
                                          match_cpe, match_product, normalize_version,
-                                         vuln_range_hit)
+                                         product_search_terms, vuln_range_hit)
 
 
 def test_normalize_version():
@@ -55,6 +55,43 @@ def test_match_product():
     assert match_product("Log4j", "Apache Log4j")
     assert match_product("OpenSSL Project", "openssl")
     assert match_product("Microsoft Edge", "OpenSSL") is False
+
+
+def test_match_product_aliases():
+    assert match_product("python3", "CPython")
+    assert match_product("python3-pillow", "Pillow")
+    assert match_product("python3-msgpack", "MessagePack")
+    assert match_product("librsvg2", "librsvg")
+    assert match_product("cifs-utils", "CIFS cifs-utils")
+    assert match_product("golang", "Go crypto")
+    assert match_product("Office", "Microsoft Office")
+    assert match_product("python3", "Python Requests") is False
+    assert match_product("trueconf", "TrueConf Server") is False
+    assert match_product("Git", "установка Git-сервера Gitea") is False
+    assert match_product("Gitea", "установка Git-сервера Gitea") is True
+
+
+def test_match_product_mariadb_case_insensitive():
+    assert match_product("mariadb", "MariaDB")
+    assert match_product("mariadb", "mariadb")
+    assert match_product("mariadb-server", "MariaDB Server")
+    assert match_product("MariaDB", "управления базами данных MariaDB")
+
+
+def test_product_search_terms_include_glpi_package_alias():
+    assert "python3-pillow" in product_search_terms("Pillow")
+    assert "python3-requests" in product_search_terms("Requests")
+    assert "librsvg2" in product_search_terms("librsvg")
+    assert "Office" in product_search_terms("Microsoft Office")
+
+
+def test_match_product_extracts_latin_name_from_russian_description():
+    assert match_product("python3-pillow", "для работы с изображениями Pillow")
+    assert match_product("python3-requests",
+                         "HTTP запросов языка программирования Python Requests")
+    assert match_product("librsvg2", "отрисовки векторной графики librsvg")
+    assert match_product("golang", "для языка программирования Go crypto")
+    assert "python3-pillow" in product_search_terms("для работы с изображениями Pillow")
 
 
 async def _async_hit():

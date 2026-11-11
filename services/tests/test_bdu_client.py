@@ -3,7 +3,7 @@ import asyncio
 
 import httpx
 
-from security_service.bdu_client import BDUClient
+from security_service.bdu_client import BDUClient, _cvss_from_critu, _severity_from_critu
 from security_service.cache import MemoryCache
 from tests.fakes import BDU_HTML, BDU_LEGACY_HTML, bdu_transport
 
@@ -24,6 +24,13 @@ def test_parse_bdu_print_html():
     assert obj.cve_id == "CVE-2021-44228"
     assert "Log4j2" in obj.title
     assert obj.patch_url == "https://logging.apache.org/log4j/2.x/security.html"
+
+
+def test_prefers_cvss_31_over_20_even_with_higher_20_score():
+    critu = ("Критический уровень опасности (базовая оценка CVSS 2.0 составляет 10.0)\r\n"
+             "Высокий уровень опасности (базовая оценка CVSS 3.1 составляет 8.8)")
+    assert _cvss_from_critu(critu) == (8.8, "3.1")
+    assert _severity_from_critu(critu) == "high"
 
 
 def test_parse_legacy_html():

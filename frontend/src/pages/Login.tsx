@@ -8,7 +8,6 @@ import {
   Alert,
   Container,
   CircularProgress,
-  Divider,
   IconButton,
   Tooltip,
 } from "@mui/material";
@@ -80,7 +79,7 @@ export default function Login() {
               {bootstrap.password ? (
                 <>
                   <Typography variant="body2" sx={{ mb: 1 }}>
-                    Одноразовые учётные данные администратора (показываются только до первого входа):
+                    Данные для первого входа:
                   </Typography>
                   <Typography variant="body2">
                     Логин: <strong>{bootstrap.username}</strong>
@@ -102,17 +101,7 @@ export default function Login() {
                     Подставить в форму
                   </Button>
                 </>
-              ) : (
-                <Typography variant="body2">
-                  Пароль администратора задан при развёртывании
-                  (переменная <code>FSTEC_BOOTSTRAP_PASSWORD</code>). После первого входа
-                  экран инициализации исчезнет.
-                </Typography>
-              )}
-              <Divider sx={{ my: 1 }} />
-              <Typography variant="caption" color="text.secondary">
-                Смените пароль администратора после первого входа (Пользователи → редактировать).
-              </Typography>
+              ) : null}
             </Paper>
           )}
 

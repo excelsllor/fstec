@@ -38,6 +38,27 @@ def test_v1_find_many_and_session_reuse():
     assert calls["init"] == 1
 
 
+def test_find_many_uses_inventory_cache():
+    calls = {"software": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        p = req.url.path
+        if p.endswith("/apirest.php/initSession"):
+            return httpx.Response(200, json={"session_token": "tok"})
+        if p.endswith("/apirest.php/Software/"):
+            calls["software"] += 1
+            return httpx.Response(200, json=[{"id": 1, "name": "Samba"}])
+        if p.endswith("/apirest.php/Software/1/SoftwareVersion"):
+            return httpx.Response(200, json=[{"name": "4.23.0"}])
+        return httpx.Response(404)
+
+    cmdb = GlpiCMDB(base_url="https://glpi.example", api="v1", auth="basic",
+                    username="u", password="p", transport=httpx.MockTransport(handler))
+    assert _run(cmdb.find_many("Samba"))
+    assert _run(cmdb.find_many("Samba"))
+    assert calls["software"] == 1
+
+
 def test_v1_reauth_on_401():
     state = {"software_calls": 0, "init": 0}
 
@@ -92,6 +113,62 @@ def test_v2_oauth_and_versions():
     assert items[0].version == "1.1.1k" and items[0].vendor == "OpenSSL Project"
     _run(cmdb.find_many("OpenSSL"))
     assert tokens["calls"] == 1
+
+
+def test_v2_uses_package_aliases_and_filters_names():
+    filters = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        p = req.url.path
+        if p.endswith("/api.php/token"):
+            return httpx.Response(200, json={"access_token": "acc1", "expires_in": 3600})
+        if p.endswith("/api.php/v2/Assets/Software"):
+            value = req.url.params["filter"].removeprefix("name=ilike=")
+            filters.append(value)
+            if value == "python3":
+                return httpx.Response(200, json={"items": [
+                    {"id": 3, "name": "python3", "manufacturer": {"name": "Python"}},
+                ]})
+            return httpx.Response(200, json={"items": []})
+        if p.endswith("/api.php/v2/Assets/Software/3/Version"):
+            return httpx.Response(200, json=[{"id": 10, "name": "3.12.0"}])
+        return httpx.Response(404)
+
+    cmdb = GlpiCMDB(base_url="https://glpi.example", api="v2", username="u", password="p",
+                    client_id="cid", client_secret="sec", transport=httpx.MockTransport(handler))
+    items = _run(cmdb.find_many("CPython"))
+    assert filters[0] == "CPython"
+    assert "python3" in filters
+    assert [item.version for item in items] == ["3.12.0"]
+    assert items[0].name == "python3"
+
+
+def test_v2_falls_back_to_substring_for_mariadb_server():
+    filters = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        p = req.url.path
+        if p.endswith("/api.php/token"):
+            return httpx.Response(200, json={"access_token": "acc1", "expires_in": 3600})
+        if p.endswith("/api.php/v2/Assets/Software"):
+            value = req.url.params["filter"]
+            filters.append(value)
+            if value == "name=ilike=*MariaDB*":
+                return httpx.Response(200, json={"items": [
+                    {"id": 11, "name": "mariadb-server", "manufacturer": {"name": "MariaDB"}},
+                ]})
+            return httpx.Response(200, json={"items": []})
+        if p.endswith("/api.php/v2/Assets/Software/11/Version"):
+            return httpx.Response(200, json=[{"id": 1, "name": "10.11.18-1.red80"}])
+        return httpx.Response(404)
+
+    cmdb = GlpiCMDB(base_url="https://glpi.example", api="v2", username="u", password="p",
+                    client_id="cid", client_secret="sec", transport=httpx.MockTransport(handler))
+    items = _run(cmdb.find_many("MariaDB Server"))
+    assert "name=ilike=MariaDB" in filters
+    assert "name=ilike=*MariaDB*" in filters
+    assert [item.name for item in items] == ["mariadb-server"]
+    assert [item.version for item in items] == ["10.11.18-1.red80"]
 
 
 def test_v1_error_raises():

@@ -26,6 +26,8 @@ class InventoryItem:
     cpe: str = ""
     os: str = ""
     last_seen: str = ""
+    installed: bool = True
+    assets: int = 1
 
 
 class InventoryClient(Protocol):
@@ -95,15 +97,17 @@ def _item_from_rest(r: dict) -> InventoryItem:
 
 def get_cmdb() -> InventoryClient:
     """Фабрика CMDB: mock (dev) | rest (внешняя CMDB) | glpi (инвентарь ПО GLPI)."""
-    if CMDB_PROVIDER == "glpi":
-        from shared.config import GLPI_URL, IS_PROD
-        if not GLPI_URL:
-            if IS_PROD:
-                raise RuntimeError("CMDB_PROVIDER=glpi, но GLPI_URL не задан (prod: fail-fast)")
-            logger.warning("CMDB_PROVIDER=glpi, но GLPI_URL не задан — используется mock")
-        else:
+    if CMDB_PROVIDER in ("glpi", "glpi_db"):
+        from shared.config import GLPI_DB_HOST, GLPI_DB_NAME, GLPI_DB_USER, GLPI_URL, IS_PROD
+        if GLPI_URL:
             from security_service.glpi import GlpiCMDB
             return GlpiCMDB()
+        if GLPI_DB_HOST and GLPI_DB_NAME and GLPI_DB_USER:
+            from security_service.glpi_db import GlpiDB
+            return GlpiDB()
+        if IS_PROD:
+            raise RuntimeError("CMDB_PROVIDER=glpi, но GLPI_URL/GLPI_DB_* не заданы (prod: fail-fast)")
+        logger.warning("CMDB_PROVIDER=glpi, но GLPI_URL/GLPI_DB_* не заданы - используется mock")
     if CMDB_PROVIDER == "rest":
         return RestCMDB()
     from security_service.cmdb_mock import MockCMDB

@@ -11,6 +11,7 @@ import LetterDetail from "./pages/LetterDetail";
 import Users from "./pages/Admin/Users";
 import Templates from "./pages/Admin/Templates";
 import Measures from "./pages/Admin/Measures";
+import MeasureLibrary from "./pages/Admin/MeasureLibrary";
 import Audit from "./pages/Audit";
 import Diagnostics from "./pages/Diagnostics";
 
@@ -64,6 +65,7 @@ export default function App() {
         <Route path="/letters/:id" element={<LetterDetail />} />
         <Route path="/admin/users" element={<ProtectedRoute requireAdmin><Users /></ProtectedRoute>} />
         <Route path="/admin/templates" element={<ProtectedRoute requireAdmin><Templates /></ProtectedRoute>} />
+        <Route path="/admin/measure-library" element={<ProtectedRoute requireAdmin><MeasureLibrary /></ProtectedRoute>} />
         <Route path="/admin/measures" element={<ProtectedRoute requireAdmin><Measures /></ProtectedRoute>} />
         <Route path="/audit" element={<ProtectedRoute requireAdmin><Audit /></ProtectedRoute>} />
         <Route path="/debug" element={<ProtectedRoute requireAdmin><Diagnostics /></ProtectedRoute>} />

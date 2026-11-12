@@ -442,6 +442,31 @@ export const candidatesApi = {
     api.post<{ id: number; status: string }>(`/admin/measures/candidates/${id}/reject`),
 };
 
+export interface MeasureLibraryItem {
+  id: number;
+  text: string;
+  threat_type: string;
+  tags: string;
+  addr_inflection: boolean;
+  source: string;
+}
+
+export interface MeasureLibraryInput {
+  text: string;
+  threat_type: string;
+  tags: string;
+  addr_inflection: boolean;
+}
+
+export const measureLibraryApi = {
+  list: () => api.get<MeasureLibraryItem[]>("/admin/measures"),
+  create: (data: MeasureLibraryInput) =>
+    api.post<{ id: number; status: string }>("/admin/measures", data),
+  update: (id: number, data: MeasureLibraryInput) =>
+    api.put<MeasureLibraryItem & { status: string }>(`/admin/measures/${id}`, data),
+  remove: (id: number) => api.delete<{ status: string }>(`/admin/measures/${id}`),
+};
+
 export interface ServiceHealth {
   name: string;
   pid: number | null;

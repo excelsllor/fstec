@@ -399,6 +399,18 @@ def test_gateway_admin_and_generate(client, doc_db):
     assert r.status_code == 200
     texts = [m["text"] for m in r.json()]
     assert "контролируемая тестовая мера;" in texts
+    row = next(m for m in r.json() if m["text"] == "контролируемая тестовая мера;")
+    r = client.put(f"/admin/measures/{row['id']}", headers=h, json={
+        "text": "контролируемая тестовая мера (изменена);",
+        "threat_type": "phishing", "tags": "тест, api", "addr_inflection": True,
+    })
+    assert r.status_code == 200
+    assert r.json()["text"] == "контролируемая тестовая мера (изменена);"
+    assert r.json()["threat_type"] == "phishing"
+    assert r.json()["tags"] == "тест, api"
+    assert r.json()["addr_inflection"] is True
+    r = client.delete(f"/admin/measures/{row['id']}", headers=h)
+    assert r.status_code == 200 and r.json()["status"] == "deleted"
 
     # генерация через gateway (threat уже в БД)
     r = client.post("/reply/generate", params={"doc_id": doc.id}, headers=h)

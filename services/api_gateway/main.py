@@ -802,6 +802,31 @@ def admin_measures_add(body: dict, db: Session = Depends(get_db), user: User = D
     return {"id": m.id, "status": "added"}
 
 
+@app.put("/admin/measures/{measure_id}")
+def admin_measures_update(measure_id: int, body: dict, db: Session = Depends(get_db),
+                          user: User = Depends(require_admin)):
+    m = db.query(Measure).filter(Measure.id == measure_id).first()
+    if not m:
+        raise HTTPException(status_code=404, detail="Мера не найдена")
+    text = (body.get("text", m.text) or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text обязателен")
+    dup = db.query(Measure).filter(Measure.text == text, Measure.id != measure_id).first()
+    if dup:
+        raise HTTPException(status_code=409, detail="Мера с таким текстом уже существует")
+    m.text = text
+    if "threat_type" in body:
+        m.threat_type = (body.get("threat_type") or "").strip()
+    if "tags" in body:
+        m.tags = (body.get("tags") or "").strip()
+    if "addr_inflection" in body:
+        m.addr_inflection = bool(body.get("addr_inflection"))
+    db.commit()
+    _audit(db, user, "measure_update", "measure", m.id)
+    return {"id": m.id, "text": m.text, "threat_type": m.threat_type, "tags": m.tags,
+            "addr_inflection": m.addr_inflection, "source": m.source, "status": "updated"}
+
+
 @app.delete("/admin/measures/{measure_id}")
 def admin_measures_delete(measure_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     m = db.query(Measure).filter(Measure.id == measure_id).first()

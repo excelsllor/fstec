@@ -438,6 +438,25 @@ def test_inflection_addr_singular_plural(doc_db):
     assert "к указанным адресам" in mN
 
 
+def test_group_name_falls_back_to_description(doc_db):
+    db, doc, _ = doc_db
+    blocks = [{"id": 0, "number": 16, "threat_type": "malware_attack",
+               "group_name": "",
+               "description": "Угроза группировки Invincible Werewolf, "
+                              "нацеленной на органы государственной власти"}]
+    plan = plan_reply(db=db, letter_type="hacker", blocks=blocks,
+                      addr_count=1, use_llm=False)
+    assert "Invincible Werewolf" in plan["blocks"][0]["intro"]
+
+    blocks[0]["description"] = (
+        "Угроза безопасности информации, связанных с деятельностью "
+        "хакерских группировок, осуществляющих фишинговые рассылки")
+    plan = plan_reply(db=db, letter_type="hacker", blocks=blocks,
+                      addr_count=1, use_llm=False)
+    assert "хакерских группировок" in plan["blocks"][0]["intro"]
+    assert "Invincible Werewolf" not in plan["blocks"][0]["intro"]
+
+
 def test_malware_types_extraction_9_70(doc_db):
     """«возможно применение … типов «червь» (CMoon) и «стилер» (WhiteSnake)» (9-70)."""
     db, doc, _ = doc_db

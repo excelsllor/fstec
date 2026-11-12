@@ -288,6 +288,15 @@ def _inflect_measure(text: str, addr_count: int, software: str = "") -> str:
 
 
 _ADDR_RE = re.compile(r'(?:(?:\d{1,3}\[\.\]){3}\d{1,3}|[a-z0-9][a-z0-9-]*(?:\[\.\][a-z0-9-]+)+)', re.I)
+_GROUP_FROM_DESC_RE = re.compile(
+    r"(?:\u0433\u0440\u0443\u043f\u043f\u0438\u0440\u043e\u0432\u043a(?:\u0430|\u0438|\u043e\u0439)|"
+    r"\u0433\u0440\u0443\u043f\u043f\u044b)\s+[\u00ab\"]?"
+    r"([A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*){0,3})")
+
+
+def _group_from_description(description: str) -> str:
+    match = _GROUP_FROM_DESC_RE.search(description or "")
+    return " ".join(match.group(1).split()) if match else ""
 
 
 _STANDARD_MEASURES = [
@@ -571,7 +580,8 @@ def _extract_ctx(block: dict) -> dict:
     """Контекст для заполнения intro-фрагмента из данных угрозы."""
     desc = re.sub(r"\s+", " ", (block.get("description") or "").replace("\xa0", " ")).strip()
     ctx = {
-        "group": (block.get("group_name") or "").strip(),
+        "group": ((block.get("group_name") or "").strip()
+                  or _group_from_description(desc)),
         "theme": _clean_theme(block.get("theme") or "") or "",
         "archive": (block.get("archive_name") or "").strip(),
         "exe": (block.get("exe_name") or "").strip(),
@@ -1090,13 +1100,14 @@ def _template_intro(src: dict) -> str:
     Возвращает только часть после «связанных с …»: блок-шаблон сам добавляет
     «В целях предотвращения … связанных с {intro}, приняты следующие меры защиты:».
     """
-    group = " ".join((src.get("group_name") or "").split())
+    desc = " ".join((src.get("description") or "").split())
+    group = (" ".join((src.get("group_name") or "").split())
+             or _group_from_description(desc))
     theme = " ".join((src.get("theme") or "").split())
     archive = " ".join((src.get("archive_name") or "").split())
     exe = " ".join((src.get("exe_name") or "").split())
     malware = " ".join((src.get("malware_type") or "").split())
     ttype = (src.get("threat_type") or "").strip().lower().replace("-", "_")
-    desc = " ".join((src.get("description") or "").split())
     desc_low = desc.lower()
     has_malware = bool(malware) or "вредоносн" in desc_low
 

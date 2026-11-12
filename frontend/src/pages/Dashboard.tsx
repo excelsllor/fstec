@@ -16,6 +16,8 @@ import {
   TableRow,
   Chip,
   Alert,
+  ToggleButton,
+  ToggleButtonGroup,
 } from "@mui/material";
 import {
   Mail as MailIcon,
@@ -25,6 +27,7 @@ import {
   Upload as UploadIcon,
 } from "@mui/icons-material";
 import { lettersApi, type StatsResponse, type LetterListItem } from "../api/client";
+import { useAuthStore } from "../store/auth";
 
 const typeLabels: Record<string, string> = {
   hacker: "Хакерская группировка",
@@ -51,26 +54,42 @@ const statusLabels: Record<string, string> = {
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const user = useAuthStore((state) => state.user);
+  const isAdmin = user?.role === "admin";
+  const [scope, setScope] = useState<"all" | "mine">(isAdmin ? "all" : "mine");
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [letters, setLetters] = useState<LetterListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
+    setScope(isAdmin ? "all" : "mine");
+  }, [isAdmin]);
+
+  useEffect(() => {
+    let cancelled = false;
     const loadData = async () => {
+      setLoading(true);
       try {
-        const [statsRes, lettersRes] = await Promise.all([lettersApi.stats({ mine: true }), lettersApi.list({ mine: true })]);
+        const mine = isAdmin ? scope === "mine" : true;
+        const [statsRes, lettersRes] = await Promise.all([
+          lettersApi.stats({ mine }),
+          lettersApi.list({ mine }),
+        ]);
+        if (cancelled) return;
         setStats(statsRes.data);
         setLetters(lettersRes.data);
         setError("");
       } catch (err: any) {
-        setError(err.response?.data?.detail || (err as Error)?.message || "Не удалось загрузить панель");
+        if (cancelled) return;
+        setError(err.response?.data?.detail || (err as Error)?.message || "Не удалось загрузить данные");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     loadData();
-  }, []);
+    return () => { cancelled = true; };
+  }, [isAdmin, scope]);
 
   const statCards = [
     { label: "Всего писем", value: stats?.total_letters ?? 0, icon: <MailIcon />, color: "#1976d2" },
@@ -108,7 +127,20 @@ export default function Dashboard() {
         ))}
       </Grid>
 
-      <Typography variant="h6" gutterBottom>Последние письма</Typography>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2, mb: 1 }}>
+        <Typography variant="h6">Последние письма</Typography>
+        {isAdmin && (
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={scope}
+            onChange={(_, value: "all" | "mine" | null) => { if (value) setScope(value); }}
+          >
+            <ToggleButton value="all">Все</ToggleButton>
+            <ToggleButton value="mine">Мои</ToggleButton>
+          </ToggleButtonGroup>
+        )}
+      </Box>
       <TableContainer component={Paper}>
         <Table>
           <TableHead>

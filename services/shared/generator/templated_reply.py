@@ -1833,10 +1833,11 @@ def render_reply(*, plan: dict, templates: dict | None = None, letter_number: st
                      if v.get("bdu_id")
                      or _norm_cve_key(v.get("cve_id")) not in bdu_cves]
             if vulns:
-                lines.append("")
-                lines.append("\u0423\u044f\u0437\u0432\u0438\u043c\u043e\u0441\u0442\u0438 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u043d\u043e\u0433\u043e \u043e\u0431\u0435\u0441\u043f\u0435\u0447\u0435\u043d\u0438\u044f:")
-                for idx, v in enumerate(vulns, 1):
-                    lines.append(f"{idx}. {_vuln_paragraph(v, key_num)[0]}")
+                start = len(plan_blocks) + 1
+                for idx, v in enumerate(vulns):
+                    lines.append("")
+                    prefix = f"{start + idx}. " if numbered else ""
+                    lines.append(f"{prefix}{_vuln_paragraph(v, key_num)[0]}")
         if not plan_blocks:
             lines.append("")
             if any(v.get("cmdb_error") for v in (active_vulns or [])):

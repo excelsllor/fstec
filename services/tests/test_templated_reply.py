@@ -334,9 +334,10 @@ def test_combined_hacker_renders_vulnerability_section(doc_db):
     }]
     text, _ = render_reply(plan=plan, templates=load_reply_resources(db)[2],
                            letter_number="9/combined", active_vulns=vulns)
-    assert "Уязвимости программного обеспечения:" in text
+    assert "2. Уязвимость" in text
     assert "BDU:2026-0001" in text
     assert "Samba не используется." in text
+    assert "Уязвимости программного обеспечения:" not in text
 
 
 def test_generate_reply_plan_json_and_candidates(doc_db):

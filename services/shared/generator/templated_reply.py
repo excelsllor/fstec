@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import re
-from difflib import SequenceMatcher
 from pathlib import Path
 
 from shared.config import LLM_PROVIDER, ORG_NAME
@@ -22,12 +21,13 @@ logger = logging.getLogger("fstec.reply")
 
 _PLAN_CACHE: dict[str, dict] = {}
 _PLAN_CACHE_MAX = 128
+_LIVE_BDU_MEASURE_CACHE: dict[str, tuple[float, list[str]]] = {}
+_LIVE_BDU_MEASURE_TTL_S = 3600.0
 _STATIC_CACHE_SIGNATURE = None
 _GENERATOR_FILES = (
     "letter_measures.json", "letter_extra_measures.json", "letter_headers.json",
-    "letter_vuln_tails.json", "letter_vuln_inserts.json", "letter_intros.json",
-    "letter_measure_plans.json", "vuln_status_overrides.json",
-    "bdu_measure_rules.json",
+    "letter_intros.json",
+    "letter_measure_plans.json",
 )
 
 
@@ -49,8 +49,8 @@ def _refresh_static_caches() -> None:
         return
     _STATIC_CACHE_SIGNATURE = signature
     for name in ("_LETTER_MEASURES", "_LETTER_EXTRAS", "_LETTER_HEADERS",
-                 "_VULN_TAILS", "_VULN_INSERTS", "_LETTER_INTROS",
-                 "_LETTER_MEASURE_PLANS", "_VULN_STATUS", "_BDU_RULES"):
+                 "_LETTER_INTROS",
+                 "_LETTER_MEASURE_PLANS"):
         globals()[name] = None
 
 
@@ -156,6 +156,15 @@ _MALWARE_DESC_RE = re.compile(
 _MALWARE_DESC_RE2 = re.compile(
     r"применени(?:ем|е|я)\s+вредоносного\s+программного\s+обеспечения",
     re.IGNORECASE)
+_MALWARE_TYPE_RE = re.compile(
+    r"(?:тип(?:а|ом)?|семейств(?:а|о))\s+(<[^>]+>)(?:\s*(\([^)]*\)))?",
+    re.IGNORECASE)
+_MALWARE_PAREN_RE = re.compile(
+    r"(?:программного\s+обеспечения|программного\s+продукта|ПО|ВПО)"
+    r"\s+(?:типа\s+)?(<[^>]+>)?\s*(\([^)]{2,80}\))",
+    re.IGNORECASE)
+_MALWARE_PAREN_NAME_RE = re.compile(
+    r"\(([A-Z][A-Za-z0-9][A-Za-z0-9 ._+\-/]{1,60})\)")
 _VULN_EXPLOIT_RE = re.compile(
     r"эксплуатаци(?:я|ю|и)\s+уязвимости\s+(.+?)(?=;\s|\.\s*$|\.\s+(?:[А-ЯЁA-Z]|\d)|\.\s*(?:[А-ЯЁA-Z]|$))",
     re.IGNORECASE)
@@ -167,7 +176,6 @@ def _patch_tail(desc: str, start: int) -> str:
     i = re.search(r"обновл|устраня(?:ется|ются)?|рекоменд", seg, re.I)
     if not i:
         return ""
-    j = start + i.start()
     rest = seg[i.start():]
     end_m = re.search(r"\.\s+(?:[А-ЯЁA-Z]|\d)|\.\s*$", rest)
     tail = rest[:end_m.start()] if end_m else rest
@@ -288,6 +296,31 @@ def _inflect_measure(text: str, addr_count: int, software: str = "") -> str:
 
 
 _ADDR_RE = re.compile(r'(?:(?:\d{1,3}\[\.\]){3}\d{1,3}|[a-z0-9][a-z0-9-]*(?:\[\.\][a-z0-9-]+)+)', re.I)
+_URL_RE = re.compile(
+    r"(?:https?|hxxps?)(?:\s*\[?:\]?\s*)?//[^\s;,]+", re.I)
+
+
+def _address_keys(text: str) -> set[str]:
+    """?????????? ??????? ??????; URL ????????? ????? ???????, ? ?? ??????? ??????? ????."""
+    flat = " ".join((text or "").split())
+    keys: set[str] = set()
+    spans: list[tuple[int, int]] = []
+    for match in _URL_RE.finditer(flat):
+        value = match.group(0).rstrip(".,;:)]}")
+        keys.add("url:" + value.casefold())
+        end = match.end()
+        # ??????? ?????? ????? ????????? ???? URL; ?? ??????? ??? ????????? ???????.
+        if value.endswith("/"):
+            tail = re.match(r"\s+([A-Za-z0-9][A-Za-z0-9._\[\]-]*)", flat[end:])
+            if tail:
+                end += tail.end()
+        spans.append((match.start(), end))
+    remainder = flat
+    for start, end in reversed(spans):
+        remainder = remainder[:start] + " " + remainder[end:]
+    for match in _ADDR_RE.finditer(remainder):
+        keys.add(match.group(0).casefold())
+    return keys
 _GROUP_FROM_DESC_RE = re.compile(
     r"(?:\u0433\u0440\u0443\u043f\u043f\u0438\u0440\u043e\u0432\u043a(?:\u0430|\u0438|\u043e\u0439)|"
     r"\u0433\u0440\u0443\u043f\u043f\u044b)\s+[\u00ab\"]?"
@@ -311,9 +344,6 @@ _NETWORK_MEASURE = "на уровне сетевых средств защиты
 _MONITORING_MEASURE = "произведена настройка правил системы мониторинга событий информационной безопасности согласно рекомендациям."
 _GITHUB_IOC_MEASURE = "принять меры по блокировке индикаторов компрометации, указанных в приложении;"
 _HASH_RE = re.compile(r"\b[0-9a-fA-F]{32,64}\b")
-_BANNED_URL_RE = re.compile(
-    r"автоматическ\w*\s+проверк\w*\s+указанн\w*\s+в\s+письмах\s*URL",
-    re.IGNORECASE)
 _SOURCE_GENERIC_RE = re.compile(
     r"(?:кроме\s+того,?\s*)?необходимо\s+(?:реализовать|принять|выполнить)"
     r"\s+меры(?:\s+защиты)?,?\s+указанные\s+в\s+пунктах?\s*[\d.\-–]*",
@@ -323,20 +353,6 @@ _SOURCE_CONTAMINATED_RE = re.compile(
     r"|Во\s+вложениях\s+указанных\s+писем"
     r"|После\s+запуска\s+пользователем)",
     re.IGNORECASE)
-_BDU_RULES: list[dict] | None = None
-
-
-def _load_bdu_measure_rules() -> list[dict]:
-    global _BDU_RULES
-    if _BDU_RULES is None:
-        path = Path(__file__).resolve().parent.parent.parent / "data" / "generator" / "bdu_measure_rules.json"
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-            _BDU_RULES = value if isinstance(value, list) else []
-        except Exception:
-            _BDU_RULES = []
-    return _BDU_RULES
-
 
 
 def _format_source_measure(text: str, addr_count: int, software: str = "") -> str:
@@ -448,6 +464,56 @@ def _source_measure_policy_enabled() -> bool:
     return os.environ.get("FSTEC_MEASURE_POLICY", "reference").strip().lower() == "source"
 
 
+def _llm_priority_enabled() -> bool:
+    return os.environ.get("FSTEC_LLM_PRIORITY", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _llm_intro_priority_enabled() -> bool:
+    return os.environ.get("FSTEC_LLM_INTRO_PRIORITY", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+_SOURCE_URL_MEASURE = (
+    "производится автоматическая проверка указанных в письмах URL-адресов "
+    "с использованием механизмов анализа ссылок;"
+)
+def _canonical_source_measure(text: str, addr_count: int, software: str = "") -> str | None:
+    """Приводит меры из письма к компактному виду ответа.
+
+    Возвращает None для неизвестной меры: такие меры сохраняются как есть,
+    чтобы не терять специфичные требования источника.
+    """
+    low = " ".join((text or "").lower().replace("ё", "е").split())
+    if not low:
+        return ""
+    if "компенсирующ" in low or "установить обновление" in low:
+        return ""
+    if "песочниц" in low or "sandbox" in low:
+        return _STANDARD_MEASURES[0]
+    if "антивирус" in low or "защита от почтовых угроз" in low:
+        return _STANDARD_MEASURES[1]
+    if "url-адрес" in low or "url" in low or "анализ ссылок" in low:
+        return _SOURCE_URL_MEASURE
+    if "имени домена" in low or "домена отправителя" in low:
+        return _STANDARD_MEASURES[2]
+    if "известных отправител" in low:
+        return _STANDARD_MEASURES[3]
+    if "не открывать" in low or "не загружать" in low:
+        return _STANDARD_MEASURES[4]
+    if "минимальными возможными привилегиями" in low:
+        return _STANDARD_MEASURES[5]
+    if "ограничен" in low and "обращ" in low:
+        return _NETWORK_MEASURE
+    if "настройк" in low and ("мониторинг" in low or "событ" in low):
+        return _MONITORING_MEASURE
+    if _measure_has_ioc(text):
+        return ""
+    return None
+
+
 def _apply_reference_measure_policy(plan: dict, blocks: list[dict], addr_count: int,
                                     library: list[dict] | None, letter_type: str,
                                     letter_number: str = "") -> None:
@@ -460,6 +526,8 @@ def _apply_reference_measure_policy(plan: dict, blocks: list[dict], addr_count: 
     extras = [m for block in plan_blocks for m in (block.get("measures") or [])
               if m.get("source") == "extra"]
     for idx, block in enumerate(plan_blocks):
+        if any(m.get("source") == "source" for m in (block.get("measures") or [])):
+            continue
         if idx < len(selected):
             block["measures"] = list(selected[idx])
             block["new_measures"] = []
@@ -478,7 +546,7 @@ def _apply_global_measure_policy(plan: dict, blocks: list[dict], letter_type: st
         source = source_by_number.get(block.get("number")) or {}
         description = source.get("description") or block.get("description") or ""
         flat = re.sub(r"\s+", " ", description).strip()
-        addresses = {m.group(0).lower() for m in _ADDR_RE.finditer(flat)}
+        addresses = _address_keys(flat)
         has_hashes = bool(_HASH_RE.search(flat))
         has_github = "GitHub" in flat
         measures = _source_measure_texts(source, block, len(addresses))
@@ -498,28 +566,6 @@ def _apply_global_measure_policy(plan: dict, blocks: list[dict], letter_type: st
         if (has_hashes or has_github) and not _source_covers(
                 measures, ("мониторинг",), ("настройк", "событ")):
             _append_unique(measures, _MONITORING_MEASURE)
-        bdu_ids = {
-            f"BDU:{match.group(1)}-{match.group(2)}"
-            for match in re.finditer(r"BDU[:\s-]*(\d{4})[-\s]*(\d+)", flat, re.IGNORECASE)
-        }
-        for rule in _load_bdu_measure_rules():
-            if not rule.get("active", True):
-                continue
-            rule_ids = {str(value).upper() for value in rule.get("bdu_ids") or []}
-            if not bdu_ids.intersection(rule_ids):
-                continue
-            required_software = [
-                str(value).lower() for value in rule.get("software_any") or [] if str(value).strip()
-            ]
-            if required_software and not any(value in flat.lower() for value in required_software):
-                continue
-            rule_type = str(rule.get("threat_type") or "").lower()
-            if rule_type and rule_type != str(block.get("threat_type") or "").lower():
-                continue
-            for measure in rule.get("measures") or []:
-                text = measure.get("text") if isinstance(measure, dict) else measure
-                if text:
-                    _append_unique(measures, str(text))
         if has_github:
             _append_unique(measures, _GITHUB_IOC_MEASURE)
         if not measures:
@@ -527,6 +573,424 @@ def _apply_global_measure_policy(plan: dict, blocks: list[dict], letter_type: st
         block["measures"] = [{"text": text, "source": "library", "measure_id": None}
                              for text in measures]
         block["new_measures"] = []
+
+
+
+
+def _live_bdu_measures_enabled() -> bool:
+    value = os.environ.get("FSTEC_BDU_MEASURES_LIVE", "1").strip().lower()
+    return value in {"1", "true", "yes", "on"} and LLM_PROVIDER == "vllm"
+
+
+def _live_bdu_cache_get(bdu_id: str) -> list[str] | None:
+    import time
+
+    cached = _LIVE_BDU_MEASURE_CACHE.get(bdu_id)
+    if not cached:
+        return None
+    saved_at, measures = cached
+    if time.monotonic() - saved_at > _LIVE_BDU_MEASURE_TTL_S:
+        _LIVE_BDU_MEASURE_CACHE.pop(bdu_id, None)
+        return None
+    return list(measures)
+
+
+def _live_bdu_cache_put(bdu_id: str, measures: list[str]) -> None:
+    import time
+
+    _LIVE_BDU_MEASURE_CACHE[bdu_id] = (time.monotonic(), list(measures))
+
+
+async def _apply_live_bdu_measures_async(vulns: list[dict]) -> None:
+    """Подтягивает меры BDU из ФСТЭК и нормализует их LLM на лету.
+
+    Ничего не записывает в БД и не использует сохранённую библиотеку мер.
+    """
+    if not _live_bdu_measures_enabled():
+        return
+    from security_service.bdu_measures import normalize_bdu_card
+
+    for vuln in vulns or []:
+        bdu_id = _clean_bdu(vuln.get("bdu_id"))
+        if not bdu_id:
+            continue
+        action = str(vuln.get("action_type") or "").strip().lower()
+        fixed = str(vuln.get("fixed_version") or vuln.get("target_version") or "").strip()
+        if action in {"skip", "verify"}:
+            continue
+        if action in {"", "update"} and fixed:
+            continue
+        if action not in {"", "update", "compensate"}:
+            continue
+        cached = _live_bdu_cache_get(bdu_id)
+        if cached is None:
+            try:
+                result = await normalize_bdu_card(bdu_id)
+            except Exception as exc:  # noqa: BLE001 - fallback на меры из письма/БД
+                logger.warning("BDU live normalization failed for %s: %s", bdu_id, exc)
+                continue
+            cached = list(result.get("measures") or [])
+            _live_bdu_cache_put(bdu_id, cached)
+        if not cached:
+            continue
+        text = "; ".join(item.rstrip(" ;.") for item in cached if item.strip()) + ";"
+        vuln["action_details"] = text
+        vuln["remediation"] = text
+
+
+def _apply_live_bdu_measures(vulns: list[dict]) -> None:
+    if not _live_bdu_measures_enabled():
+        return
+    import asyncio
+
+    async def run() -> None:
+        try:
+            await _apply_live_bdu_measures_async(vulns)
+        finally:
+            try:
+                from llm_service.provider import close_provider_clients
+
+                await close_provider_clients()
+            except Exception:  # noqa: BLE001 - пул LLM не должен ломать генерацию
+                logger.debug("closing LLM client after sync BDU normalization failed", exc_info=True)
+
+    try:
+        asyncio.run(run())
+    except RuntimeError as exc:
+        logger.warning("BDU live normalization skipped (running event loop): %s", exc)
+
+
+def _bdu_compensation_header(flat: str, bdu_id: str) -> str:
+    return ("В целях предотвращения возможности эксплуатации данной уязвимости "
+            "приняты следующие компенсирующие меры:")
+
+
+def _vulnerability_card_header(vuln: dict) -> str:
+    product = " ".join(str(vuln.get("software") or "").split()) or "программного обеспечения"
+    ids = []
+    cve = str(vuln.get("cve_id") or "").strip()
+    bdu = _clean_bdu(vuln.get("bdu_id")) or str(vuln.get("bdu_id") or "").strip()
+    if cve:
+        ids.append(cve)
+    if bdu:
+        ids.append(bdu if bdu.upper().startswith("BDU") else f"BDU:{bdu}")
+    score = _clean_cvss(vuln.get("cvss_score"))
+    version = str(vuln.get("cvss_version") or "").strip()
+    if score is not None and not version:
+        version = "3.1"
+    if score is not None:
+        ids.append(f"CVSS {version + ' — ' if version else ''}{score}")
+    severity = _SEV_RU.get(_clean_severity(vuln.get("severity")),
+                           str(vuln.get("severity") or "").strip())
+    if severity:
+        ids.append(f"уровень опасности — {severity}")
+    info = "; ".join(ids)
+    suffix = f" ({info})" if info else ""
+    return ("В целях предотвращения возможности реализации уязвимости "
+            f"{product}{suffix} приняты следующие компенсирующие меры:")
+
+
+_NOT_USED_STATUS = (
+    "Дополнительно сообщаем, что данное программное обеспечение не используется."
+)
+_VERIFY_STATUS = (
+    "Информация о применимости данной уязвимости требует проверки: "
+    "диапазон уязвимых версий и исправленная версия не заданы."
+)
+_CMDB_ERROR_STATUS = (
+    "Проверка применимости уязвимости не завершена: CMDB недоступна. "
+    "Требуется ручная проверка."
+)
+
+
+def _vulnerability_subject(vuln: dict) -> str:
+    desc = " ".join((vuln.get("description") or "").split())
+    match = re.search(
+        r"\bинструмент(?:а|ом|е)?\s+(.+?)\s+связан\w*\s+с\b",
+        desc, re.IGNORECASE,
+    )
+    if match:
+        subject = re.split(r"\s*\((?:BDU|CVE)\b", match.group(1), maxsplit=1,
+                           flags=re.IGNORECASE)[0]
+        subject = subject.strip(" ,.;")
+        if subject:
+            return f"инструмент {subject}"
+    return ""
+
+
+def _not_used_status(subject: str = "") -> str:
+    subject = " ".join((subject or "").split()).strip(" ,.;")
+    if not subject:
+        return _NOT_USED_STATUS
+    if subject.casefold().startswith(("для ", "по ", "с ")):
+        subject = "программное средство " + subject
+    plural = bool(re.search(r",|\sи\s", subject, re.IGNORECASE))
+    verb = "не используются" if plural else "не используется"
+    return f"Дополнительно сообщаем, что {subject} {verb}."
+
+
+def _vulnerability_display_subject(vuln: dict) -> str:
+    subject = _vulnerability_subject(vuln) or " ".join(
+        (vuln.get("software") or "").split()
+    )
+    subject = subject.strip(" ,.;")
+    if subject.casefold().startswith(("для ", "по ", "с ")):
+        subject = "программное средство " + subject
+    return subject
+
+
+def _vulnerability_update_label(vuln: dict, source_text: str = "") -> str:
+    candidates = [
+        " ".join((source_text or "").split()),
+        " ".join((vuln.get("description") or "").split()),
+    ]
+    for desc in candidates:
+        match = re.search(r"уязвимости\s+(.+?)\s+\(BDU", desc, re.IGNORECASE)
+        if match:
+            return match.group(1).strip(" ,.;")
+    return _vulnerability_display_subject(vuln)
+
+
+def _primary_compensation_measure(measures: list[str]) -> str:
+    """Prefer the SIEM measure when compensation is merged into the main block."""
+    for item in measures:
+        if "siem" in str(item).casefold():
+            return str(item)
+    return str(measures[0]) if measures else ""
+
+
+def _should_integrate_compensation(vuln: dict) -> bool:
+    action = str(vuln.get("action_type") or "").strip().lower()
+    current = " ".join((vuln.get("current_version") or "").split())
+    cmdb_match = vuln.get("cmdb_match")
+    installed = (cmdb_match is True or vuln.get("is_applicable") is True)
+    compensation = " ".join(
+        (vuln.get("action_details") or vuln.get("remediation") or "").split()
+    )
+    return bool(
+        current
+        and action == "skip"
+        and installed
+        and _has_specific_compensation(compensation)
+    )
+
+
+def _vulnerability_card_status(vuln: dict) -> tuple[str, bool]:
+    """Status line for a BDU card; bool means compensation measures are required."""
+    if not vuln:
+        return _VERIFY_STATUS, False
+    product = _vulnerability_display_subject(vuln) or "программного обеспечения"
+    cmdb_match = vuln.get("cmdb_match")
+    not_in_cmdb = cmdb_match is False or str(cmdb_match).strip().lower() in {
+        "false", "0", "no",
+    }
+    applicable = vuln.get("is_applicable")
+    applicable_bool = applicable if isinstance(applicable, bool) else None
+    installed = cmdb_match is True or applicable_bool is True
+    action = str(vuln.get("action_type") or "").strip().lower()
+    current = " ".join((vuln.get("current_version") or "").split())
+    fixed = _target_update_version(vuln)
+    compensation = " ".join(
+        (vuln.get("action_details") or vuln.get("remediation") or "").split()
+    )[:1200]
+    comp_items = (_compensation_items(compensation)
+                  if _has_specific_compensation(compensation) else [])
+
+    if (vuln.get("cmdb_error") or "").strip():
+        return _CMDB_ERROR_STATUS, False
+    if not installed and (not_in_cmdb or applicable_bool is False):
+        return _not_used_status(product), False
+    if action == "verify":
+        return _VERIFY_STATUS, False
+    if installed and comp_items and action == "skip":
+        return (f"В целях предотвращения возможности реализации данной уязвимости "
+                "приняты следующие компенсирующие меры:"), True
+    if action == "update" or (installed and fixed and not action):
+        if fixed:
+            return (f"В целях предотвращения возможности реализации данной уязвимости "
+                    f"ведутся работы по обновлению {product} до неуязвимой версии."), False
+        if comp_items:
+            return (f"В целях предотвращения возможности реализации данной уязвимости "
+                    f"обновление {product} невозможно, приняты следующие "
+                    "компенсирующие меры:"), True
+        return (f"В целях предотвращения возможности реализации данной уязвимости "
+                f"обновление {product} невозможно; требуется реализация "
+                "компенсирующих мер."), False
+    if action == "compensate":
+        if comp_items:
+            return (f"В целях предотвращения возможности реализации данной уязвимости "
+                    "приняты следующие компенсирующие меры:"), True
+        return (f"В целях предотвращения возможности реализации данной уязвимости "
+                "ведутся работы по реализации компенсирующих мер."), False
+    if installed:
+        if action == "skip" and current:
+            return (f"Используемая версия {product} {current} "
+                    "не подвержена данной уязвимости."), False
+        if action == "skip":
+            return "Используемая версия ПО не подвержена данной уязвимости.", False
+        return (f"В целях предотвращения возможности реализации данной уязвимости "
+                f"ведутся работы по обновлению {product} до неуязвимой версии."), False
+    if not_in_cmdb:
+        return _not_used_status(product), False
+    return _VERIFY_STATUS, False
+
+
+def _top_level_vulnerability_measures(vuln: dict) -> list[str]:
+    """Fallback: only the main clauses, never nested registry instructions."""
+    text = " ".join(
+        str(vuln.get(key) or "") for key in ("recommendation", "action_details", "remediation")
+    )
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return []
+    # Drop the detailed "1) 2) 3)" appendix; keep the top-level action before it.
+    text = re.split(r"\bследующим\s+образом\s*:?\s*1\)", text, maxsplit=1, flags=re.IGNORECASE)[0]
+    parts = re.split(r";|\n|(?<=[.!?])\s+", text)
+    result, seen = [], set()
+    for part in parts:
+        item = " ".join(part.split()).strip(" .,;:—-")
+        if not item or len(item) < 12:
+            continue
+        if re.search(r"\b\d+\)", item) or "HKEY_" in item or "REG_" in item:
+            continue
+        if item.lower().startswith(("использование рекомендаций", "обновление программного обеспечения")):
+            continue
+        key = _norm_measure(item)
+        if key and key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result[:5]
+
+
+def _vulnerability_card_measures(vuln: dict, cached: list[str] | None = None) -> list[str]:
+    """Use the normalized top-level BDU measures; raw recommendation is only fallback."""
+    candidates = [str(item) for item in (cached or []) if str(item).strip()]
+    if not candidates:
+        candidates = _top_level_vulnerability_measures(vuln)
+    result, seen = [], set()
+    for item in candidates:
+        text = " ".join(str(item).split()).strip(" .,;:—-")
+        if not text:
+            continue
+        key = _norm_measure(text)
+        if key and key not in seen:
+            seen.add(key)
+            result.append(text)
+    result = result[:5]
+    if result:
+        result[-1] = result[-1].rstrip(".;") + "."
+    return result
+
+
+async def _apply_live_bdu_block_measures_async(plan: dict, blocks: list[dict],
+                                               active_vulns: list[dict] | None = None) -> None:
+    """Add BDU measures and a complete vulnerability card to letter blocks."""
+    active_by_bdu = {
+        _clean_bdu(v.get("bdu_id")): v
+        for v in (active_vulns or [])
+        if _clean_bdu(v.get("bdu_id"))
+    }
+    if not active_by_bdu and not _live_bdu_measures_enabled():
+        return
+    if _live_bdu_measures_enabled():
+        from security_service.bdu_measures import normalize_bdu_card
+
+    source_by_number = {b.get("number"): b for b in (blocks or [])}
+    for block in plan.get("blocks") or []:
+        source = source_by_number.get(block.get("number")) or {}
+        flat = " ".join((source.get("description") or block.get("description") or "").split())
+        bdu_ids = {
+            f"BDU:{match.group(1)}-{match.group(2)}"
+            for match in re.finditer(r"BDU[:\s-]*(\d{4})[-\s]*(\d+)", flat, re.IGNORECASE)
+        }
+        if not bdu_ids:
+            continue
+        for bdu_id in sorted(bdu_ids):
+            vuln = active_by_bdu.get(_clean_bdu(bdu_id) or bdu_id)
+            if not vuln:
+                # Keep the live-BDU fallback for letters where the extractor
+                # found a BDU reference but no assessment row was created.
+                cached = _live_bdu_cache_get(bdu_id)
+                if cached is None and _live_bdu_measures_enabled():
+                    try:
+                        result = await normalize_bdu_card(bdu_id)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("BDU live normalization failed for %s: %s", bdu_id, exc)
+                    else:
+                        cached = list(result.get("measures") or [])
+                        _live_bdu_cache_put(bdu_id, cached)
+                if cached:
+                    block.setdefault("bdu_compensations", []).append({
+                        "bdu_id": bdu_id,
+                        "header": _bdu_compensation_header(flat, bdu_id),
+                        "measures": list(cached),
+                    })
+                continue
+            status, needs_compensation = _vulnerability_card_status(vuln)
+            if not needs_compensation:
+                block.setdefault("bdu_compensations", []).append({
+                    "bdu_id": bdu_id,
+                    "status": status,
+                })
+                continue
+            cached = _live_bdu_cache_get(bdu_id)
+            if cached is None and _live_bdu_measures_enabled():
+                try:
+                    result = await normalize_bdu_card(bdu_id)
+                except Exception as exc:  # noqa: BLE001 - keep block measures as fallback
+                    logger.warning("BDU live normalization failed for %s: %s", bdu_id, exc)
+                else:
+                    cached = list(result.get("measures") or [])
+                    _live_bdu_cache_put(bdu_id, cached)
+            measures = _vulnerability_card_measures(vuln, cached)
+            if not measures:
+                continue
+            if _should_integrate_compensation(vuln):
+                product = _vulnerability_update_label(vuln, flat)
+                block["bdu_header_suffix"] = (
+                    f"регулярно проводится обновление {product}. "
+                    "Дополнительно приняты следующие меры защиты:"
+                )
+                existing = {
+                    _norm_measure(str(item.get("text") or ""))
+                    for item in (block.get("measures") or [])
+                }
+                main_measure = _primary_compensation_measure(measures)
+                if _norm_measure(main_measure) not in existing:
+                    block.setdefault("measures", []).append({
+                        "text": main_measure,
+                        "source": "library",
+                        "measure_id": None,
+                    })
+                continue
+            block.setdefault("bdu_compensations", []).append({
+                "bdu_id": bdu_id,
+                "header": _vulnerability_card_header(vuln),
+                "measures": measures,
+            })
+
+
+def _apply_live_bdu_block_measures(plan: dict, blocks: list[dict],
+                                   active_vulns: list[dict] | None = None) -> None:
+    if not active_vulns and not _live_bdu_measures_enabled():
+        return
+    import asyncio
+
+    async def run() -> None:
+        try:
+            await _apply_live_bdu_block_measures_async(plan, blocks, active_vulns)
+        finally:
+            try:
+                from llm_service.provider import close_provider_clients
+
+                await close_provider_clients()
+            except Exception:  # noqa: BLE001
+                logger.debug("closing LLM client after sync BDU block normalization failed", exc_info=True)
+
+    try:
+        asyncio.run(run())
+    except RuntimeError as exc:
+        logger.warning("BDU block normalization skipped (running event loop): %s", exc)
 
 
 def _remove_empty_measure_blocks(plan: dict) -> None:
@@ -564,7 +1028,7 @@ def _normalize_block_address_forms(plan: dict, blocks: list[dict]) -> None:
     descriptions = {b.get("number"): b.get("description", "") for b in (blocks or [])}
     for block in plan.get("blocks") or []:
         description = descriptions.get(block.get("number")) or block.get("description") or ""
-        count = len({m.group(0).lower() for m in _ADDR_RE.finditer(description)})
+        count = len(_address_keys(description))
         if count == 0:
             continue
         for measure in block.get("measures") or []:
@@ -599,6 +1063,8 @@ def _extract_ctx(block: dict) -> dict:
     m = _MALWARE_DESC_RE.search(desc)
     if m:
         ctx["malware"] = m.group(1).strip()
+    if not ctx["malware"]:
+        ctx["malware"] = _malware_from_description(desc)
     dlow = desc.lower()
     if not ctx["malware"] and _MALWARE_DESC_RE2.search(desc) and "компрометаци" in dlow:
         ctx["malware"] = "типов «троян удаленного доступа»"
@@ -776,7 +1242,7 @@ def _explicit_measure_is_fragment(text: str) -> bool:
     low = " ".join((text or "").lower().replace("ё", "е").split())
     if not low:
         return True
-    if _BANNED_URL_RE.search(low) or _SOURCE_CONTAMINATED_RE.search(low):
+    if _SOURCE_CONTAMINATED_RE.search(low):
         return True
     if re.search(r"^(?:кроме\s+того,?\s*)?(?:необходимо\s+)?"
                  r"(?:реализовать|принять|выполнить)\s+меры(?:\s+защиты)?,?\s+указанн", low):
@@ -882,6 +1348,116 @@ def _reference_measure_plan(blocks: list[dict], library: list[dict] | None,
     return out
 
 
+_GENERAL_FROZEN_LETTERS = set()
+_STANDARD_URL_MEASURE = (
+    "осуществляется автоматическая проверка указанных в письмах URL-адресов, "
+    "содержащихся в электронных письмах, с использованием механизмов анализа ссылок;"
+)
+_STANDARD_SENDER_MEASURE = (
+    "организовано получение почтовых вложений только от известных отправителей, "
+    "ведется список адресов электронной почты органов (организаций), "
+    "с которыми осуществляется взаимодействие;"
+)
+_STANDARD_NETWORK_MEASURE = (
+    "на уровне сетевых средств защиты информации обеспечено ограничение "
+    "обращений к указанным адресам;"
+)
+_STANDARD_MONITORING_MEASURE = (
+    "произведена настройка правил системы мониторинга событий "
+    "информационной безопасности согласно рекомендациям;"
+)
+
+
+def _source_measure_profile(block: dict) -> dict:
+    text = " ".join([
+        block.get("description") or "",
+        *((block.get("explicit_measures") or [])),
+    ]).casefold()
+    core = ("1.1" in text and "1.7" in text) or sum(
+        1 for marker in ("вложен", "антивирус", "url", "домен", "инструктир", "привилег")
+        if marker in text
+    ) >= 3 or len(block.get("explicit_measures") or []) >= 4
+    sender = "известных отправителей" in text or core
+    network = "ограничен" in text and any(
+        marker in text for marker in ("адрес", "обращ", "черн", "бел"))
+    monitoring = any(marker in text for marker in (
+        "мониторинг", "коррел", "sha256", "md5"))
+    return {
+        "core": core,
+        "sender": sender,
+        "network": network,
+        "monitoring": monitoring,
+    }
+
+
+def _is_network_measure(text: str) -> bool:
+    low = re.sub(r"\s+", " ", str(text or "")).casefold()
+    return "сетевых средств" in low or (
+        "ограничен" in low and ("адрес" in low or "обращ" in low)
+    )
+
+
+def _source_allows_network_measure(source: dict) -> bool:
+    return any(_is_network_measure(text)
+               for text in (source.get("explicit_measures") or []))
+
+
+def _enforce_network_measure_policy(plan: dict, blocks: list[dict]) -> None:
+    """Keep a network restriction only when it is present in the source threat."""
+    source_by_number = {b.get("number"): b for b in (blocks or [])}
+    for block in plan.get("blocks") or []:
+        source = source_by_number.get(block.get("number")) or {}
+        if _source_allows_network_measure(source):
+            continue
+        block["measures"] = [
+            measure for measure in (block.get("measures") or [])
+            if not _is_network_measure(str(measure.get("text") or ""))
+        ]
+
+
+def _apply_general_measure_policy(plan: dict, blocks: list[dict],
+                                  library: list[dict] | None, addr_count: int,
+                                  letter_number: str) -> None:
+    key = (letter_number or "").replace("/", "-").strip()
+    if key in _GENERAL_FROZEN_LETTERS:
+        return
+    core = _core_texts(library)
+    source_by_number = {b.get("number"): b for b in (blocks or [])}
+    for block in plan.get("blocks") or []:
+        source = source_by_number.get(block.get("number")) or block
+        profile = _source_measure_profile(source)
+        if not any((profile["core"], profile["network"], profile["monitoring"])):
+            continue
+        if profile["core"]:
+            body = [
+                text for text in core
+                if "сетевых средств" not in text.casefold()
+                and "мониторинга" not in text.casefold()
+            ]
+            if not any("URL-адрес" in text for text in body):
+                body.insert(min(2, len(body)), _STANDARD_URL_MEASURE)
+            if profile["sender"] and not any(
+                    "известных отправителей" in text for text in body):
+                body.insert(min(4, len(body)), _STANDARD_SENDER_MEASURE)
+            if profile["network"]:
+                body.append(_STANDARD_NETWORK_MEASURE)
+            if profile["monitoring"]:
+                body.append(_STANDARD_MONITORING_MEASURE)
+        else:
+            body = []
+            if profile["network"]:
+                body.append(_STANDARD_NETWORK_MEASURE)
+            if profile["monitoring"]:
+                body.append(_STANDARD_MONITORING_MEASURE)
+        if not body:
+            body = [_STANDARD_NETWORK_MEASURE] if profile["network"] else []
+        block["measures"] = [
+            {"text": text, "source": "library", "measure_id": None}
+            for text in body
+        ]
+        block["new_measures"] = []
+
+
 _LETTER_MEASURES: dict | None = None
 
 
@@ -928,38 +1504,6 @@ def _load_letter_headers() -> dict:
         except Exception:  # noqa: BLE001
             _LETTER_HEADERS = {}
     return _LETTER_HEADERS
-
-
-_VULN_TAILS: dict | None = None
-
-
-def _load_vuln_tails() -> dict:
-    global _VULN_TAILS
-    if _VULN_TAILS is None:
-        from pathlib import Path
-        path = Path(__file__).resolve().parent.parent.parent / "data" / "generator" / "letter_vuln_tails.json"
-        try:
-            import json
-            _VULN_TAILS = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            _VULN_TAILS = {}
-    return _VULN_TAILS
-
-
-_VULN_INSERTS: dict | None = None
-
-
-def _load_vuln_inserts() -> dict:
-    global _VULN_INSERTS
-    if _VULN_INSERTS is None:
-        from pathlib import Path
-        path = Path(__file__).resolve().parent.parent.parent / "data" / "generator" / "letter_vuln_inserts.json"
-        try:
-            import json
-            _VULN_INSERTS = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            _VULN_INSERTS = {}
-    return _VULN_INSERTS
 
 
 _LETTER_INTROS: dict | None = None
@@ -1019,27 +1563,6 @@ def _use_llm_for_reply(letter_type: str, letter_number: str) -> bool:
     return True
 
 
-_VULN_STATUS: dict | None = None
-
-
-def _load_vuln_status_overrides() -> dict:
-    global _VULN_STATUS
-    if _VULN_STATUS is None:
-        from pathlib import Path
-        path = Path(__file__).resolve().parent.parent.parent / "data" / "generator" / "vuln_status_overrides.json"
-        try:
-            import json
-            _VULN_STATUS = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            _VULN_STATUS = {}
-    return _VULN_STATUS
-
-
-def _norm_bdu_key(value) -> str:
-    m = re.search(r"BDU[:\s-]*(\d{4})[-\s]*(\d+)", str(value or ""), re.I)
-    return f"BDU:{m.group(1)}-{m.group(2)}" if m else ""
-
-
 def _norm_cve_key(value) -> str:
     m = re.search(r"CVE[-\s]*(\d{4})[-\s]*(\d+)", str(value or ""), re.I)
     return f"CVE-{m.group(1)}-{m.group(2)}" if m else ""
@@ -1094,6 +1617,55 @@ def _short_clause(text: str, limit: int = 260) -> str:
     return t
 
 
+def _malware_from_description(desc: str) -> str:
+    for pattern in (_MALWARE_TYPE_RE, _MALWARE_PAREN_RE):
+        match = pattern.search(desc)
+        if match:
+            return " ".join(part for part in match.groups() if part)
+    for match in _MALWARE_PAREN_NAME_RE.finditer(desc):
+        context = desc[max(0, match.start() - 220):match.start()].lower()
+        if not any(word in context for word in ("обеспечен", "впо", "тип", "вредонос")):
+            continue
+        angle = re.search(r"<[^>]+>", context)
+        return (f"{angle.group(0)} " if angle else "") + match.group(1)
+    return ""
+
+
+_BDU_PAREN_RE = re.compile(r"\((BDU[:\s-]*\d{4}[-\s]*\d+[^)]*)\)", re.IGNORECASE)
+
+
+def _bdu_vulnerability_intro(desc: str) -> str:
+    """Build the vulnerability clause from all BDU references in a source block."""
+    matches = list(_BDU_PAREN_RE.finditer(desc or ""))
+    if not matches:
+        return ""
+    phrases: list[str] = []
+    previous_end = 0
+    for match in matches:
+        segment = desc[previous_end:match.start()]
+        phrase_match = re.search(
+            r"эксплуатаци\w*\s+(.+?)\s*$", segment, re.IGNORECASE,
+        )
+        if not phrase_match:
+            previous_end = match.end()
+            continue
+        phrase = " ".join(phrase_match.group(1).split()).strip(" .,;:")
+        if not phrase:
+            previous_end = match.end()
+            continue
+        if phrases and phrase.casefold().startswith("уязвимости "):
+            phrase = phrase[len("уязвимости "):]
+        phrases.append(f"{phrase} ({match.group(1)})")
+        previous_end = match.end()
+    if not phrases:
+        return ""
+    if len(phrases) == 1:
+        return ("деятельностью хакерских группировок, реализующих целевые "
+                "компьютерные атаки путем эксплуатации " + phrases[0])
+    return ("деятельностью хакерских группировок, эксплуатирующих "
+            + " и ".join(phrases))
+
+
 def _template_intro(src: dict) -> str:
     """Единый шаблон вступления для hacker-блоков (максимальное переиспользование).
 
@@ -1101,12 +1673,26 @@ def _template_intro(src: dict) -> str:
     «В целях предотвращения … связанных с {intro}, приняты следующие меры защиты:».
     """
     desc = " ".join((src.get("description") or "").split())
+    bdu_intro = _bdu_vulnerability_intro(desc)
+    if bdu_intro:
+        return bdu_intro
     group = (" ".join((src.get("group_name") or "").split())
              or _group_from_description(desc))
     theme = " ".join((src.get("theme") or "").split())
     archive = " ".join((src.get("archive_name") or "").split())
     exe = " ".join((src.get("exe_name") or "").split())
+    if not archive or not exe:
+        from shared.extractor.letter_analyzer import _attachment_fields
+        parsed_archive, parsed_exe = _attachment_fields(desc)
+        archive = archive or parsed_archive
+        exe = exe or parsed_exe
     malware = " ".join((src.get("malware_type") or "").split())
+    from shared.extractor.letter_analyzer import _malware_phrase
+    parsed_malware = _malware_phrase(desc)
+    if parsed_malware and (not malware or len(parsed_malware) > len(malware)):
+        malware = parsed_malware
+    if not malware:
+        malware = _malware_from_description(desc)
     ttype = (src.get("threat_type") or "").strip().lower().replace("-", "_")
     desc_low = desc.lower()
     has_malware = bool(malware) or "вредоносн" in desc_low
@@ -1145,8 +1731,15 @@ def _template_intro(src: dict) -> str:
     if kind == "compromise" and has_malware:
         kind = "malware"
 
+    block_number = int(src.get("number") or 0)
+    phishing_rank = int(src.get("phishing_rank") or 0)
+    repeated_phishing = (phishing_rank > 1 if phishing_rank
+                         else block_number > 1)
+    compact_phishing = kind == "phishing" and repeated_phishing
     if kind == "phishing":
         activity = "фишинговые рассылки электронных писем"
+        if compact_phishing and theme:
+            activity += f" с тематикой «{theme}»"
         verb = "осуществляющей" if singular else "осуществляющих"
     elif kind == "clickfix":
         activity = "атаки с использованием метода «ClickFix»"
@@ -1158,8 +1751,10 @@ def _template_intro(src: dict) -> str:
                     else "эксплуатацию уязвимостей программного обеспечения")
         verb = "осуществляющей" if singular else "осуществляющих"
     elif kind == "malware":
-        m = re.search(r"вредоносн\w*\s+программн\w*\s+обеспечени\w*\s+(?:типов|типа)\s+([^.]*)",
-                      desc, re.I)
+        m = re.search(
+            r"вредоносн\w*\s+программн\w*\s+обеспечени\w*\s+(?:типов|типа)\s+"
+            r"(.+?)(?:\.\s+(?:[А-ЯЁA-Z]|$)|\.$|$)",
+            desc, re.I)
         mt = _short_clause(m.group(1), 180) if m else malware
         if "эксплуатац" in desc_low and not mt:
             m2 = re.search(r"эксплуатаци[яи]\s+(.+)$", desc)
@@ -1180,28 +1775,62 @@ def _template_intro(src: dict) -> str:
         activity = "целевые компьютерные атаки"
         verb = "реализующей" if singular else "реализующих"
 
-    ioc = ""
-    if not _source_measure_policy_enabled():
-        ioc_match = re.search(r'(?:[a-z0-9-]+\[\.\])+(?:[a-z]{2,}|\d{1,3})', desc, re.I)
-        if ioc_match:
-            ioc = ioc_match.group(0)
     details = []
     if "\u0441\u0442\u0438\u043b\u0435\u0440" in desc_low and "\u0441\u0442\u0438\u043b\u0435\u0440" not in malware.lower():
         malware = f"{malware} / \u0441\u0442\u0438\u043b\u0435\u0440" if malware else "\u0441\u0442\u0438\u043b\u0435\u0440"
+    malware = malware.replace("; ", ", ").strip()
     if theme:
         details.append(f"\u0442\u0435\u043c\u0430 \u2014 \u00ab{theme}\u00bb")
     if archive:
-        details.append(f"\u0432\u043b\u043e\u0436\u0435\u043d\u0438\u0435\u043c \u044f\u0432\u043b\u044f\u0435\u0442\u0441\u044f \u0444\u0430\u0439\u043b-\u044f\u0440\u043b\u044b\u043a \u00ab{archive}\u00bb")
+        lower_archive = archive.lower()
+        if lower_archive.endswith(".lnk"):
+            details.append(f"вложением является файл-ярлык «{archive}»")
+        elif lower_archive.endswith((".7z", ".zip", ".rar", ".r11", ".r14",
+                                     ".tar", ".gz", ".bz2")):
+            attachment = f"вложением является архив «{archive}»"
+            if exe and exe != archive:
+                if exe.startswith("."):
+                    attachment += f", содержащий файл с расширением «{exe}»"
+                else:
+                    attachment += f", содержащий файл «{exe}»"
+            details.append(attachment)
+        else:
+            attachment = f"вложением является файл «{archive}»"
+            if exe and exe != archive:
+                if exe.startswith("."):
+                    attachment += f", содержащий файл с расширением «{exe}»"
+                else:
+                    attachment += f", содержащий файл «{exe}»"
+            details.append(attachment)
     elif exe:
-        details.append(f"\u0432\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u2014 \u00ab{exe}\u00bb")
-    if malware:
-        details.append(f"\u0442\u0438\u043f \u0412\u041f\u041e \u2014 {malware}")
-    if ioc:
-        details.append(f"\u0441\u0435\u0442\u0435\u0432\u043e\u0439 \u0438\u043d\u0434\u0438\u043a\u0430\u0442\u043e\u0440 \u2014 {ioc}")
+        if exe.startswith("."):
+            number = "расширениями" if "," in exe else "расширением"
+            details.append(f"вложением являются файлы с {number} «{exe}»")
+        else:
+            details.append(f"вложением является файл «{exe}»")
+    if malware and kind != "malware":
+        if malware.lower().startswith("по "):
+            details.append(malware)
+        else:
+            details.append(f"\u0442\u0438\u043f \u0412\u041f\u041e \u2014 {malware}")
+    if compact_phishing:
+        details = []
     tail = ("; ".join(details)) if details else ""
     if tail:
         tail = ", " + tail
     return f"{subject}, {verb} {activity}{tail}"
+
+
+_HEADER_NETWORK_DETAIL_RE = re.compile(
+    r"\s*[,;]\s*(?:\u0441\u0435\u0442\u0435\u0432\u043e\u0439|\u0441\u0435\u0442\u0435\u0432\u044b\u0435)"
+    r"\s+\u0438\u043d\u0434\u0438\u043a\u0430\u0442\u043e\u0440(?:\u044b)?\s*[:\u2014-]\s*[^;]+",
+    re.IGNORECASE,
+)
+
+
+def _strip_header_network_details(text: str) -> str:
+    cleaned = _HEADER_NETWORK_DETAIL_RE.sub("", text or "")
+    return " ".join(cleaned.split()).rstrip(" ,;")
 
 
 def _apply_llm_plan(llm_plan: dict | None, lib_by_id: dict, frag_by_key: dict,
@@ -1232,6 +1861,12 @@ def _apply_llm_plan(llm_plan: dict | None, lib_by_id: dict, frag_by_key: dict,
             intro = _render_fragment(frag["template"], _extract_ctx(src)) if frag else ""
             if not intro:
                 intro = "реализуемыми угрозами безопасности информации"
+            frag_key = frag["key"] if frag and intro else ""
+        elif _llm_intro_priority_enabled():
+            frag = frag_by_key.get(entry.get("fragment_id") or "") if entry.get("fragment_id") else None
+            intro = _render_fragment(frag["template"], _extract_ctx(src)) if frag else ""
+            if not intro:
+                intro = _template_intro(src)
             frag_key = frag["key"] if frag and intro else ""
         else:
             intro = _template_intro(src)
@@ -1276,7 +1911,7 @@ def _apply_llm_plan(llm_plan: dict | None, lib_by_id: dict, frag_by_key: dict,
             measures = kept
             new_measures = [nm for nm in new_measures
                             if nm.get("measure_id") in kept_ids or nm["source"] == "new"][:1]
-        elif core and letter_type == "hacker":
+        elif core and letter_type == "hacker" and not _llm_priority_enabled():
             # Hacker-письма: распределение мер как в эталонах (полный core для
             # фишинговых блоков и сокращённый набор для повторов), а не полный
             # core в каждом блоке. Иначе модель раздувает письмо повторами.
@@ -1466,14 +2101,35 @@ def _finalize_plan(llm_plan: dict | None, db, letter_type: str, blocks: list[dic
             }]}
 
     explicit = {}
+    from shared.extractor.letter_analyzer import (_build_measure_catalog,
+                                                  _expand_measure_refs)
+    all_descriptions = "\n".join((b.get("description") or "") for b in (blocks or []))
+    measure_catalog = _build_measure_catalog(all_descriptions)
     for b in blocks:
         values = [m.strip() for m in (b.get("explicit_measures") or []) if m.strip()]
-        if not values or any(_explicit_measure_is_fragment(m) for m in values):
+        if not values:
             continue
-        explicit[b.get("id")] = [
-            _inflect_measure(m, addr_count, (b.get("software") or "").strip())
-            for m in values
-        ]
+        description = b.get("description") or ""
+        if measure_catalog:
+            values = _expand_measure_refs(values, description, measure_catalog)
+        block_addr_count = len(_address_keys(description)) or addr_count
+        prepared: list[str] = []
+        seen_measures: set[str] = set()
+        for value in values:
+            if _explicit_measure_is_fragment(value):
+                continue
+            canonical = _canonical_source_measure(
+                value, block_addr_count, (b.get("software") or "").strip())
+            text = (canonical if canonical is not None
+                    else _inflect_measure(value, block_addr_count,
+                                          (b.get("software") or "").strip()))
+            text = " ".join((text or "").split()).strip(" ;.")
+            key = text.casefold()
+            if text and key not in seen_measures:
+                seen_measures.add(key)
+                prepared.append(text)
+        if prepared:
+            explicit[b.get("id")] = prepared
 
     plan = None
     if llm_plan:
@@ -1491,13 +2147,13 @@ def _finalize_plan(llm_plan: dict | None, db, letter_type: str, blocks: list[dic
         _backfill_empty_blocks(plan, letter_type, addr_count, library,
                                letter_number=letter_number)
 
-    if explicit:
+    if explicit and not (_llm_priority_enabled() and plan.get("llm")):
         for blk in plan.get("blocks") or []:
             chosen = explicit.get(blk.get("threat_id"))
             if chosen is None:
                 chosen = explicit.get(blk.get("number"))
             if chosen is not None:
-                blk["measures"] = [{"text": t, "source": "library", "measure_id": None}
+                blk["measures"] = [{"text": t, "source": "source", "measure_id": None}
                                    for t in chosen]
                 blk["new_measures"] = []
     return plan
@@ -1651,6 +2307,69 @@ def _status_subject(software: str, product: str) -> str:
 
 
 
+def _has_specific_compensation(text: str) -> bool:
+    low = (text or "").lower()
+    generic = (
+        "использование рекомендаций производителя",
+        "обновление программного обеспечения",
+        "установка обновлений",
+        "обновить по",
+        "манипулирование",
+        "исчерпание ресурсов",
+        "подмена при взаимодействии",
+        "нарушение авторизации",
+    )
+    if not low.strip() or any(marker in low for marker in generic):
+        return False
+    return bool(re.search(
+        r"\b(?:использ|производ|произвест|созда|огранич|настро|осуществ|примен|"
+        r"включ|запрет|блокир|установ|обнов|провер|вести|организ|обеспеч|"
+        r"задейств|выполн|измен|удал|отключ|перенаправ|регистрац|контрол)",
+        low))
+
+
+def _compensation_items(text: str) -> list[str]:
+    items: list[str] = []
+    for raw in re.split(r";+|\n+", text or ""):
+        item = " ".join(raw.split()).strip(" .,;:")
+        item = re.sub(
+            r"\s*\.?\s*Использование рекомендаций:?\.?\s*$", "",
+            item, flags=re.IGNORECASE).strip(" .,;:")
+        if not item:
+            continue
+        low = item.casefold()
+        if low.startswith("использование рекомендаций"):
+            continue
+        if low in {
+            "применены рекомендации производителя",
+            "использование рекомендаций производителя",
+            "обновление программного обеспечения",
+            "установка обновлений",
+        }:
+            continue
+        if item.casefold() not in {existing.casefold() for existing in items}:
+            items.append(item)
+    for index, item in enumerate(items):
+        items[index] = item + ("." if index == len(items) - 1 else ";")
+    return items
+
+
+def _target_update_version(v: dict) -> str:
+    for key in ("fixed_version", "target_version"):
+        value = " ".join(str(v.get(key) or "").split()).strip(" ,;")
+        if value:
+            return value
+    text = " ".join(str(v.get(key) or "") for key in (
+        "action_details", "recommendation", "description"))
+    for pattern in (
+            r"(?:до|на)\s+верси[ия]\s+([0-9][0-9A-Za-z._-]*)",
+            r"(?:обнов\w*|update)\s+до\s+([0-9][0-9A-Za-z._-]*)"):
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).rstrip(".,;")
+    return ""
+
+
 def _vuln_paragraph(v: dict, letter_number: str = "") -> list[str]:
     """Абзац про уязвимость по образцу эталона: описание + один статус/действие."""
     desc = re.sub(r"\s+", " ", (v.get("description") or "")).strip().rstrip(".")
@@ -1699,53 +2418,197 @@ def _vuln_paragraph(v: dict, letter_number: str = "") -> list[str]:
         first += "."
 
     status = ""
-    override = _load_vuln_status_overrides().get(letter_number or "", {}).get(
-        _norm_bdu_key(v.get("bdu_id")))
-    if override:
-        return [f"{first} {' '.join(override.split())}"]
     cmdb_match = v.get("cmdb_match")
     not_in_cmdb = cmdb_match is False or str(cmdb_match).strip().lower() in {"false", "0", "no"}
     applicable = v.get("is_applicable")
     applicable_bool = (applicable if isinstance(applicable, bool)
                        else None)
     action = (v.get("action_type") or "").strip().lower()
+    compensation = " ".join((v.get("action_details") or v.get("remediation") or "").split())[:1200]
     dlow = desc.lower()
-    if not (cmdb_match is True or applicable_bool is True):
+    installed = cmdb_match is True or applicable_bool is True
+    if not installed:
         for marker in ("не применяется", "не используется", "не подвержена"):
             if marker in dlow:
-                start = dlow.find(marker)
-                chunk = desc[start:start + 240].split(".", 1)[0].strip().rstrip(",")
-                status = chunk.capitalize() + "."
+                status = _not_used_status(_vulnerability_subject(v))
                 break
+    comp_items = (_compensation_items(compensation)
+                  if _has_specific_compensation(compensation) else [])
+    show_comp = False
     if not status:
-        if applicable_bool is True:
+        if installed:
             recommendation = (v.get("recommendation") or "").lower()
-            if action in ("update", "compensate") or "обнов" in recommendation:
-                fixed = " ".join((v.get("fixed_version") or v.get("target_version") or "").split())
-                status = (f"В целях предотвращения возможности эксплуатации данной уязвимости "
+            fixed = _target_update_version(v)
+            update_unavailable = action == "update" and not fixed
+            can_update = (action == "update" and bool(fixed)) or (
+                not action and ("обнов" in recommendation or bool(fixed)))
+            if action == "verify":
+                status = ("Информация о применимости данной уязвимости требует проверки: "
+                          "диапазон уязвимых версий и исправленная версия не заданы.")
+            elif action == "compensate" or (update_unavailable and comp_items) or (
+                    action == "skip" and comp_items):
+                if comp_items:
+                    if update_unavailable:
+                        status = (f"В целях предотвращения возможности реализации данной "
+                                  "уязвимости обновление невозможно, приняты следующие "
+                                  "компенсирующие меры:")
+                    else:
+                        status = (f"В целях предотвращения возможности реализации данной "
+                                  "уязвимости приняты следующие компенсирующие меры:")
+                    show_comp = True
+                else:
+                    status = (f"В целях предотвращения возможности реализации данной уязвимости "
+                              "ведутся работы по реализации компенсирующих мер.")
+            elif update_unavailable:
+                status = (f"В целях предотвращения возможности реализации данной уязвимости "
+                          f"обновление {product} невозможно; требуется реализация "
+                          "компенсирующих мер.")
+            elif can_update:
+                status = (f"В целях предотвращения возможности реализации данной уязвимости "
                           f"ведутся работы по обновлению {product} до "
-                          f"{fixed or 'неуязвимой версии'}.")
+                          "неуязвимой версии.")
+            elif comp_items:
+                status = (f"В целях предотвращения возможности реализации данной уязвимости "
+                          "приняты следующие компенсирующие меры:")
+                show_comp = True
+            elif action == "skip" and v.get("current_version"):
+                current = " ".join((v.get("current_version") or "").split())
+                status = (f"Используемая версия {product} {current} "
+                          "не подвержена данной уязвимости.")
             elif not_in_cmdb and action == "skip":
                 current = " ".join((v.get("current_version") or "").split())
-                status = (f"ПО <{product}> {current} обнаружено в GLPI (список ПО); "
-                          "установленная версия вне уязвимого диапазона, обновление не требуется.")
+                status = (f"По <{product}> {current} отсутствует в GLPI (список ПО); "
+                          "остальные данные об уязвимости отсутствуют, требуется их проверка.")
             elif not_in_cmdb:
                 status = (f"Производится регулярное обновление {product} "
                           "с предварительным тестированием обновлений.")
-            else:
+            elif action == "skip":
                 status = ("Используемая версия ПО не подвержена данной уязвимости.")
         elif applicable_bool is False and not_in_cmdb:
-            status = f"{_status_subject(software, product)} не используется."
+            status = _not_used_status(_vulnerability_subject(v))
         elif not_in_cmdb:
-            status = f"{_status_subject(software, product)} не используется."
+            status = _not_used_status(_vulnerability_subject(v))
+        elif action == "update" and not _target_update_version(v):
+            if comp_items:
+                status = (f"В целях предотвращения возможности реализации данной уязвимости "
+                          f"обновление {product} невозможно, приняты следующие "
+                          "компенсирующие меры:")
+                show_comp = True
+            else:
+                status = (f"В целях предотвращения возможности реализации данной уязвимости "
+                          f"обновление {product} невозможно; требуется реализация "
+                          "компенсирующих мер.")
         elif action == "update":
             status = ("В целях предотвращения возможности эксплуатации данной уязвимости "
                       f"ведутся работы по обновлению {product} до неуязвимой версии.")
     if not status:
         status = ("В целях предотвращения возможности эксплуатации данной уязвимости "
                   f"ведутся работы по обновлению {product} до неуязвимой версии.")
-    return [f"{first} {status}"]
+    result = [f"{first} {status}"]
+    if show_comp:
+        result.extend(comp_items)
+    source_measures = v.get("source_measures") or []
+    existing = _norm_measure(" ".join(result))
+    for measure in source_measures:
+        text = " ".join(str(measure or "").split()).strip(" .,;:")
+        if not text:
+            continue
+        if _norm_measure(text) in existing:
+            continue
+        text = _inflect_measure(text, 1, product)
+        if _norm_measure(text) in existing:
+            continue
+        result.append("- " + text + ("" if text.endswith((".", ";")) else ";"))
+        existing += " " + _norm_measure(text)
+    return result
 
+
+
+_VULN_SOURCE_MARKER_RE = re.compile(
+    r"(в случае невозможности|рекомендуется принять|компенсир|огранич|запрет|"
+    r"использовать|настро|обеспеч|минимизир|отключ|сегмент|монитор|"
+    r"системы обнаружения|произвести|создать|замкнут|обновить)",
+    re.IGNORECASE,
+)
+
+
+def _vulnerability_source_measures(text: str, bdu_id: str) -> list[str]:
+    """Извлекает только компенсирующие меры конкретной BDU-уязвимости."""
+    if not text or not bdu_id:
+        return []
+    sections = re.split(r"(?m)(?=^\s*\d+\.\s+)", text)
+    section = next((item for item in sections if bdu_id in item), "")
+    if not section:
+        pos = text.find(bdu_id)
+        if pos < 0:
+            return []
+        section = text[max(0, pos - 1400):pos + 2200]
+    flat = re.sub(r"\s+", " ", section.replace("\xa0", " ")).strip()
+    sentences = re.split(r"(?<=[.!?;:])\s+", flat)
+    blocked = re.compile(
+        r"(^\s*(?:\d+\.\s*)?Уязвимост|Эксплуатация уязвимости|Анализ сведений|"
+        r"В соответствии с подпунктом|На №|ФСТЭК РОССИИ|"
+        r"О мерах по повышению|просим обратить внимание|"
+        r"может позволить нарушителю|связанная с)",
+        re.IGNORECASE,
+    )
+    result: list[str] = []
+    seen: set[str] = set()
+    for sentence in sentences:
+        value = " ".join(sentence.split()).strip(" .;:")
+        if not value or len(value) < 15:
+            continue
+        low = value.lower()
+        if "http://" in low or "https://" in low or low.startswith("www."):
+            continue
+        if blocked.search(value) or _measure_has_ioc(value):
+            continue
+        if not _VULN_SOURCE_MARKER_RE.search(value):
+            continue
+        if re.search(r"(принять|принимаются)\s+следующие\s+"
+                     r"(компенсирующие\s+)?меры\s*:?$", low):
+            continue
+        if low.endswith(("меры:", "мер:")):
+            continue
+        if (re.search(r"(рекомендуется|необходимо)\s+(установить|осуществить|"
+                      r"обновить)|обновить\s+пакет|установить\s+обновление|"
+                      r"обновление\s+программного\s+обеспечения", low)
+                and not re.search(r"(в случае невозможности|компенсир|огранич|"
+                                  r"запрет|отключ|минимиз|использовать|настро|"
+                                  r"сегмент|монитор)", low)):
+            continue
+        value = re.sub(r"^\d{1,3}\s+(?=[а-яёa-z])", "", value, count=1)
+        key = _norm_measure(value)
+        if key and key not in seen:
+            seen.add(key)
+            result.append(value[:1200])
+    return result[:8]
+
+
+def _attach_vulnerability_source_fallbacks(db, doc_id: int, vulns: list[dict]) -> None:
+    if not vulns:
+        return
+    from shared.models import Document
+
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    text = ((doc.all_text if doc else "") or (doc.original_text if doc else "") or "")
+    if not text:
+        return
+    for vuln in vulns:
+        action = str(vuln.get("action_type") or "").strip().lower()
+        if action not in {"update", "compensate"}:
+            continue
+        if action == "update" and _target_update_version(vuln):
+            continue
+        if _has_specific_compensation(
+                " ".join((vuln.get("action_details") or vuln.get("remediation") or "").split())):
+            continue
+        bdu_id = _clean_bdu(vuln.get("bdu_id"))
+        if not bdu_id:
+            continue
+        measures = _vulnerability_source_measures(text, bdu_id)
+        if measures:
+            vuln["source_measures"] = measures
 
 def _vuln_block_lines(blk: dict, sender: str = "") -> list[str]:
     """Один абзац про уязвимость (как в эталоне), без перечня мер и CVE."""
@@ -1765,8 +2628,6 @@ def render_reply(*, plan: dict, templates: dict | None = None, letter_number: st
         "{{num}}", letter_number or "").replace("{{date}}", _norm_date(letter_date) or "")
     intro = (skel.get("intro") or "Сообщаем о принятых мерах по повышению защищенности инфраструктуры {{org}}.").replace(
         "{{org}}", org_name)
-    outro = (skel.get("outro") or "").replace(
-        "{{signer}}", skel.get("signer") or "")
     block_tpl = skel.get("block_template") or "{{n}}. В целях предотвращения возможности реализации угроз безопасности информации, связанных с {{intro}}, приняты следующие меры защиты:"
 
     lines = [header, "", intro]
@@ -1776,6 +2637,8 @@ def render_reply(*, plan: dict, templates: dict | None = None, letter_number: st
         plan_vulns = [b for b in (plan.get("blocks") or [])
                       if b.get("threat_type") == "vulnerability"]
         vulns = active_vulns or plan_vulns
+        vulns = [v for v in vulns
+                 if v.get("bdu_id") or v.get("cve_id") or v.get("software")]
         if vulns:
             # NVD-дубли уже обогащённой BDU-записи (тот же CVE) не выводим дважды.
             bdu_cves = {_norm_cve_key(v.get("cve_id"))
@@ -1783,27 +2646,16 @@ def render_reply(*, plan: dict, templates: dict | None = None, letter_number: st
             vulns = [v for v in vulns
                      if v.get("bdu_id")
                      or _norm_cve_key(v.get("cve_id")) not in bdu_cves]
-        inserts_bdu, inserts_cve = {}, {}
-        for item in _load_vuln_inserts().get(key_num, []):
-            bdu_key = _norm_bdu_key(item.get("after_bdu"))
-            cve_key = _norm_cve_key(item.get("after_cve"))
-            if bdu_key:
-                inserts_bdu.setdefault(bdu_key, []).extend(item.get("lines") or [])
-            if cve_key:
-                inserts_cve.setdefault(cve_key, []).extend(item.get("lines") or [])
         if vulns:
             for idx, v in enumerate(vulns, 1):
-                paragraph = _vuln_paragraph(v, key_num)[0]
+                parts = _vuln_paragraph(v, key_num)
                 if idx > 1:
                     lines.append("")
-                lines.append(f"{idx}. {paragraph}")
-                lines.extend(inserts_bdu.get(_norm_bdu_key(v.get("bdu_id")), []))
-                lines.extend(inserts_cve.get(_norm_cve_key(v.get("cve_id")), []))
+                lines.append(parts[0])
+                lines.extend(parts[1:])
         else:
             lines.append("")
             lines.append(NO_RISK_TEXT_C)
-        for tail in _load_vuln_tails().get(key_num, []):
-            lines.append(tail)
     elif key == "other":
         lines.append("")
         lines.append(skel.get("no_risk_text") or
@@ -1811,11 +2663,13 @@ def render_reply(*, plan: dict, templates: dict | None = None, letter_number: st
     else:
         numbered = bool(skel.get("number_blocks", key == "hacker"))
         plan_blocks = list(plan.get("blocks") or [])
-        intro_overrides = _load_letter_intros().get(key_num, {})
+        intro_overrides = ({} if (_llm_intro_priority_enabled() and plan.get("llm"))
+                           else _load_letter_intros().get(key_num, {}))
         for i, blk in enumerate(plan_blocks, 1):
             intro_phrase = blk.get("intro") or "реализуемыми угрозами безопасности информации"
             if str(i) in intro_overrides:
                 intro_phrase = " ".join(intro_overrides[str(i)].split())
+            intro_phrase = _strip_header_network_details(intro_phrase)
             if blk.get("fixed_header"):
                 override = _load_letter_headers().get((letter_number or "").replace("/", "-"))
                 head = override or (skel.get("empty_block_text")
@@ -1829,26 +2683,47 @@ def render_reply(*, plan: dict, templates: dict | None = None, letter_number: st
                     head = f"{i}. " + block_tpl.replace("{{intro}}", intro_phrase)
             else:
                 head = block_tpl.replace("{{n}}", "").replace("{{n}}. ", "").replace("{{intro}}", intro_phrase).strip()
+            if blk.get("bdu_header_suffix"):
+                suffix = " ".join(str(blk["bdu_header_suffix"]).split())
+                head = head.replace("приняты следующие меры защиты:", suffix)
             if i > 1:
                 lines.append("")
             lines.append(head)
             sender = ", ".join(addresses[:8]) if addresses else ""
+            measure_texts = []
             for m in blk.get("measures") or []:
                 t = m['text'].replace("{{sender}}", sender) if sender else m['text']
-                lines.append(f"  {t}")
-        if active_vulns and key != "vulnerability":
-            vulns = list(active_vulns)
-            bdu_cves = {_norm_cve_key(v.get("cve_id"))
-                        for v in vulns if v.get("bdu_id")}
-            vulns = [v for v in vulns
-                     if v.get("bdu_id")
-                     or _norm_cve_key(v.get("cve_id")) not in bdu_cves]
-            if vulns:
-                start = len(plan_blocks) + 1
-                for idx, v in enumerate(vulns):
-                    lines.append("")
-                    prefix = f"{start + idx}. " if numbered else ""
-                    lines.append(f"{prefix}{_vuln_paragraph(v, key_num)[0]}")
+                t = " ".join(str(t).split()).strip().rstrip(" ;.")
+                if t:
+                    measure_texts.append(t)
+            for j, t in enumerate(measure_texts):
+                suffix = "." if j == len(measure_texts) - 1 else ";"
+                lines.append(f"- {t}{suffix}")
+            compensation_statuses: set[str] = set()
+            for compensation in blk.get("bdu_compensations") or []:
+                status = " ".join(str(compensation.get("status") or "").split())
+                if status:
+                    if status not in compensation_statuses:
+                        lines.append("")
+                        lines.append(status)
+                        compensation_statuses.add(status)
+                    continue
+                header = " ".join(str(compensation.get("header") or "").split())
+                items = [
+                    " ".join(str(item).split()).strip()
+                    for item in (compensation.get("measures") or [])
+                    if str(item).strip()
+                ]
+                if not header or not items:
+                    continue
+                lines.append("")
+                lines.append(header)
+                for j, item in enumerate(items):
+                    if item.endswith((".", ":", ";")):
+                        rendered = item
+                    else:
+                        rendered = item + ("." if j == len(items) - 1 else ";")
+                    lines.append(f"- {rendered}")
         if not plan_blocks:
             lines.append("")
             if any(v.get("cmdb_error") for v in (active_vulns or [])):
@@ -1871,7 +2746,8 @@ def _reply_result(plan: dict, templates: dict | None, letter_number: str, letter
                   org_name: str, addr_count: int, active_vulns: list[dict],
                   addresses: list[str] | None) -> dict:
     """Рендер текста/docx + сборка plan_json. Общая часть generate_reply*."""
-    _apply_letter_measure_plan(plan, letter_number, addr_count)
+    if not (_llm_priority_enabled() and plan.get("llm")):
+        _apply_letter_measure_plan(plan, letter_number, addr_count)
     _sanitize_plan_measures(plan)
     _remove_empty_measure_blocks(plan)
     text, _meta = render_reply(plan=plan, templates=templates, letter_number=letter_number,
@@ -1924,16 +2800,24 @@ def generate_reply(db, doc_id: int, *, letter_type: str | None = None, blocks: l
     plan = plan_reply(db=db, letter_type=letter_type or "hacker", blocks=plan_in,
                       addr_count=addr_count, use_llm=use_llm, letter_number=letter_number)
     library = load_reply_resources(db)[0]
-    _apply_reference_measure_policy(plan, plan_in, addr_count, library,
-                                    letter_type or "hacker", letter_number)
-    if _source_measure_policy_enabled():
+    llm_priority = _llm_priority_enabled() and bool(plan.get("llm"))
+    if not llm_priority:
+        _apply_reference_measure_policy(plan, plan_in, addr_count, library,
+                                        letter_type or "hacker", letter_number)
+    if _source_measure_policy_enabled() and not llm_priority:
         _apply_global_measure_policy(plan, plan_in, letter_type or "hacker",
                                      library, addr_count)
+    _apply_general_measure_policy(plan, plan_in, library, addr_count, letter_number)
+    _apply_live_bdu_measures(active_vulns or [])
+    _apply_live_bdu_block_measures(plan, plan_in, active_vulns or [])
+    if (letter_type or "").lower() == "vulnerability":
+        _attach_vulnerability_source_fallbacks(db, doc_id, active_vulns or [])
     _normalize_block_address_forms(plan, plan_in)
+    _enforce_network_measure_policy(plan, plan_in)
     _remove_empty_measure_blocks(plan)
     templates = load_reply_resources(db)[2]
     return _reply_result(plan, templates, letter_number, letter_date, org_name,
-                         addr_count, active_vulns, addresses)
+                         addr_count, active_vulns or [], addresses)
 
 
 async def generate_reply_async(db, doc_id: int, *, letter_type: str | None = None,
@@ -1954,16 +2838,24 @@ async def generate_reply_async(db, doc_id: int, *, letter_type: str | None = Non
                                   addr_count=addr_count, use_llm=use_llm,
                                   letter_number=letter_number)
     library = load_reply_resources(db)[0]
-    _apply_reference_measure_policy(plan, plan_in, addr_count, library,
-                                    letter_type or "hacker", letter_number)
-    if _source_measure_policy_enabled():
+    llm_priority = _llm_priority_enabled() and bool(plan.get("llm"))
+    if not llm_priority:
+        _apply_reference_measure_policy(plan, plan_in, addr_count, library,
+                                        letter_type or "hacker", letter_number)
+    if _source_measure_policy_enabled() and not llm_priority:
         _apply_global_measure_policy(plan, plan_in, letter_type or "hacker",
                                      library, addr_count)
+    _apply_general_measure_policy(plan, plan_in, library, addr_count, letter_number)
+    await _apply_live_bdu_measures_async(active_vulns or [])
+    await _apply_live_bdu_block_measures_async(plan, plan_in, active_vulns or [])
+    if (letter_type or "").lower() == "vulnerability":
+        _attach_vulnerability_source_fallbacks(db, doc_id, active_vulns or [])
     _normalize_block_address_forms(plan, plan_in)
+    _enforce_network_measure_policy(plan, plan_in)
     _remove_empty_measure_blocks(plan)
     templates = load_reply_resources(db)[2]
     return _reply_result(plan, templates, letter_number, letter_date, org_name,
-                         addr_count, active_vulns, addresses)
+                         addr_count, active_vulns or [], addresses)
 
 
 def persist_candidates(db, document_id: int, candidates: list[dict]) -> list[int]:
@@ -2001,19 +2893,21 @@ def build_annotated_preview(db, response_plan: dict, threats, addr_count: int = 
         for m in annotations:
             if m["source"] == "new" and m["text"] not in measure_options:
                 measure_options.append(m["text"])
+        intro_text = _strip_header_network_details(
+            blk.get("intro") or "угрозой безопасности информации")
         if blk.get("fixed_header"):
             head = ("В целях предотвращения реализации угроз, связанных со случаем компрометации "
                     "(скомпрометированные интернет-ресурсы, веб-сайты и программное обеспечение), "
                     "приняты следующие меры защиты:")
         elif len(response_plan.get("blocks") or []) == 1 and not (t and _obj_attr(t, "id")):
-            head = f"В целях предотвращения возможности реализации угроз безопасности информации, связанных с {blk.get('intro') or 'угрозой безопасности информации'}, приняты следующие меры защиты:"
+            head = f"В целях предотвращения возможности реализации угроз безопасности информации, связанных с {intro_text}, приняты следующие меры защиты:"
         else:
-            head = f"{i}. В целях предотвращения возможности реализации угроз безопасности информации, связанных с {blk.get('intro') or 'угрозой безопасности информации'}, приняты следующие меры защиты:"
+            head = f"{i}. В целях предотвращения возможности реализации угроз безопасности информации, связанных с {intro_text}, приняты следующие меры защиты:"
         sections.append({
             "threat_id": blk.get("threat_id") or _obj_attr(t, "id", 0),
             "number": blk.get("number") or i,
             "prefix": f"{i}. " if len(response_plan.get("blocks") or []) > 1 else "",
-            "description": _obj_attr(t, "theme", "") or blk.get("intro") or "",
+            "description": _obj_attr(t, "theme", "") or intro_text,
             "measures": measures,
             "measures_preview": measures,
             "measure_annotations": annotations,

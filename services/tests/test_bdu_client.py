@@ -3,7 +3,9 @@ import asyncio
 
 import httpx
 
-from security_service.bdu_client import BDUClient, _cvss_from_critu, _severity_from_critu
+from security_service.bdu_client import (BDUClient, _affected_products, _cvss_from_critu,
+                                         _fixed_from_model, _fixed_from_text,
+                                         _remediation_from_model, _severity_from_critu)
 from security_service.cache import MemoryCache
 from tests.fakes import BDU_HTML, BDU_LEGACY_HTML, bdu_transport
 
@@ -54,6 +56,24 @@ def test_get_bdu_roundtrip():
 
 def test_get_bdu_unknown_returns_none():
     assert asyncio.run(_bdu().get_bdu("BDU:9999-99999")) is None
+
+
+def test_bdu_model_uses_release_and_product_versions():
+    model = {
+        "vul_name": "Уязвимость Python Requests",
+        "vul_desc": "Python Requests",
+        "vul_link": "https://github.com/psf/requests/releases/tag/v2.31.0",
+        "vul_vmer": "Уязвимые версии: до версии 2.21.0-1",
+        "versions": [{
+            "ver_name": ">=2.3.0,<2.31.0",
+            "soft": {"sft_name": "Requests", "vendor": {"vnd_name": "Requests"}},
+        }],
+        "sop": [{"sop_name": "Использование рекомендаций производителя"}],
+    }
+    assert _fixed_from_model(model) == "2.31.0"
+    assert _affected_products(model)[0]["name"] == "Requests"
+    assert "рекомендаций" in _remediation_from_model(model)
+    assert _fixed_from_text("Уязвимые версии: до 2.21.0-1") == ""
 
 
 def test_network_failure_graceful():

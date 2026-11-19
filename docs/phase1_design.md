@@ -140,7 +140,6 @@
 | GET | `/reports/{id}/download_raw` | Скачивание оригинального загруженного файла | JWT |
 | POST | `/reply/generate` | Принудительная генерация проекта ответа по ID документа | JWT, роли op/admin |
 
-Совместимость: обёртки над старыми `/api/letters/...` в Gateway (обратная совместимость до завершения внедрения).
 
 ### 2.2 ingest-service (внутренний REST/healt; события in/out)
 - In: `documents.uploaded` (Kafka).

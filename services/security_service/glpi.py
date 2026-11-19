@@ -216,6 +216,18 @@ class GlpiCMDB:
             for sw in rows:
                 if isinstance(sw, dict) and sw.get("id") is not None:
                     rows_by_id[int(sw["id"])] = sw
+            # Some installations register a product under an abbreviation
+            # (for example GitLab as "glab"), so also match the vendor.
+            try:
+                vendor_rows = await self._v2_list("v2/Assets/Software", {
+                    "filter": f"manufacturer.name=ilike=*{term}*",
+                    "limit": max(_V2_PAGE_LIMIT, self.max_software * 10),
+                })
+            except Exception:  # noqa: BLE001 - vendor filter is optional
+                vendor_rows = []
+            for sw in vendor_rows:
+                if isinstance(sw, dict) and sw.get("id") is not None:
+                    rows_by_id[int(sw["id"])] = sw
         return rows_by_id
 
     async def _v2_items(self, rows_by_id: dict[int, dict], product: str) -> list[InventoryItem]:
@@ -225,10 +237,10 @@ class GlpiCMDB:
             if matched >= self.max_software:
                 break
             name = str(sw.get("name") or "")
-            if not match_product(name, product):
-                continue
             manufacturer = sw.get("manufacturer")
             vendor = str(manufacturer.get("name") or "") if isinstance(manufacturer, dict) else ""
+            if not (match_product(name, product) or match_product(vendor, product)):
+                continue
             category = sw.get("category")
             cat = str(category.get("name") or "") if isinstance(category, dict) else ""
             sw_id = sw.get("id")

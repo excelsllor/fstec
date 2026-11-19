@@ -2,7 +2,7 @@
 external_errors, вывод fixed_version по регексу."""
 import asyncio
 
-from security_service.assessment import _is_redos_linux, assess_document
+from security_service.assessment import _product_for_cmdb, assess_document
 from security_service.cmdb_mock import MockCMDB
 from security_service.enriched import CpeMatch, EnrichedVuln, RangeSpec
 from tests.fakes import (BDU_ENRICHED, NVD_CRITICAL, VULN_RAW, FakeBDUClient,
@@ -94,26 +94,129 @@ def test_vulnerability_payload_keeps_assessment_fields():
     assert payload["applicability_notes"] == "note"
 
 
-def test_redos_linux_aliases():
-    for name in ("Linux", "Linux kernel", "Linux 6.1", "RED OS", "RED OS 8",
-                 "RedOS 7.3", "GNU/Linux", "операционная система Linux"):
-        assert _is_redos_linux(name), name
-    assert not _is_redos_linux("Linux-PAM")
-    assert not _is_redos_linux("Windows")
-
-
-def test_linux_is_treated_as_redos_when_absent_from_glpi():
+def test_linux_without_glpi_is_not_assumed_installed():
     raw = {
         "bdu_id": "", "cve_id": "", "software": "Linux",
-        "description": "Уязвимость ядра Linux",
+        "description": "?????????? Linux",
         "severity": "high",
     }
     ass = asyncio.run(_assess([raw], enrich=False))
     a = ass.assessed[0]
     assert a["cmdb_match"] is False
+    assert a["is_applicable"] is False
+    assert a["action_type"] == "skip"
+    assert "RED OS" not in a["applicability_notes"]
+
+def test_missing_product_is_derived_before_glpi_lookup():
+    from security_service.cmdb import InventoryItem
+
+    class CMDB:
+        async def find_many(self, product):
+            if product == "Node.js":
+                return [InventoryItem(name="Node.js", version="18.14.0")]
+            return []
+
+    raw = {
+        "bdu_id": "BDU:2026-17395", "cve_id": "",
+        "description": (
+            "Уязвимость алгоритма сжатия данных Brotli программной платформы "
+            "Node.js связана с отсутствием проверки возвращаемого значения."),
+        "software": "", "severity": "critical", "fixed_version": "26.12.1",
+    }
+    ass = asyncio.run(_assess([raw], cmdb=CMDB(), enrich=False))
+    a = ass.assessed[0]
+    assert a["software"] == "Node.js"
+    assert a["current_version"] == "18.14.0"
+    assert a["cmdb_match"] is True
+    assert a["action_type"] == "update"
+
+
+def test_gitlab_glab_vendor_alias_is_accepted():
+    from security_service.cmdb import InventoryItem
+
+    class CMDB:
+        async def find_many(self, product):
+            return [InventoryItem(name="glab", version="1.53.0-1", vendor="GitLab")]
+
+    raw = {
+        "bdu_id": "BDU:2026-17391", "cve_id": "",
+        "description": (
+            "Уязвимость программной платформы на базе git для совместной работы "
+            "над кодом GitLab связана с целочисленным переполнением."),
+        "software": "GitLab", "severity": "critical", "fixed_version": "19.5.1",
+    }
+    ass = asyncio.run(_assess([raw], cmdb=CMDB(), enrich=False))
+    a = ass.assessed[0]
+    assert a["current_version"] == "1.53.0-1"
+    assert a["cmdb_match"] is True
+    assert a["action_type"] == "update"
+
+
+def test_gitlab_client_package_is_not_gitlab_server():
+    from security_service.cmdb import InventoryItem
+
+    class CMDB:
+        async def find_many(self, product):
+            return [
+                InventoryItem(name="python3-gitlab", version="1:2.0.1-1"),
+                InventoryItem(name="gitlab-runner", version="17.2.0-1", vendor="GitLab"),
+            ]
+
+    raw = {
+        "bdu_id": "BDU:2026-17391", "cve_id": "",
+        "description": (
+            "Уязвимость программной платформы на базе git для совместной работы "
+            "над кодом GitLab связана с целочисленным переполнением."),
+        "software": "GitLab", "severity": "critical", "fixed_version": "19.5.1",
+    }
+    ass = asyncio.run(_assess([raw], cmdb=CMDB(), enrich=False))
+    a = ass.assessed[0]
+    assert a["cmdb_match"] is False
+    assert a["is_applicable"] is False
+    assert a["action_type"] == "skip"
+
+
+def test_installed_without_range_or_fix_requires_verification():
+    from security_service.cmdb import InventoryItem
+
+    class CMDB:
+        async def find_many(self, product):
+            return [InventoryItem(name="Windows", version="22H2")]
+
+    raw = {
+        "bdu_id": "BDU:2021-02715", "cve_id": "",
+        "description": "Уязвимость сетевого стека Microsoft Windows связана с ошибкой.",
+        "software": "Windows", "severity": "high",
+    }
+    bdu = EnrichedVuln(
+        source="bdu", bdu_id="BDU:2021-02715",
+        description="Уязвимость сетевого стека Microsoft Windows связана с ошибкой.",
+        severity="high",
+    )
+    ass = asyncio.run(_assess(
+        [raw], cmdb=CMDB(), enrich=True, nvd=FakeNVDClient(None),
+        bdu=FakeBDUClient(bdu)))
+    a = ass.assessed[0]
+    assert a["cmdb_match"] is False
     assert a["is_applicable"] is True
-    assert a["action_type"] == "compensate"
-    assert "RED OS" in a["applicability_notes"]
+    assert a["action_type"] == "verify"
+
+
+def test_product_for_cmdb_derives_name_from_description():
+    cases = [
+        ("Уязвимость алгоритма сжатия данных Brotli программной платформы Node.js связана с ошибкой.",
+         "Node.js"),
+        ("Уязвимость компонента API программного обеспечения Airflow связана с ошибкой.",
+         "Airflow"),
+        ("Уязвимость службы RAW-печати устройства EPSON L14150 связана с ошибкой.",
+         "EPSON L14150"),
+        ("Уязвимость библиотеки для анализа XML-файлов libexpat связана с ошибкой.",
+         "libexpat"),
+        ("Уязвимость интерпретатора языка программирования Python (CPython) связана с ошибкой.",
+         "CPython"),
+    ]
+    for description, expected in cases:
+        assert _product_for_cmdb(description, "")[0] == expected
 
 
 def test_raw_description_wins_when_bdu_description_names_other_product():

@@ -10,7 +10,6 @@
 ### 1.1 Состав
 | Компонент | Стек | Назначение |
 |---|---|---|
-| api-gateway | Python 3.10 / FastAPI | :8666, auth (JWT/bcrypt), upload, документы, отчёты, reply (ТЗ 2.6) + совместимость `/api/letters/...` |
 | ingest-service | python-docx/olefile/openpyxl/pdfplumber/striprtf | Парсинг PDF/DOC/DOCX/ODT/XLSX/RTF/TXT/HTML/EML, OCR сканов PDF (tesseract/paddle) |
 | llm-service | HeuristicProvider / VLLMProvider (Qwen3, OpenAI API) | Классификация, NER (орг/сроки/контакты), саммари ≤500 симв |
 | security-service | NVD API v2 / bdu.fstec.ru / CMDB-mock | CVSS, версионный matching, SLA, роутинг (InfoSec), ретраи · кэш Redis |
@@ -25,7 +24,6 @@
 > WS-2; резервная копия — `%USERPROFILE%\fstec-legacy-backup-2026-09-08`.
 
 ### 1.2 Модули (каталог `services/`)
-- `api_gateway/main.py` — FastAPI: bootstrap-auth, `/upload` (лимиты 20 МБ / 10 файлов, magic-bytes), `/documents`, `/reports/{id}/download(_raw)`, `/reply/generate`, `/api/letters/...` (совместимость)
 - `ingest_service/worker.py` — обработка `documents.uploaded`: парсинг всех вложений, OCR, публикация `document.parsed`
 - `llm_service/provider.py`, `llm_service/worker.py` — `LLMProvider` (heuristic|vllm), классификация + NER + саммари
 - `security_service/` — клиенты NVD v2 / BDU, CMDB-коннектор, версионный matching, SLA, ретраи + кэш Redis
@@ -35,10 +33,12 @@
 
 ### 1.3 REST API (совместимость + ТЗ 2.6)
 - `POST /api/auth/login`, `GET /api/auth/me`, `GET /api/auth/status`
-- `POST /api/letters/upload`, `GET /api/letters`, `GET /api/letters/stats`, `GET /api/letters/{id}`
-- `GET /api/letters/{id}/export/{type}` + `/docx` (emails, ip_addresses, domains, ioc_indicators)
-- `PUT /api/letters/{id}/response`, `GET/PUT/DELETE /api/users`, `GET/POST/PUT/DELETE /api/templates/...`, `DELETE /api/letters/{id}`
-- `POST /upload`, `GET /documents`, `GET /documents/{id}`, `GET /reports/{id}/download`, `GET /reports/{id}/download_raw`, `POST /reply/generate`
+- `GET /documents/stats`, `DELETE /documents/{id}`
+- `GET /documents/{id}/export/{type}` + `/docx` (emails, ip_addresses, domains, ioc_indicators)
+- `PUT /documents/{id}/response`, `GET/PUT/DELETE /api/users`, `GET/POST/PUT/DELETE /api/templates/...`
+- `POST /upload`, `GET /documents`, `GET /documents/stats`, `GET /documents/{id}`
+- `GET /reports/{id}/download`, `GET /reports/{id}/download_raw`, `POST /reply/generate`
+- `GET/PUT /documents/{id}/response`, `GET /documents/{id}/response/preview`, `GET/PUT/DELETE /documents/{id}/iocs`
 
 ### 1.4 Схема (AS-IS)
 ```
@@ -87,7 +87,6 @@
 - Аутентификация (JWT), авторизация (роли оператор/админ), аудит действий.
 - REST API по ТЗ 2.6: `POST /upload`, `GET /documents`, `GET /documents/{id}`,
   `GET /reports/{id}/download`, `GET /reports/{id}/download_raw`, `POST /reply/generate`.
-- Обратная совместимость со старыми путями `/api/letters/...`.
 - Лимиты: файл ≤20 МБ, пакет ≤10 файлов (ТЗ 2.1), drag-and-drop (ТЗ 4.4).
 - Статику/SPA отдаёт frontend-контейнер (nginx).
 
@@ -166,7 +165,6 @@
 ## 3. Статус миграции AS-IS → TO-BE
 1. **Сделано**: монолит выделен в микросервисы (`services/`), шина событий (memory/sqlite/kafka), Gateway с новой REST-схемой (ТЗ 2.6), OCR, llm-сервис (heuristic/vllm), security-сервис (NVD/BDU/CMDB-mock), reporting (карточка индикаторов + ответ).
 2. **Внедрение**: PostgreSQL вместо SQLite, live-режимы NVD/BDU/CMDB, vLLM (Qwen3-14B) на сервере с NVIDIA, KPI-замеры, PaddleOCR GPU, идемпотентность обработчиков Kafka (at-least-once).
-3. Обратная совместимость: endpoint'ы `/api/letters/...` работают в Gateway (перенесены при миграции).
 
 ## 4. Ограничения и допущения
 - CMDB Заказчика в dev недоступен — используется CMDB-mock; реальная БД подключается конфигом на внедрении.

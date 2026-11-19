@@ -118,7 +118,7 @@ def _store_assessments(db: Session, doc: Document, assessed: list[dict]) -> None
             applicability_notes=_clip(a.get("applicability_notes", ""), 1500),
             action_type=_clip(a.get("action_type", ""), _VULN_LIMITS["action_type"]),
         )
-        details = templates.get(rec.action_type, "")
+        details = a.get("action_details") or templates.get(rec.action_type, "")
         for key, value in (
             ("{{software}}", rec.software), ("{software}", rec.software),
             ("{{current_version}}", rec.current_version), ("{current_version}", rec.current_version),

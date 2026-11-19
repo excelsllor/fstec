@@ -119,54 +119,17 @@ _GENERIC_PRODUCT_TOKENS = {
     "http", "https", "vulnerability", "security", "component", "library",
     "extension", "plugin", "module", "package", "software", "system",
     "framework", "application", "project", "the", "and", "for", "with",
+    "python", "python2", "python3", "perl", "git",
 }
 _VENDOR_PRODUCT_TOKENS = {
     "microsoft", "cisco", "sap", "fortinet", "oracle", "jetbrains", "adobe",
     "apache", "google", "apple", "red", "hat", "redhat", "ibm", "vmware",
 }
 _COMPONENT_PRODUCT_TOKENS = {
-    "runner", "agent", "update", "updater", "common", "util", "utils",
+    "runner", "update", "updater", "common", "util", "utils",
     "netcat", "library", "libs", "plugin", "extension", "module", "sdk",
     "runtime", "driver", "firmware", "subsystem", "viewer", "tools",
     "kaspersky", "endpoint", "редактор", "конвертер",
-    "python", "python2", "python3", "perl",
-}
-_COMPONENT_ALLOWED = {
-    "wazuh": {"agent"},
-    "ossec": {"agent"},
-    "requests": {"python", "python2", "python3"},
-    "python requests": {"python", "python2", "python3"},
-    "pillow": {"python", "python2", "python3"},
-    "messagepack": {"python", "python2", "python3"},
-    "cpython": {"python", "python2", "python3"},
-    "python": {"python", "python2", "python3"},
-}
-_LANGUAGE_COMPONENT_TOKENS = {"python", "python2", "python3", "perl"}
-_LANGUAGE_COMPONENT_BLOCK_TARGETS = {
-    "gitlab", "net", "raw", "xml", "linux", "openbsd", "windows",
-    "microsoft edge", "edge",
-}
-_PRODUCT_ALIASES = {
-    "cpython": ("python3", "python"),
-    "python": ("python3",),
-    "python requests": ("python3-requests", "python-requests"),
-    "requests": ("python3-requests", "python-requests"),
-    "pillow": ("python3-pillow", "python-pillow"),
-    "messagepack": ("python3-msgpack", "python-msgpack"),
-    "librsvg": ("librsvg2",),
-    "cifs": ("cifs-utils",),
-    "cifs cifs utils": ("cifs-utils",),
-    "curl": ("curl", "libcurl"),
-    "go crypto": ("golang",),
-    "go": ("golang",),
-    "microsoft office": ("office",),
-    "office": ("office",),
-    "freerdp": ("freerdp",),
-    "php": ("php",),
-    "openssl": ("openssl",),
-    "gitlab": ("gitlab",),
-    "system v": ("sysvinit",),
-    "openbsd": ("openbsd",),
 }
 
 
@@ -192,14 +155,19 @@ def _product_distinctive_tokens(value: str) -> list[str]:
     return distinctive or tokens
 
 
+def _normalize_token(token: str) -> str:
+    return re.sub(r"\d+$", "", (token or "").lower().replace("ё", "е"))
+
+
 def _product_token_hit(expected: str, actual: str) -> bool:
-    if not expected or not actual:
+    """Сравнивает токены с учётом пакетных суффиксов (python3 → python)."""
+    left = _normalize_token(expected)
+    right = _normalize_token(actual)
+    if not left or not right:
         return False
-    if expected == actual:
+    if left == right:
         return True
-    if len(expected) >= 3 and expected in actual:
-        return True
-    return False
+    return len(right) >= 4 and right in left
 
 
 def _product_raw_tokens(value: str) -> list[str]:
@@ -210,77 +178,90 @@ def product_search_terms(product: str) -> list[str]:
     raw_tokens = _product_raw_tokens(product)
     latin_raw = [token for token in raw_tokens if _is_latin_token(token)]
     raw_tokens = latin_raw or raw_tokens
-    tokens = [token.lower().replace("ё", "е") for token in raw_tokens]
-    full = " ".join(tokens)
     selected = [
         raw for raw in raw_tokens
         if raw.lower() not in _GENERIC_PRODUCT_TOKENS
         and raw.lower() not in _VENDOR_PRODUCT_TOKENS
         and len(raw) >= 2
     ] or raw_tokens
-    primary: list[str] = []
-    aliases: set[str] = set()
+    ordered: list[str] = []
     seen: set[str] = set()
     for raw in selected:
-        key = raw.lower()
-        if key not in seen:
-            primary.append(raw)
-            seen.add(key)
-        aliases.update(_PRODUCT_ALIASES.get(key, ()))
-    aliases.update(_PRODUCT_ALIASES.get(full, ()))
-    for key, values in _PRODUCT_ALIASES.items():
-        if key == full or key in tokens:
-            aliases.update(values)
-    ordered = primary + sorted(
-        (value for value in aliases if value and value.lower() not in seen),
-        key=lambda value: (len(value), value.lower()),
-    )
+        for value in (raw, _normalize_token(raw)):
+            key = value.lower()
+            if value and key not in seen:
+                ordered.append(value)
+                seen.add(key)
     return ordered
 
 
-def _product_norm(value: str) -> str:
-    return " ".join(_product_tokens(value))
-
-
-def _product_aliases(product: str) -> set[str]:
-    full = " ".join(_effective_product_tokens(product))
-    return set(_PRODUCT_ALIASES.get(full, ()))
-
-
-
-def _candidate_has_blocking_component(candidate_tokens: list[str], target_tokens: list[str],
-                                      target_norm: str) -> bool:
-    allowed = _COMPONENT_ALLOWED.get(target_norm, set())
+def _candidate_has_blocking_component(candidate_tokens: list[str],
+                                      target_tokens: list[str]) -> bool:
+    target_forms = {_normalize_token(token) for token in target_tokens}
     for token in candidate_tokens:
-        if token in target_tokens or token in _GENERIC_PRODUCT_TOKENS:
+        form = _normalize_token(token)
+        if not form or form in target_forms or form in _GENERIC_PRODUCT_TOKENS:
             continue
-        if token in _VENDOR_PRODUCT_TOKENS:
+        if form in _VENDOR_PRODUCT_TOKENS:
             continue
-        if token in _LANGUAGE_COMPONENT_TOKENS:
-            if token not in allowed and target_norm in _LANGUAGE_COMPONENT_BLOCK_TARGETS:
-                return True
-            continue
-        if token in _COMPONENT_PRODUCT_TOKENS and token not in allowed:
+        if form in _COMPONENT_PRODUCT_TOKENS:
             return True
     return False
 
 
-def _tokens_match_product(candidate_tokens: list[str], target_tokens: list[str],
-                          target_norm: str) -> bool:
+def _tokens_match_product(candidate_tokens: list[str], target_tokens: list[str]) -> bool:
     if not candidate_tokens or not target_tokens:
         return False
-    if _candidate_has_blocking_component(candidate_tokens, target_tokens, target_norm):
+    if _candidate_has_blocking_component(candidate_tokens, target_tokens):
         return False
-    if len(target_tokens) == 1:
-        return target_tokens[0] in candidate_tokens
-    if not all(any(_product_token_hit(token, actual) for actual in candidate_tokens)
-               for token in target_tokens):
+    return all(any(_product_token_hit(token, actual) for actual in candidate_tokens)
+               for token in target_tokens)
+
+
+_PACKAGING_PREFIXES = {"python", "python2", "python3", "perl"}
+
+
+def _core_product_tokens(tokens: list[str], *, kind: str) -> list[str]:
+    values = [_normalize_token(token) for token in tokens]
+    if kind == "library":
+        while len(values) > 1 and values[0] in _PACKAGING_PREFIXES:
+            values.pop(0)
+    elif values and values[0] in _PACKAGING_PREFIXES:
+        return []
+    generic = _GENERIC_PRODUCT_TOKENS - _PACKAGING_PREFIXES
+    return [
+        value for value in values
+        if value and value not in generic
+        and value not in _VENDOR_PRODUCT_TOKENS
+    ]
+
+
+def match_product_strict(inventory_name: str, vuln_software: str,
+                         kind: str = "application") -> bool:
+    """Строгая проверка GLPI-кандидата с учётом категории продукта.
+
+    Для приложений имя пакета не должно содержать лишних компонентов
+    (GitLab Runner, python3-gitlab и т.п.). Для библиотек разрешён только
+    языковой префикс пакета (python3-, perl-).
+    """
+    candidate = _core_product_tokens(_product_tokens(inventory_name), kind=kind)
+    target = _core_product_tokens(
+        _product_distinctive_tokens(vuln_software) or _product_tokens(vuln_software),
+        kind=kind)
+    if not candidate or not target:
         return False
-    return any(token in candidate_tokens for token in target_tokens)
+    if _candidate_has_blocking_component(candidate, target):
+        return False
+    if len(candidate) != len(target):
+        return False
+    return all(
+        any(_product_token_hit(left, right) or _product_token_hit(right, left)
+            for right in candidate)
+        for left in target)
 
 
 def match_product(inventory_name: str, vuln_software: str | list[str]) -> bool:
-    """Сопоставить имя из инвентаря с продуктом уязвимости по именам токенов."""
+    """Сопоставить имя из инвентаря с продуктом уязвимости по нормализованным токенам."""
     names = [inventory_name] if isinstance(inventory_name, str) else inventory_name
     targets = [vuln_software] if isinstance(vuln_software, str) else vuln_software
     for name in names:
@@ -291,19 +272,10 @@ def match_product(inventory_name: str, vuln_software: str | list[str]) -> bool:
             target_tokens = _product_distinctive_tokens(target)
             if not target_tokens:
                 target_tokens = _product_tokens(target)
-            target_norm = " ".join(target_tokens)
-            if not target_norm:
-                continue
-            if _tokens_match_product(candidate_tokens, target_tokens, target_norm):
+            if target_tokens and _tokens_match_product(candidate_tokens, target_tokens):
                 return True
-            for alias in _product_aliases(target):
-                alias_tokens = _product_distinctive_tokens(alias)
-                if not alias_tokens:
-                    alias_tokens = _product_tokens(alias)
-                alias_norm = " ".join(alias_tokens)
-                if alias_norm and _tokens_match_product(candidate_tokens, alias_tokens, alias_norm):
-                    return True
     return False
+
 
 def build_range(criteria: str, raw_range: dict | None) -> CpeMatch:
     """Из cpeMatch-узла NVD (versionStart*/versionEnd*) собирает CpeMatch с диапазонами."""

@@ -65,8 +65,9 @@ def build_preview(*, db, document, threats, vulnerabilities, iocs) -> dict:
 
     addr_count = len({i.value.split(":")[0] for i in iocs if i.ioc_type in ("ip", "domain")})
 
-    # Приоритет: уязвимости (тип vulnerability) иначе угрозы
-    active_vulns = [v for v in vulnerabilities if v.cmdb_match or v.is_applicable is True]
+    # Отдельный раздел уязвимостей показываем только для писем-уязвимостей.
+    active_vulns = ([] if (document.letter_type or "").lower() != "vulnerability"
+                    else [v for v in vulnerabilities if v.cmdb_match or v.is_applicable is True])
 
     lines = [title, "", intro]
 

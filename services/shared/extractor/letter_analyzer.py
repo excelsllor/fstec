@@ -42,7 +42,8 @@ def analyze_letter(text: str, tables: list | None = None) -> LetterInfo:
     info.letter_date = _extract_letter_date(text)
     info.letter_type = _detect_type(text)
     if info.letter_type in ("hacker", "compromise"):
-        info.threats = _parse_threats(text)
+        catalog = _build_measure_catalog(text)
+        info.threats = _parse_threats(text, catalog)
     return info
 
 
@@ -55,27 +56,31 @@ def letter_number_from_filename(filename: str) -> str:
 
 
 def _extract_letter_number(text: str) -> str:
-    header = text[:2000]
+    header = text[:2500]
     cleaned = header.replace("_", "")
     m = re.search(r"№\s*(\d+[-/]\d+)", cleaned)
     if m:
         return m.group(1)
+    m = re.search(r"(?m)^\s*(\d{1,2})/(\d{1,4})\s*$", cleaned)
+    if m:
+        return f"{int(m.group(1))}/{int(m.group(2))}"
     for num in re.findall(r"№\s*(\d+)", cleaned):
         if num != "250":
             return num
     return ""
 
 
-def _extract_letter_date(text: str) -> str:
-    header = text[:2000]
-    cleaned = re.sub(r"\s+", " ", re.sub(r"_", "", header))
+def _date_from_text(text: str) -> str:
     patterns = [
         r"(\d{1,2})\s+(" + "|".join(MONTHS.keys()) + r")\s+(\d{4})",
         r"(\d{1,2})\.(\d{1,2})\.(\d{4})",
         r"(\d{4})-(\d{1,2})-(\d{1,2})",
     ]
     for pat in patterns:
-        for m in re.finditer(pat, cleaned):
+        for m in re.finditer(pat, text):
+            before = text[max(0, m.start() - 120):m.start()].lower()
+            if "указ" in before or "федерации от" in before:
+                continue
             if pat.startswith(r"(\d{1,2})\s+("):
                 day, month, year = m.group(1).zfill(2), MONTHS.get(m.group(2), "01"), m.group(3)
             elif pat.startswith(r"(\d{1,2})\."):
@@ -85,6 +90,18 @@ def _extract_letter_date(text: str) -> str:
             if 2020 <= int(year) <= 2035:
                 return f"{year}-{month}-{day}"
     return ""
+
+
+def _extract_letter_date(text: str) -> str:
+    header = re.sub(r"\s+", " ", re.sub(r"_", "", text[:5000]))
+    anchor = re.search(r"(?:№\s*)?\d{1,2}/\d{1,4}", header)
+    if anchor:
+        start = max(0, anchor.start() - 700)
+        end = min(len(header), anchor.end() + 700)
+        preferred = _date_from_text(header[start:end])
+        if preferred:
+            return preferred
+    return _date_from_text(header)
 
 
 def _detect_type(text: str) -> str:
@@ -107,7 +124,146 @@ def _detect_type(text: str) -> str:
     return "other"
 
 
-def _parse_threats(text: str) -> list[ThreatInfo]:
+_MEASURE_BLOCK_RE = re.compile(
+    r"(?ms)^[ \t]*(\d+\.\d+)\.\s+(.*?)"
+    r"(?=^[ \t]*\d+\.\d+\.\s+|^[ \t]*\d+\.\s+[А-ЯЁA-Z«]|\Z)"
+)
+_MEASURE_REF_RE = re.compile(
+    r"(?:пункт(?:ах|е|ом|ов)?|п\.)\s*(\d+\.\d+)\s*[-–—]\s*(\d+\.\d+)",
+    re.IGNORECASE,
+)
+_MEASURE_DIRECTIVE_RE = re.compile(
+    r"^(?:кроме\s+того,?\s*)?(?:необходимо\s+)?"
+    r"(?:реализовать|принять|выполнить)\s+меры(?:\s+защиты)?,?\s+указанн",
+    re.IGNORECASE,
+)
+_MALWARE_TYPE_WORDS = (
+    "загрузчик", "троян", "стилер", "бэкдор", "шифровальщик", "дроппер",
+    "вебшелл", "червь", "rat", "loader", "stealer", "backdoor",
+)
+
+
+def _clean_catalog_text(text: str) -> str:
+    text = re.sub(r"\s+", " ", text.replace("\xa0", " ")).strip(" ;,.")
+    text = re.split(r"Обращаем\s+внимание", text, maxsplit=1, flags=re.IGNORECASE)[0]
+    return text.strip(" ;,.")
+
+
+def _build_measure_catalog(text: str) -> dict[str, str]:
+    """Собирает общие меры 1.1, 1.2, ... из любого места письма.
+
+    В письмах ФСТЭК общие меры часто описаны один раз в первом разделе,
+    а остальные разделы ссылаются на «пункты 1.1-1.7». Без каталога такие
+    ссылки теряются при генерации ответа.
+    """
+    catalog: dict[str, str] = {}
+    for match in _MEASURE_BLOCK_RE.finditer(text.replace("\xa0", " ")):
+        number = match.group(1)
+        body = _clean_catalog_text(match.group(2))
+        if body and number not in catalog:
+            catalog[number] = body
+    return catalog
+
+
+def _measure_key(number: str) -> tuple[int, int]:
+    major, minor = number.split(".", 1)
+    return int(major), int(minor)
+
+
+def _measure_numbers(start: str, end: str) -> list[str]:
+    first, last = _measure_key(start), _measure_key(end)
+    if first[0] != last[0] or first[1] > last[1]:
+        return []
+    return [f"{first[0]}.{minor}" for minor in range(first[1], last[1] + 1)]
+
+
+def _is_measure_directive(text: str) -> bool:
+    return bool(_MEASURE_DIRECTIVE_RE.search(" ".join(text.split())))
+
+
+def _expand_measure_refs(measures: list[str], section: str,
+                         catalog: dict[str, str]) -> list[str]:
+    referenced: list[str] = []
+    for match in _MEASURE_REF_RE.finditer(section):
+        for number in _measure_numbers(match.group(1), match.group(2)):
+            text = catalog.get(number)
+            if text:
+                referenced.append(text)
+
+    specific = [m for m in measures if not _is_measure_directive(m)]
+    result: list[str] = []
+    seen: set[str] = set()
+    for text in referenced + specific:
+        normalized = " ".join(text.split()).casefold()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(" ".join(text.split()).strip(" ;."))
+    return result
+
+
+def _attachment_fields(section: str) -> tuple[str, str]:
+    """Достаёт архив/файл и payload из описания угрозы."""
+    flat = re.sub(r"\s+", " ", section.replace("\xa0", " "))
+    archive = ""
+    match = ARCHIVE_NAMES.search(flat)
+    if match:
+        archive = match.group(1)
+    else:
+        match = re.search(r'[«"]([^»"]+\.lnk)[»"]', flat, re.IGNORECASE)
+        if match:
+            archive = match.group(1)
+
+    exe = ""
+    match = EXE_NAMES.search(flat)
+    if match:
+        exe = next((part for part in match.groups() if part), "")
+    else:
+        match = re.search(r'[«"]([^»"]+\.lnk)[»"]', flat, re.IGNORECASE)
+        if match:
+            exe = match.group(1)
+
+    extension_section = re.search(
+        r"файлы?\s+с\s+расширени(?:ем|ями)\s+(.+?)(?:\.\s|\.$|$)",
+        flat, re.IGNORECASE)
+    if extension_section:
+        extensions = re.findall(r"[«\"]([^»\"]+)[»\"]",
+                                extension_section.group(1))
+        if extensions:
+            exe = ", ".join(extensions)
+    return archive, exe
+
+
+def _malware_phrase(section: str) -> str:
+    """Извлекает типы ВПО и связанные инструменты в человекочитаемом виде."""
+    flat = re.sub(r"\s+", " ", section.replace("\xa0", " "))
+    pairs = re.findall(r"«([^»]+)»\s*\(([^)]+)\)", flat)
+    result: list[str] = []
+    covered_types: set[str] = set()
+    for threat_type, name in pairs:
+        low_type = threat_type.lower()
+        if not any(word in low_type for word in _MALWARE_TYPE_WORDS):
+            continue
+        result.append(f"{threat_type} ({name})")
+        covered_types.add(low_type)
+
+    for threat_type in re.findall(r"«([^»]+)»", flat):
+        low_type = threat_type.lower()
+        if (any(word in low_type for word in _MALWARE_TYPE_WORDS)
+                and low_type not in covered_types):
+            result.append(threat_type)
+            covered_types.add(low_type)
+
+    tool = re.search(
+        r"(?:ПО|программного\s+обеспечения)(?:\s+для)?\s+"
+        r"получения\s+удаленного\s+доступа\s*[«\"]([^»\"]+)",
+        flat, re.IGNORECASE)
+    if tool:
+        result.append(f"ПО удаленного доступа {tool.group(1)}")
+
+    return "; ".join(result)
+
+
+def _parse_threats(text: str, measure_catalog: dict[str, str] | None = None) -> list[ThreatInfo]:
     normalized = re.sub(r"\r\n|\r", "\n", text)
     lines = normalized.split("\n")
     threat_keywords = re.compile(
@@ -152,14 +308,30 @@ def _parse_threats(text: str) -> list[ThreatInfo]:
         if not exe_m:
             exe_m = re.search(r'[\u00ab"]([^\u00bb"]+\.lnk)[\u00bb"]', flat, re.I)
         if exe_m:
-            threat.exe_name = exe_m.group(1)
+            threat.exe_name = next((part for part in exe_m.groups() if part), "")
         elif threat.archive_name.lower().endswith(".lnk"):
             threat.exe_name = threat.archive_name
-        for mw in MALWARE_NAMES:
-            if mw.lower() in flat.lower():
-                threat.malware_type = mw
-                break
-        threat.measures = _extract_measures(section)
+
+        extension_section = re.search(
+            r"файлы?\s+с\s+расширени(?:ем|ями)\s+(.+?)(?:\.\s|\.$|$)",
+            flat, re.IGNORECASE)
+        if extension_section:
+            extensions = re.findall(r"[«\"]([^»\"]+)[»\"]",
+                                    extension_section.group(1))
+            if extensions:
+                threat.exe_name = ", ".join(extensions)
+        malware = _malware_phrase(flat)
+        if malware:
+            threat.malware_type = malware
+        else:
+            for mw in MALWARE_NAMES:
+                if mw.lower() in flat.lower():
+                    threat.malware_type = mw
+                    break
+        measures = _extract_measures(section)
+        if measure_catalog:
+            measures = _expand_measure_refs(measures, section, measure_catalog)
+        threat.measures = measures
         result.append(threat)
     return result
 
@@ -208,14 +380,14 @@ def _extract_measures(section: str) -> list[str]:
 
 def _detect_threat_type(section: str) -> str:
     s = section.lower()
-    if re.search(r"(?:bd|бд)у[:\s]|cve-\d{4}", s):
-        return "vulnerability"
-    if "компрометаци" in s and ("веб-сайта" in s or "разработчика" in s):
-        return "compromise"
     if "clickfix" in s:
         return "clickfix"
     if "фишинг" in s or "phishing" in s or "фишингов" in s:
         return "phishing"
+    if "компрометаци" in s and ("веб-сайта" in s or "разработчика" in s):
+        return "compromise"
+    if re.search(r"(?:BDU|БДУ)[:\s]|cve-\d{4}", s, re.IGNORECASE):
+        return "vulnerability"
     if re.search(r"вредоносн[а-яё]+\s+программн", s):
         return "malware_attack"
     if re.search(r"троян|стилер|бэкдор|backdoor|червь|rat\b", s):

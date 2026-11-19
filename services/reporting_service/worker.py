@@ -4,8 +4,7 @@ import asyncio
 import base64
 import logging
 import re
-from datetime import date, datetime, timezone
-from pathlib import Path
+from datetime import datetime, timezone
 
 from shared.bus import get_event_bus
 from shared.config import ORG_NAME, REPORT_DIR
@@ -17,7 +16,7 @@ from shared.generator.indicator_card import build_indicator_card, report_filenam
 from shared.generator.response_generator import render_reply_docx
 from shared.generator.response_store import replace_response
 from shared.models import (
-    Document, GeneratedResponse, IoC, Report, Threat, Vulnerability,
+    Document, IoC, Report, Vulnerability,
 )
 from shared.worker import configure_logging, register_handlers, serve_forever
 
@@ -102,14 +101,8 @@ async def handle_assessed(topic: str, key: str, payload: dict) -> None:
         db.commit()
 
         # 2.5.2 РџСЂРѕРµРєС‚ РѕС‚РІРµС‚Р° (С€Р°Р±Р»РѕРЅ + Р±РёР±Р»РёРѕС‚РµРєР° РјРµСЂ + LLM-РїРѕРґР±РѕСЂ; fallback вЂ” РґРµС‚РµСЂРјРёРЅРёСЂРѕРІР°РЅРЅС‹Р№)
-        threat_rows = (db.query(Threat).filter(Threat.document_id == doc_id)
-                       .order_by(Threat.number).all())
-        blocks = [{
-            "id": t.id, "number": t.number, "threat_type": t.threat_type, "theme": t.theme,
-            "group_name": t.group_name, "archive_name": t.archive_name, "exe_name": t.exe_name,
-            "malware_type": t.malware_type, "description": t.description,
-            "explicit_measures": [m.strip() for m in (t.measures or "").split("\n") if m.strip()],
-        } for t in threat_rows]
+        from shared.generator.reply_blocks import build_reply_blocks
+        blocks = build_reply_blocks(db, doc)
         from shared.generator.templated_reply import generate_reply_async, persist_candidates
         # Сессия БД переживает await: план и measure library читаются из неё же.
         # Поэтому DB_POOL_SIZE должен быть >= BUS_CONCURRENCY reporting-воркера,

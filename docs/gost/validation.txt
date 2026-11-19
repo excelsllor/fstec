@@ -1,0 +1,16 @@
+00_Матрица_соответствия_ГОСТ.docx: paragraphs=47 tables=2 table_captions=2
+  OK
+01_Архитектурная_документация_AS-IS_TO-BE.docx: paragraphs=48 tables=1 table_captions=1
+  OK
+02_Спецификация_OpenAPI.docx: paragraphs=48 tables=1 table_captions=1
+  OK
+03_Руководство_администратора.docx: paragraphs=62 tables=2 table_captions=2
+  OK
+04_Руководство_пользователя.docx: paragraphs=59 tables=1 table_captions=1
+  OK
+05_Инструкция_по_интеграции_с_CMDB.docx: paragraphs=76 tables=0 table_captions=0
+  OK
+06_Отчет_об_отсутствии_уязвимостей.docx: paragraphs=35 tables=1 table_captions=1
+  OK
+07_Протокол_приемочных_испытаний.docx: paragraphs=42 tables=1 table_captions=1
+  OK

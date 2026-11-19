@@ -82,13 +82,13 @@ def test_last_admin_protection(client):
 def test_delete_letter_soft(client, tmp_path):
     H = headers(client)
     doc_id = create_uploaded_document(tmp_path)
-    before = client.get("/api/letters/stats", headers=H).json()["total_letters"]
-    r = client.delete(f"/api/letters/{doc_id}", headers=H)
+    before = client.get("/documents/stats", headers=H).json()["total_letters"]
+    r = client.delete(f"/documents/{doc_id}", headers=H)
     assert r.status_code == 200 and r.json()["status"] == "deleted"
-    ids = [d["id"] for d in client.get("/api/letters", headers=H).json()]
+    ids = [d["id"] for d in client.get("/documents", headers=H).json()]
     assert doc_id not in ids
-    assert client.get("/api/letters/stats", headers=H).json()["total_letters"] == before - 1
-    r2 = client.delete(f"/api/letters/{doc_id}", headers=H)
+    assert client.get("/documents/stats", headers=H).json()["total_letters"] == before - 1
+    r2 = client.delete(f"/documents/{doc_id}", headers=H)
     assert r2.status_code == 200 and r2.json()["status"] == "deleted"
 
 

@@ -12,6 +12,8 @@ httpx==0.28.1
 psycopg2-binary==2.9.10
 PyMySQL==1.1.1
 psutil==5.9.8
+msgpack==1.2.3
+urllib3==2.8.0
 
 # Парсинг и генерация
 pdfplumber==0.11.10

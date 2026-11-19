@@ -243,11 +243,11 @@ export const authApi = {
 
 export const lettersApi = {
   list: (params?: { letter_type?: string; status?: string; skip?: number; limit?: number; mine?: boolean }) =>
-    api.get<LetterListItem[]>("/api/letters", { params }),
-  stats: (params?: { mine?: boolean }) => api.get<StatsResponse>("/api/letters/stats", { params }),
+    api.get<LetterListItem[]>("/documents", { params }),
+  stats: (params?: { mine?: boolean }) => api.get<StatsResponse>("/documents/stats", { params }),
   get: (id: number, view = false) =>
-    api.get<LetterResponse>(`/api/letters/${id}`, { params: view ? { view: 1 } : {} }),
-  delete: (id: number) => api.delete(`/api/letters/${id}`),
+    api.get<LetterResponse>(`/documents/${id}`, { params: view ? { view: 1 } : {} }),
+  delete: (id: number) => api.delete(`/documents/${id}`),
   upload: (files: File[]) => {
     const formData = new FormData();
     files.forEach((f) => formData.append("files", f));
@@ -259,7 +259,7 @@ export const lettersApi = {
     `/reply/generate`, undefined, { params: { doc_id: id } }
   ),
   getResponseText: (id: number) =>
-    api.get<{ text: string; exists: boolean }>(`/api/letters/${id}/response/text`),
+    api.get<{ text: string; exists: boolean }>(`/documents/${id}/response/text`),
   getResponsePreview: (id: number) =>
     api.get<{
       title: string;
@@ -284,27 +284,27 @@ export const lettersApi = {
         intro_text: string;
         section_text: string;
       }>;
-    }>(`/api/letters/${id}/response/preview`),
+    }>(`/documents/${id}/response/preview`),
   updateThreatMeasures: (letterId: number, threatId: number, measures: string[]) =>
-    api.put<{ measures: string[] }>(`/api/letters/${letterId}/response/measures/${threatId}`, { measures }),
+    api.put<{ measures: string[] }>(`/documents/${letterId}/response/measures/${threatId}`, { measures }),
   download: (id: number) =>
-    api.get(`/api/letters/${id}/download`, { responseType: "blob" }),
+    api.get(`/documents/${id}/response/download`, { responseType: "blob" }),
   updateResponse: (id: number, content: string) =>
-    api.put(`/api/letters/${id}/response`, { content }),
+    api.put(`/documents/${id}/response`, { content }),
   exportIocs: (id: number, type: string) =>
-    api.get(`/api/letters/${id}/export/${type}`, { responseType: "blob" }),
+    api.get(`/documents/${id}/export/${type}`, { responseType: "blob" }),
   exportIocsDocx: (id: number, type: string) =>
-    api.get(`/api/letters/${id}/export/${type}/docx`, { responseType: "blob" }),
+    api.get(`/documents/${id}/export/${type}/docx`, { responseType: "blob" }),
   createIoc: (letterId: number, data: { value: string; ioc_type: string }) =>
-    api.post<LetterResponse>(`/api/letters/${letterId}/iocs`, data),
+    api.post<LetterResponse>(`/documents/${letterId}/iocs`, data),
   updateIoc: (letterId: number, iocId: number, data: { value?: string; ioc_type?: string }) =>
-    api.put<LetterResponse>(`/api/letters/${letterId}/iocs/${iocId}`, data),
+    api.put<LetterResponse>(`/documents/${letterId}/iocs/${iocId}`, data),
   deleteIoc: (letterId: number, iocId: number) =>
-    api.delete<LetterResponse>(`/api/letters/${letterId}/iocs/${iocId}`),
+    api.delete<LetterResponse>(`/documents/${letterId}/iocs/${iocId}`),
   updateVulnerability: (letterId: number, vulnId: number, data: VulnerabilityUpdateData) =>
-    api.put<LetterResponse>(`/api/letters/${letterId}/vulnerabilities/${vulnId}`, data),
+    api.put<LetterResponse>(`/documents/${letterId}/vulnerabilities/${vulnId}`, data),
   autofillVulnerability: (letterId: number, vulnId: number) =>
-    api.post<VulnerabilityAutofillResult>(`/api/letters/${letterId}/vulnerabilities/${vulnId}/autofill`),
+    api.post<VulnerabilityAutofillResult>(`/documents/${letterId}/vulnerabilities/${vulnId}/autofill`),
 };
 
 // ТЗ 2.6: нижнеуровневые эндпоинты gateway

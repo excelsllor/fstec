@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 
 from shared.events import AnalysisIocs, DocumentAnalyzed
 from shared.config import (LLM_MERGED_ANALYZE, LLM_MERGED_VULN, IOC_CLASSIFIER_URL,
-                           BERT_PRIMARY_IOCS, DEDUPE_PROMPT_LINES)
+                           BERT_PRIMARY_IOCS, DEDUPE_PROMPT_LINES,
+                           LLM_DOCUMENT_MAX_CHARS, LLM_MERGED_MAX_CHARS,
+                           LLM_BERT_CHUNK_CHARS, LLM_PREPROCESS, LLM_DIGEST_MAX_CHARS)
 from shared.extractor.ioc_extractor import (
     INTERNAL_EMAILS, IoCResult, _clean_domain, _valid_domain, extract_iocs,
 )
@@ -20,7 +22,7 @@ from shared.extractor.patterns import EMAIL_PATTERN
 from shared.extractor.summary import summarize_heuristic
 from shared.extractor.vuln_extractor import extract_software_items, extract_vulns
 from shared.models import Document, Entity, IoC, Summary, Threat
-from llm_service.provider import LLMProvider, _norm_ip, _refang
+from llm_service.provider import LLMProvider, LLMResult, _norm_ip, _refang
 from llm_service.rubert import rubert_available, get_rubert
 
 logger = logging.getLogger("fstec.llm")
@@ -78,6 +80,161 @@ def _dedupe_prompt_lines(text: str) -> str:
     return "\n".join(out)
 
 
+_GENERIC_MEASURE_RE = re.compile(
+    r"(для предотвращения реализации угроз|"
+    r"кроме того, необходимо|"
+    r"необходимо обеспечить на уровне|"
+    r"в целях предотвращения возможности|"
+    r"рекомендуется установить обновление|"
+    r"по результатам выполнения указанных рекомендаций|"
+    r"настроить правила системы мониторинга|"
+    r"ограничение обращений к|"
+    r"внесения в правила корреляции|"
+    r"приложение:|руководитель|"
+    r"тел\.:|факс:|e-mail:)",
+    re.IGNORECASE,
+)
+_CRITICAL_LINE_RE = re.compile(
+    r"(BDU[:\s]|CVE-\d|"
+    r"\[\.\]|hxxp|https?://|sha(?:1|256|384|512)|"
+    r"\b[0-9a-f]{32,128}\b|"
+    r"\b(?:\d{1,3}\.){3}\d{1,3}\b|"
+    r"@[\w.-]+\.|"
+    r"\.(?:ru|com|net|org|io|xyz|top|info|biz|su|рф)\b|"
+    r"группировк|вредонос|фишинг|стилер|бэкдор|malware|"
+    r"stealer|loader|backdoor|\bRAT\b|"
+    r"\.(?:rar|zip|cab|exe|lnk|iso|7z)\b)",
+    re.IGNORECASE,
+)
+_LLM_HEADER_CHARS = 600
+
+
+def _prepare_llm_text(text: str, letter=None) -> str:
+    """Build a compact LLM view without dropping IoC/BDU/CVE from the pipeline.
+
+    The original text is still used by regex/BERT and persisted unchanged.
+    For hacker/compromise letters the LLM gets a short structured digest of
+    threat descriptions without the repetitive standard-measure blocks.
+    For vulnerability/other letters the filtered source text is used.
+    """
+    if not LLM_PREPROCESS or not text:
+        return _dedupe_prompt_lines(text) if DEDUPE_PROMPT_LINES else text
+
+    if letter is not None and getattr(letter, "threats", None):
+        header = " ".join(text[:_LLM_HEADER_CHARS].split())
+        parts = [header]
+        for threat in letter.threats:
+            theme = " ".join((threat.theme or "").split())[:100]
+            meta = " ".join(filter(None, [
+                f"group={threat.group_name}" if threat.group_name else "",
+                f"archive={threat.archive_name}" if threat.archive_name else "",
+                f"exe={threat.exe_name}" if threat.exe_name else "",
+                f"malware={threat.malware_type}" if threat.malware_type else "",
+            ]))[:160]
+            desc = " ".join((threat.description or "").split())[:220]
+            parts.append(
+                f"{threat.number}. type={threat.threat_type or 'unknown'}; "
+                f"{meta}; theme={theme or 'unknown'}; description={desc}"
+            )
+        return "\n\n".join(parts)[:LLM_DIGEST_MAX_CHARS]
+
+    header = text[:_LLM_HEADER_CHARS]
+    body = text[_LLM_HEADER_CHARS:]
+    # Parsed letters often have hard line wraps but no blank lines. Reflow
+    # before sentence filtering so a generic measure split over two lines is
+    # still removed consistently.
+    flat_body = " ".join(body.split())
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", flat_body) if s.strip()]
+    kept: list[str] = []
+    seen: set[str] = set()
+    removed = 0
+    for sentence in sentences:
+        critical = bool(_CRITICAL_LINE_RE.search(sentence))
+        if not critical and _GENERIC_MEASURE_RE.search(sentence):
+            removed += 1
+            continue
+        key = re.sub(r"\W+", " ", sentence.lower())[:220]
+        if key in seen:
+            removed += 1
+            continue
+        seen.add(key)
+        kept.append(sentence)
+    compact = header + ("\n\n" + " ".join(kept) if kept else "")
+    if not kept:
+        compact = text
+    compact = compact[:LLM_DIGEST_MAX_CHARS]
+    if len(compact) < len(text):
+        logger.info("LLM preprocess: %s -> %s chars, removed %s paragraphs",
+                    len(text), len(compact), removed)
+    return compact
+
+
+def _limit_document_text(text: str) -> str:
+    """Keep the documented 30k-character analysis window."""
+    text = text or ""
+    if len(text) <= LLM_DOCUMENT_MAX_CHARS:
+        return text
+    logger.warning("document text truncated for analysis: %s -> %s chars",
+                   len(text), LLM_DOCUMENT_MAX_CHARS)
+    return text[:LLM_DOCUMENT_MAX_CHARS]
+
+
+def _split_text(text: str, limit: int) -> list[str]:
+    """Split text into paragraph-aligned chunks without dropping content."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text]
+    paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    chunks: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        if len(current) + len(paragraph) + 2 <= limit:
+            current = f"{current}\n\n{paragraph}" if current else paragraph
+            continue
+        if current:
+            chunks.append(current)
+        while len(paragraph) > limit:
+            chunks.append(paragraph[:limit])
+            paragraph = paragraph[limit:]
+        current = paragraph
+    if current:
+        chunks.append(current)
+    return chunks or [text[:limit]]
+
+
+def _merge_ioc_results(target: IoCResult, source: IoCResult) -> None:
+    for attr in ("ips", "ipv4_cidr", "ipv6", "domains", "hashes", "emails",
+                 "vuln_ids", "cve_ids", "vdb_urls"):
+        dst = getattr(target, attr)
+        seen = set(dst)
+        for value in getattr(source, attr, []):
+            if value not in seen:
+                dst.append(value)
+                seen.add(value)
+
+
+def _merge_llm_results(results: list) -> "LLMResult":
+    from collections import Counter
+    from llm_service.provider import LLMResult
+
+    valid = [r for r in results if r is not None and getattr(r, "llm_used", False)]
+    if not valid:
+        return LLMResult(llm_used=False)
+    counts = Counter(getattr(r, "classification", "other") for r in valid)
+    merged = LLMResult(llm_used=True, classification=counts.most_common(1)[0][0])
+    merged.summary = next((r.summary for r in valid if r.summary), "")[:500]
+    seen = set()
+    for result in valid:
+        for entity in result.entities:
+            key = (entity.get("type"), entity.get("value"))
+            if key not in seen:
+                seen.add(key)
+                merged.entities.append(entity)
+    return merged
+
+
 def _regex_pass(text: str):
     """Детерминированная часть анализа (без LLM). Вынесена отдельно, чтобы её
     можно было выполнить в потоке, не блокируя event loop (этап 4)."""
@@ -87,7 +244,9 @@ def _regex_pass(text: str):
 
 def analyze(provider: LLMProvider, text: str) -> tuple[DocumentAnalyzed, dict]:
     """Анализ текста: результат события + ddl-промежуточные данные для БД."""
+    text = _limit_document_text(text)
     letter, iocs, vulns, ner, summary = _regex_pass(text)
+    llm_text = _prepare_llm_text(text, letter)
 
     # IoC: гибрид regex ∪ LLM (LLM-слой с анти-галлюцинацией подтверждает/дополняет).
     # Провайдеры duck-typed (тесты/фейки) могут не иметь этих методов — безопасный вызов.
@@ -106,7 +265,7 @@ def analyze(provider: LLMProvider, text: str) -> tuple[DocumentAnalyzed, dict]:
             classification = rl
     _classify = getattr(provider, "classify_type", None)
     llm_cls = _classify(text) if callable(_classify) else ""
-    llm_result = provider.analyze(text, hint=classification)
+    llm_result = provider.analyze(llm_text, hint=classification)
     return _finalize(text, letter, iocs, vulns, ner, summary, classification,
                      llm_cls, llm_result)
 
@@ -126,6 +285,7 @@ async def analyze_async(provider: LLMProvider, text: str) -> tuple[DocumentAnaly
 
     from shared.concurrency import run_blocking
 
+    text = _limit_document_text(text)
     letter, iocs, vulns, ner, summary = await run_blocking(_regex_pass, text)
 
     classification = letter.letter_type
@@ -151,28 +311,38 @@ async def analyze_async(provider: LLMProvider, text: str) -> tuple[DocumentAnaly
     # (тестовые фейки) сохраняют прежнее поведение.
     # IoC из внешнего BERT-классификатора запускаем ПАРАЛЛЕЛЬНО с 8B-вызовом,
     # чтобы его латентность (CPU) не добавлялась к критическому пути.
-    llm_text = _dedupe_prompt_lines(text) if DEDUPE_PROMPT_LINES else text
-    clf_task = asyncio.ensure_future(_classifier_iocs_async(text))
+    llm_text = _prepare_llm_text(text, letter)
+
+    async def _analyze_chunks():
+        chunks = _split_text(llm_text, LLM_MERGED_MAX_CHARS)
+        results = await asyncio.gather(
+            *(_maybe("analyze", chunk, hint=classification) for chunk in chunks)
+        )
+        return _merge_llm_results(list(results))
+
+    clf_task = asyncio.ensure_future(_classifier_iocs_chunked_async(text))
     # merged быстрее на hacker/other-письмах; для regex-vulnerability оставляем
     # два вызова, чтобы не менять проверенное поведение на больших BDU-списках.
     merged_used = False
     is_vuln_doc = classification == "vulnerability" or len(vulns) >= 3
     bert_primary = (is_vuln_doc and BERT_PRIMARY_IOCS
                     and bool(IOC_CLASSIFIER_URL))
-    if bert_primary:
-        # BERT видит весь текст (<=20k), regex дополняет; отдельный LLM-IoC
-        # вызов не нужен. Если BERT упадёт — fallback ниже.
-        llm_io = None
-        llm_result = await _maybe("analyze", llm_text, hint=classification)
-    elif (LLM_MERGED_ANALYZE and (not is_vuln_doc or LLM_MERGED_VULN)
-            and callable(getattr(provider, "analyze_and_extract", None))):
+    merged_ready = (LLM_MERGED_ANALYZE
+                    and (not is_vuln_doc or LLM_MERGED_VULN or bert_primary)
+                    and callable(getattr(provider, "analyze_and_extract", None)))
+    if merged_ready:
+        # BERT supplies IoC in parallel; merged analysis processes the full
+        # document chunk-by-chunk, including vulnerability letters.
         merged_used = True
         merged = await _maybe("analyze_and_extract", llm_text, hint=classification)
         llm_result, llm_io = merged if merged else (None, None)
+    elif bert_primary:
+        llm_io = None
+        llm_result = await _analyze_chunks()
     else:
         llm_io, llm_result = await asyncio.gather(
             _maybe("extract_iocs_llm", text),
-            _maybe("analyze", llm_text, hint=classification),
+            _analyze_chunks(),
         )
     clf_io = await clf_task
     if bert_primary and clf_io is None:
@@ -219,6 +389,28 @@ async def _classifier_iocs_async(text: str):
     res.vuln_ids += [v for v in d.get("bdu", []) if v not in res.vuln_ids]
     res.cve_ids += [v for v in d.get("cve", []) if v not in res.cve_ids]
     return res
+
+
+async def _classifier_iocs_chunked_async(text: str):
+    """Run CPU BERT IoC on bounded chunks and merge the results."""
+    import asyncio
+
+    chunks = _split_text(text, LLM_BERT_CHUNK_CHARS)
+    if not chunks:
+        return None
+    if len(chunks) == 1:
+        return await _classifier_iocs_async(chunks[0])
+    results = await asyncio.gather(
+        *(_classifier_iocs_async(chunk) for chunk in chunks)
+    )
+    merged = None
+    for result in results:
+        if result is None:
+            continue
+        if merged is None:
+            merged = IoCResult()
+        _merge_ioc_results(merged, result)
+    return merged
 
 
 def _finalize(text, letter, iocs, vulns, ner, summary, classification,
@@ -306,8 +498,11 @@ def _finalize(text, letter, iocs, vulns, ner, summary, classification,
 
 def _merge_iocs(base, llm):
     """Гибрид: добавляем в regex-базу только те значения, что предложила модель."""
-    for attr, src in (("ips", "ips"), ("ipv6", "ipv6"), ("domains", "domains"),
-                      ("hashes", "hashes"), ("emails", "emails")):
+    for attr, src in (("ips", "ips"), ("ipv4_cidr", "ipv4_cidr"),
+                      ("ipv6", "ipv6"), ("domains", "domains"),
+                      ("hashes", "hashes"), ("emails", "emails"),
+                      ("vuln_ids", "vuln_ids"), ("cve_ids", "cve_ids"),
+                      ("vdb_urls", "vdb_urls")):
         existing = set(getattr(base, src))
         for v in getattr(llm, src):
             if v not in existing:

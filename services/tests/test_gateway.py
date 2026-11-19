@@ -1,11 +1,9 @@
 """API Gateway: bootstrap-auth, upload, документы, отчёты, reply (ТЗ 2.6)."""
-import io
 import os
 from pathlib import Path
 
 os.environ.setdefault("FSTEC_EVENT_BUS", "memory")
 
-import pytest
 from conftest import headers, make_docx_bytes
 
 
@@ -58,10 +56,11 @@ def test_upload_and_pipeline(client):
     assert "обнов" in reply.json()["text"].lower()
 
 
-def test_legacy_compat(client):
-    listing = client.get("/api/letters", headers=_headers(client))
+def test_documents_compat(client):
+    _first_doc_id(client)
+    listing = client.get("/documents", headers=_headers(client))
     assert listing.status_code == 200
-    stats = client.get("/api/letters/stats", headers=_headers(client))
+    stats = client.get("/documents/stats", headers=_headers(client))
     assert stats.status_code == 200
     assert stats.json()["total_letters"] >= 1
 
@@ -109,7 +108,7 @@ def test_document_detail_arrays(client):
 
 def test_reply_preview_and_response(client):
     doc_id = _first_doc_id(client)
-    preview = client.get(f"/api/letters/{doc_id}/response/preview", headers=_headers(client))
+    preview = client.get(f"/documents/{doc_id}/response/preview", headers=_headers(client))
     assert preview.status_code == 200
     body = preview.json()
     assert body["title"]
@@ -119,45 +118,45 @@ def test_reply_preview_and_response(client):
         assert "measure_options" in sec
         assert "base_measures" in sec
 
-    text = client.get(f"/api/letters/{doc_id}/response/text", headers=_headers(client)).json()
+    text = client.get(f"/documents/{doc_id}/response/text", headers=_headers(client)).json()
     assert "exists" in text
 
-    upd = client.put(f"/api/letters/{doc_id}/response", json={"content": "Тестовый ответ"}, headers=_headers(client))
+    upd = client.put(f"/documents/{doc_id}/response", json={"content": "Тестовый ответ"}, headers=_headers(client))
     assert upd.status_code == 200
-    assert "Тестовый ответ" in client.get(f"/api/letters/{doc_id}/response/text", headers=_headers(client)).json()["text"]
+    assert "Тестовый ответ" in client.get(f"/documents/{doc_id}/response/text", headers=_headers(client)).json()["text"]
 
 
 def test_export_iocs_endpoints(client):
     doc_id = _first_doc_id(client)
     for exp_type in ("emails", "ip_addresses", "domains", "ioc_indicators"):
-        r = client.get(f"/api/letters/{doc_id}/export/{exp_type}", headers=_headers(client))
+        r = client.get(f"/documents/{doc_id}/export/{exp_type}", headers=_headers(client))
         assert r.status_code == 200
-        d = client.get(f"/api/letters/{doc_id}/export/{exp_type}/docx", headers=_headers(client))
+        d = client.get(f"/documents/{doc_id}/export/{exp_type}/docx", headers=_headers(client))
         assert d.status_code == 200
         assert d.content[:2] == b"PK"
-    bad = client.get(f"/api/letters/{doc_id}/export/nope", headers=_headers(client))
+    bad = client.get(f"/documents/{doc_id}/export/nope", headers=_headers(client))
     assert bad.status_code == 400
 
 
 def test_ioc_manual_crud(client):
     doc_id = _first_doc_id(client)
-    bad = client.post(f"/api/letters/{doc_id}/iocs", json={"value": "x", "ioc_type": "bogus"},
+    bad = client.post(f"/documents/{doc_id}/iocs", json={"value": "x", "ioc_type": "bogus"},
                       headers=_headers(client))
     assert bad.status_code == 400
 
-    created = client.post(f"/api/letters/{doc_id}/iocs",
+    created = client.post(f"/documents/{doc_id}/iocs",
                           json={"value": "manual.example", "ioc_type": "domain"},
                           headers=_headers(client))
     assert created.status_code == 200, created.text
     ioc = next(i for i in created.json()["iocs"] if i["value"] == "manual.example")
     assert ioc["ioc_type"] == "domain"
 
-    updated = client.put(f"/api/letters/{doc_id}/iocs/{ioc['id']}",
+    updated = client.put(f"/documents/{doc_id}/iocs/{ioc['id']}",
                          json={"value": "manual2.example"}, headers=_headers(client))
     assert updated.status_code == 200
     assert any(i["value"] == "manual2.example" for i in updated.json()["iocs"])
 
-    deleted = client.delete(f"/api/letters/{doc_id}/iocs/{ioc['id']}", headers=_headers(client))
+    deleted = client.delete(f"/documents/{doc_id}/iocs/{ioc['id']}", headers=_headers(client))
     assert deleted.status_code == 200
     assert all(i["id"] != ioc["id"] for i in deleted.json()["iocs"])
 

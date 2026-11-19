@@ -2,7 +2,7 @@
 
 Эндпоинты ТЗ 2.6: POST /upload, GET /documents, GET /documents/{id},
 GET /reports/{id}/download, GET /reports/{id}/download_raw, POST /reply/generate.
-Плюс обратная совместимость: /api/letters/... и /api/auth/*.
+Плюс обратная совместимость: /documents/... и /api/auth/*.
 """
 import base64
 import hashlib
@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -33,7 +33,7 @@ from shared.auth import (
 )
 from shared.config import (
     ALLOWED_EXTENSIONS, BOOTSTRAP_PASSWORD, BOOTSTRAP_USERNAME, CORS_ORIGINS,
-    DATA_DIR, DISABLE_DOCS, MAX_FILE_SIZE, MAX_FILES_PER_BATCH,
+    DISABLE_DOCS, MAX_FILE_SIZE, MAX_FILES_PER_BATCH,
     MIN_PASSWORD_LENGTH, ORG_NAME, REPORT_DIR, UPLOAD_DIR,
 )
 from shared.db import SessionLocal, get_db, init_db
@@ -42,8 +42,8 @@ from shared.generator.addresses import unique_addresses
 from shared.generator.response_store import replace_response
 from shared.vulnerability_payload import vulnerability_payload
 from shared.models import (
-    Attachment, AuditLog, BootstrapSecret, Document, DocumentTable, Entity, GeneratedResponse, Report,
-    IoC, Measure, MeasureCandidate, MeasureTemplate, Report, Summary,
+    Attachment, AuditLog, Document, DocumentTable, Entity, GeneratedResponse, Report,
+    IoC, Measure, MeasureCandidate, MeasureTemplate, Summary,
     Threat, ThreatType, User, VulnActionTemplate, Vulnerability,
 )
 
@@ -58,6 +58,9 @@ _client_ip: ContextVar[str] = ContextVar("fstec_client_ip", default="")
 _LOGIN_LIMIT = int(os.environ.get("FSTEC_LOGIN_RATE_LIMIT", "10"))
 _LOGIN_WINDOW_S = int(os.environ.get("FSTEC_LOGIN_RATE_WINDOW_S", "60"))
 _LOGIN_LIMIT_DISABLED = os.environ.get("FSTEC_DISABLE_LOGIN_RATE_LIMIT", "0") == "1"
+_DEDUPE_DISABLED = os.environ.get("FSTEC_DISABLE_DEDUPE", "0").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 
 _login_attempts: dict[str, deque] = {}
 _login_lock = threading.Lock()
@@ -491,12 +494,14 @@ async def upload(
     doc.content_hash = digest.hexdigest()
     db.flush()
 
-    duplicate = (db.query(Document)
-                 .filter(Document.content_hash == doc.content_hash,
-                         Document.id != doc.id,
-                         Document.status == "completed",
-                         Document.processing_stage == "done")
-                 .order_by(Document.id.desc()).first())
+    duplicate = None
+    if not _DEDUPE_DISABLED:
+        duplicate = (db.query(Document)
+                     .filter(Document.content_hash == doc.content_hash,
+                             Document.id != doc.id,
+                             Document.status == "completed",
+                             Document.processing_stage == "done")
+                     .order_by(Document.id.desc()).first())
     if duplicate and (user.role == "admin" or duplicate.created_by == user.id):
         db.delete(doc)
         db.commit()
@@ -526,10 +531,13 @@ def list_documents(
     skip: int = Query(0, ge=0, le=1_000_000), limit: int = Query(50, ge=1, le=200),
     letter_type: str | None = None,
     status: str | None = None,
+    mine: bool = Query(False),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     query = _scoped_documents(db, user)
+    if mine:
+        query = query.filter(Document.created_by == user.id)
     if letter_type:
         query = query.filter(Document.letter_type == letter_type)
     if status:
@@ -540,6 +548,9 @@ def list_documents(
         "letter_type": d.letter_type, "status": d.status, "sla": d.sla, "routing": d.routing,
         "source_filename": d.source_filename, "processing_stage": d.processing_stage,
         "created_at": d.created_at,
+        "threat_count": db.query(Threat).filter(Threat.document_id == d.id).count(),
+        "ioc_count": db.query(IoC).filter(IoC.document_id == d.id).count(),
+        "vuln_count": db.query(Vulnerability).filter(Vulnerability.document_id == d.id).count(),
     } for d in docs]
 
 
@@ -660,7 +671,7 @@ def _serialize_document(db: Session, doc: Document) -> dict:
     return data
 
 
-@app.get("/documents/{doc_id}")
+@app.get("/documents/{doc_id:int}")
 def get_document(doc_id: int, request: Request, view: bool = Query(False),
                  db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     doc = _owned_document(db, user, doc_id)
@@ -735,20 +746,14 @@ def regenerate_report(doc_id: int, request: Request, db: Session = Depends(get_d
 
 
 @app.post("/reply/generate")
-def reply_generate(doc_id: int, request: Request, body: dict | None = None,
-                   db: Session = Depends(get_db),
-                   user: User = Depends(get_current_user)):
+async def reply_generate(doc_id: int, request: Request, body: dict | None = None,
+                         db: Session = Depends(get_db),
+                         user: User = Depends(get_current_user)):
     """Принудительная генерация проекта ответа (ТЗ 2.6 /reply/generate)."""
-    from shared.generator.templated_reply import generate_reply, persist_candidates
+    from shared.generator.reply_blocks import build_reply_blocks
+    from shared.generator.templated_reply import generate_reply_async, persist_candidates
     doc = _owned_document(db, user, doc_id)
-    threat_rows = (db.query(Threat).filter(Threat.document_id == doc_id)
-                   .order_by(Threat.number).all())
-    blocks = [{
-        "id": t.id, "number": t.number, "threat_type": t.threat_type, "theme": t.theme,
-        "group_name": t.group_name, "archive_name": t.archive_name, "exe_name": t.exe_name,
-        "malware_type": t.malware_type, "description": t.description,
-        "explicit_measures": [m.strip() for m in (t.measures or "").split("\n") if m.strip()],
-    } for t in threat_rows]
+    blocks = build_reply_blocks(db, doc, user)
     vulns = [vulnerability_payload(v)
              for v in (db.query(Vulnerability)
                        .filter(Vulnerability.document_id == doc_id)
@@ -757,9 +762,9 @@ def reply_generate(doc_id: int, request: Request, body: dict | None = None,
     addresses = unique_addresses(iocs)
     addr_count = len(addresses)
 
-    rep = generate_reply(db=db, doc_id=doc.id, letter_type=doc.letter_type, blocks=blocks,
-                         addr_count=addr_count, active_vulns=vulns,
-                         addresses=addresses)
+    rep = await generate_reply_async(db=db, doc_id=doc.id, letter_type=doc.letter_type, blocks=blocks,
+                                     addr_count=addr_count, active_vulns=vulns,
+                                     addresses=addresses)
     if rep["candidates"]:
         for i, c in enumerate(rep["candidates"]):
             rep["candidates"][i]["threat_id"] = (blocks[i]["id"] if i < len(blocks) else None)
@@ -896,7 +901,7 @@ def admin_candidate_reject(candidate_id: int, db: Session = Depends(get_db),
     return {"id": c.id, "status": "rejected"}
 
 
-# ---------------- Legacy compat: /api/letters ----------------
+# ---------------- Legacy compat: /documents ----------------
 # (обратная совместимость для существующего фронтенда до его перехода на ТЗ 2.6)
 
 @app.get("/api/audit")
@@ -920,29 +925,8 @@ def list_audit(skip: int = 0, limit: int = 200, action: str = "", document_id: i
     ]}
 
 
-@app.get("/api/letters")
-def legacy_list(skip: int = Query(0, ge=0, le=1_000_000), limit: int = Query(50, ge=1, le=200),
-                letter_type: str | None = None, status: str | None = None,
-                mine: bool = Query(True), db: Session = Depends(get_db),
-                user: User = Depends(get_current_user)):
-    query = _scoped_documents(db, user)
-    if mine:
-        query = query.filter(Document.created_by == user.id)
-    if letter_type:
-        query = query.filter(Document.letter_type == letter_type)
-    if status:
-        query = query.filter(Document.status == status)
-    docs = query.order_by(Document.created_at.desc()).offset(skip).limit(limit).all()
-    return [{"id": d.id, "letter_number": d.letter_number, "letter_date": d.letter_date,
-             "letter_type": d.letter_type, "status": d.status, "created_at": d.created_at,
-             "threat_count": db.query(Threat).filter(Threat.document_id == d.id).count(),
-             "ioc_count": db.query(IoC).filter(IoC.document_id == d.id).count(),
-             "vuln_count": db.query(Vulnerability).filter(Vulnerability.document_id == d.id).count()}
-            for d in docs]
-
-
-@app.get("/api/letters/stats")
-def legacy_stats(mine: bool = Query(True), db: Session = Depends(get_db),
+@app.get("/documents/stats")
+def document_stats(mine: bool = Query(True), db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
     scope = _scoped_documents(db, user)
     if mine:
@@ -965,17 +949,8 @@ def legacy_stats(mine: bool = Query(True), db: Session = Depends(get_db),
     }
 
 
-@app.get("/api/letters/{letter_id}")
-def legacy_detail(letter_id: int, request: Request, view: bool = Query(False),
-                  db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
-    if view:
-        _audit(db, user, "view_document", "document", doc.id, doc.source_filename, doc.id, request=request)
-    return _serialize_document(db, doc)
-
-
-@app.delete("/api/letters/{letter_id}")
-def legacy_delete(letter_id: int, request: Request, db: Session = Depends(get_db),
+@app.delete("/documents/{letter_id}")
+def delete_document(letter_id: int, request: Request, db: Session = Depends(get_db),
                   user: User = Depends(get_current_user)):
     """Мягкое удаление письма: скрывается из списков/статистики, данные и файлы
     сохраняются для аудита. Отозвать нельзя через API (только администратором БД)."""
@@ -987,16 +962,45 @@ def legacy_delete(letter_id: int, request: Request, db: Session = Depends(get_db
     return {"id": doc.id, "status": "deleted"}
 
 
-@app.get("/api/letters/{letter_id}/response/text")
-def legacy_response_text(letter_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+@app.get("/documents/{letter_id}/response/text")
+def response_text(letter_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     _owned_document(db, user, letter_id, detail="Письмо не найдено")
     resp = db.query(GeneratedResponse).filter(GeneratedResponse.document_id == letter_id) \
         .order_by(GeneratedResponse.id.desc()).first()
     return {"text": (resp.content or "") if resp else "", "exists": resp is not None}
 
 
-@app.put("/api/letters/{letter_id}/response")
-def legacy_response_update(letter_id: int, body: dict, request: Request,
+@app.get("/documents/{letter_id}/response/download")
+def download_response(letter_id: int, request: Request, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """Скачать именно сформированный ответ, а не карточку индикаторов."""
+    doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
+    resp = (db.query(GeneratedResponse)
+            .filter(GeneratedResponse.document_id == doc.id)
+            .order_by(GeneratedResponse.id.desc()).first())
+    if not resp:
+        raise HTTPException(status_code=404, detail="Ответ ещё не сформирован")
+    content = None
+    if resp.edited_content:
+        try:
+            content = base64.b64decode(resp.edited_content)
+        except Exception:  # noqa: BLE001
+            content = None
+    if not content:
+        from shared.generator.response_generator import render_reply_docx
+        content = render_reply_docx(resp.content or "")
+    number = (doc.letter_number or "").replace("/", "_").strip() or str(doc.id)
+    filename = f"Ответ на письмо {number}.docx"
+    _audit(db, user, "download_response", "document", doc.id, filename, doc.id, request=request)
+    return Response(
+        content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
+
+
+@app.put("/documents/{letter_id}/response")
+def update_response(letter_id: int, body: dict, request: Request,
                            db: Session = Depends(get_db),
                            user: User = Depends(get_current_user)):
     _owned_document(db, user, letter_id, detail="Письмо не найдено")
@@ -1016,8 +1020,8 @@ def legacy_response_update(letter_id: int, body: dict, request: Request,
     return {"id": resp.id, "text": text}
 
 
-@app.get("/api/letters/{letter_id}/response/preview")
-def legacy_response_preview(letter_id: int, db: Session = Depends(get_db),
+@app.get("/documents/{letter_id}/response/preview")
+def response_preview(letter_id: int, db: Session = Depends(get_db),
                             user: User = Depends(get_current_user)):
     doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
     from shared.generator.reply_preview import build_preview
@@ -1035,8 +1039,8 @@ def legacy_response_preview(letter_id: int, db: Session = Depends(get_db),
     return preview
 
 
-@app.put("/api/letters/{letter_id}/response/measures/{threat_id}")
-def legacy_measures_update(letter_id: int, threat_id: int, body: dict, request: Request,
+@app.put("/documents/{letter_id}/response/measures/{threat_id}")
+def update_response_measures(letter_id: int, threat_id: int, body: dict, request: Request,
                            db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     _owned_document(db, user, letter_id, detail="Письмо не найдено")
     measures = body.get("measures") or []
@@ -1081,7 +1085,7 @@ def _update_vulnerability(db: Session, user: User, doc_id: int, vuln_id: int,
 
 
 
-@app.post("/api/letters/{letter_id}/vulnerabilities/{vuln_id}/autofill")
+@app.post("/documents/{letter_id}/vulnerabilities/{vuln_id}/autofill")
 def autofill_vulnerability(letter_id: int, vuln_id: int, request: Request,
                            db: Session = Depends(get_db),
                            user: User = Depends(get_current_user)):
@@ -1197,13 +1201,7 @@ def autofill_vulnerability(letter_id: int, vuln_id: int, request: Request,
     return result
 
 
-@app.put("/api/letters/{letter_id}/vulnerabilities/{vuln_id}")
-def legacy_vuln_update(letter_id: int, vuln_id: int, body: dict, request: Request,
-                       db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return _update_vulnerability(db, user, letter_id, vuln_id, body, request=request)
-
-
-@app.post("/api/letters/{letter_id}/iocs")
+@app.post("/documents/{letter_id}/iocs")
 def ioc_create(letter_id: int, body: dict, request: Request, db: Session = Depends(get_db),
                user: User = Depends(get_current_user)):
     doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
@@ -1217,7 +1215,7 @@ def ioc_create(letter_id: int, body: dict, request: Request, db: Session = Depen
     return _serialize_document(db, doc)
 
 
-@app.put("/api/letters/{letter_id}/iocs/{ioc_id}")
+@app.put("/documents/{letter_id}/iocs/{ioc_id}")
 def ioc_update(letter_id: int, ioc_id: int, body: dict, request: Request,
                db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
@@ -1236,7 +1234,7 @@ def ioc_update(letter_id: int, ioc_id: int, body: dict, request: Request,
     return _serialize_document(db, doc)
 
 
-@app.delete("/api/letters/{letter_id}/iocs/{ioc_id}")
+@app.delete("/documents/{letter_id}/iocs/{ioc_id}")
 def ioc_delete(letter_id: int, ioc_id: int, request: Request, db: Session = Depends(get_db),
                user: User = Depends(get_current_user)):
     doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
@@ -1255,8 +1253,8 @@ def vuln_update(doc_id: int, vuln_id: int, body: dict, request: Request,
     return _update_vulnerability(db, user, doc_id, vuln_id, body, request=request)
 
 
-@app.get("/api/letters/{letter_id}/export/{export_type}")
-def legacy_export(letter_id: int, export_type: str, db: Session = Depends(get_db),
+@app.get("/documents/{letter_id}/export/{export_type}")
+def export_iocs(letter_id: int, export_type: str, db: Session = Depends(get_db),
                   user: User = Depends(get_current_user)):
     doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
     iocs = db.query(IoC).filter(IoC.document_id == doc.id).all()
@@ -1268,8 +1266,8 @@ def legacy_export(letter_id: int, export_type: str, db: Session = Depends(get_db
                     headers={"Content-Disposition": _content_disposition(filename)})
 
 
-@app.get("/api/letters/{letter_id}/export/{export_type}/docx")
-def legacy_export_docx(letter_id: int, export_type: str, db: Session = Depends(get_db),
+@app.get("/documents/{letter_id}/export/{export_type}/docx")
+def export_iocs_docx(letter_id: int, export_type: str, db: Session = Depends(get_db),
                        user: User = Depends(get_current_user)):
     doc = _owned_document(db, user, letter_id, detail="Письмо не найдено")
     iocs = db.query(IoC).filter(IoC.document_id == doc.id).all()
@@ -1315,28 +1313,6 @@ _EXPORT_DOCX_FILENAMES = {
     "domains": "Адреса на блокировку.docx",
     "ioc_indicators": "ioc_indicators.docx",
 }
-
-
-@app.get("/api/letters/{letter_id}/download")
-def legacy_download(letter_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    _owned_document(db, user, letter_id, detail="Письмо не найдено")
-    resp = db.query(GeneratedResponse).filter(GeneratedResponse.document_id == letter_id) \
-        .order_by(GeneratedResponse.id.desc()).first()
-    if not resp:
-        raise HTTPException(status_code=404, detail="Ответ ещё не сгенерирован")
-    import io
-    from docx import Document as DocxDocument
-    if resp.edited_content:
-        content = base64.b64decode(resp.edited_content)
-    else:
-        buf = io.BytesIO()
-        d = DocxDocument()
-        d.add_paragraph(resp.content or "")
-        d.save(buf)
-        content = buf.getvalue()
-    _audit(db, user, "download_reply", "document", letter_id, document_id=letter_id, request=request)
-    return Response(content, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    headers={"Content-Disposition": _content_disposition(f"answer_{letter_id}.docx")})
 
 
 # ---------------- Templates (шаблоны и библиотека мер) ----------------

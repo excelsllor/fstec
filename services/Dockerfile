@@ -1,46 +1,49 @@
-# Образ для всех микросервисов; команда запуска задаётся в docker-compose.
-FROM python:3.12-slim
+FROM ubuntu:24.04
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    PATH=/opt/venv/bin:$PATH
 
 WORKDIR /app
 
+ARG SERVICE=api_gateway
+ARG WITH_OCR=false
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        poppler-utils tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng \
-        libreoffice-writer \
-        libgl1 libglib2.0-0 libsm6 libxext6 libgomp1 \
+        ca-certificates python3.12 python3.12-venv python3-pip \
+    && if [ "$SERVICE" = "ingest_service" ]; then \
+         apt-get install -y --no-install-recommends \
+           poppler-utils tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng \
+           libgl1 libglib2.0-0 libsm6 libxext6 libgomp1; \
+         if [ "$WITH_OCR" = "true" ]; then \
+           apt-get install -y --no-install-recommends libreoffice-writer; \
+         fi; \
+       fi \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN python -m pip install --no-cache-dir --upgrade pip==26.2.2 \
-    && pip install --no-cache-dir -r requirements.txt
+RUN python3.12 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip==26.2.2
 
-# PaddleOCR (GPU) — только для ingest-service (WITH_OCR=true); тянет CUDA-колёса, поэтому опционально.
-ARG WITH_OCR=false
+COPY requirements.txt .
+RUN /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+RUN apt-get purge -y python3-pip python3-setuptools python3-urllib3 python3-msgpack 2>/dev/null || true; \
+    apt-get autoremove -y; rm -rf /var/lib/apt/lists/*
+
 COPY requirements-ocr.txt .
-RUN if [ "$WITH_OCR" = "true" ]; then pip install --no-cache-dir -r requirements-ocr.txt; fi
+RUN if [ "$WITH_OCR" = "true" ]; then /opt/venv/bin/pip install --no-cache-dir -r requirements-ocr.txt; fi
 
 COPY shared ./shared
 COPY data/generator ./data/generator
 COPY .env.example ./
 
-ARG SERVICE
 COPY ${SERVICE} ./${SERVICE}
 COPY security_service ./security_service
 COPY tools ./tools
-
-# llm_service кладём во все образы: он лёгкий (чистый Python + httpx из requirements.txt),
-# но нужен сервисам, которые сами планируют ответ — api-gateway (/reply/generate) и
-# reporting-service вызывают shared/generator/templated_reply.py, а тот импортирует
-# llm_service.provider.get_provider(). Раньше пакет попадал только в образ llm-service,
-# импорт падал, и plan_reply молча уходил на детерминированный шаблон (plan_json.llm = false).
 COPY llm_service ./llm_service
 
-# Непривилегированный пользователь; каталоги данных готовим заранее (named volume
-# наследует владельца при первой инициализации).
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /app/data/uploads /app/data/reports /app/data/raw /app/data/registry \
     && chown -R appuser:appuser /app

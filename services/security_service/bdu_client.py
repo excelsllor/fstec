@@ -21,7 +21,7 @@ from security_service.enriched import CpeMatch, EnrichedVuln, RangeSpec
 from security_service.http_pool import get_client
 from security_service.resilience import retry_async
 from security_service.versioning import build_range
-from shared.config import BDU_API_BASE, BDU_TLS_INSECURE_FALLBACK, BDU_USER_AGENT, SECURITY_CACHE_TTL_S
+from shared.config import BDU_API_BASE, BDU_TLS_INSECURE_FALLBACK, BDU_USER_AGENT
 
 logger = logging.getLogger("fstec.security.bdu")
 
@@ -55,15 +55,154 @@ _VERSION_RE = re.compile(r"\b(\d+(?:\.\d+){1,4}(?:[A-Za-z][\d]*)?)\b")
 _CVSS_RE = re.compile(r"(\d(?:\.\d)?)", re.I)
 
 
+_FIX_VERSION_RE = re.compile(
+    r"(?:обновлен(?:ие|ия|о|а)|обновляется|исправлен(?:ие|ия|о|а)|исправляется|"
+    r"устранен(?:ие|ия|о|а)|устраняется|обновить|обновиться|fixed\s+in|patched\s+in)"
+    r"[\s\S]{0,180}?(?:до|в|in)\s+(?:версии|версию|version)?\s*"
+    r"([A-Za-z0-9][\w.\-]*)",
+    re.IGNORECASE,
+)
+_RELEASE_TAG_RE = re.compile(
+    r"releases?/tag/(?:v)?([0-9]+(?:[._-][0-9]+){1,4})",
+    re.IGNORECASE,
+)
+_PATCH_RELEASE_RE = re.compile(
+    r"patch-release(?:-[a-z0-9]+)*?[-]?([0-9]+(?:-[0-9]+){1,4})(?:[-/]|$)",
+    re.IGNORECASE,
+)
+
+
 def _fixed_from_text(text: str) -> str:
-    """Версия из фраз вида «до версии 2.17.0» / «устраняется в версии …» / «обновление до версии …»."""
-    text = text or ""
-    for m in _VERS_TOKEN_RE.finditer(text):
-        tail = text[max(0, m.start() - 40): m.start()]
-        candidate = m.group(1)
-        if _FIX_HINT_RE.search(tail) and re.match(r"^\d", candidate):
-            return candidate.rstrip(".,;:()")
+    """Версия только из явной фразы об исправлении, не из «уязвимы до ...»."""
+    match = _FIX_VERSION_RE.search(text or "")
+    if not match:
+        return ""
+    candidate = match.group(1).rstrip(".,;:()")
+    return candidate if re.match(r"^[0-9]", candidate) else ""
+
+
+def _version_key(value: str) -> tuple:
+    parts = []
+    for token in re.split(r"[^0-9A-Za-z]+", value or ""):
+        if not token:
+            continue
+        parts.append((0, int(token)) if token.isdigit() else (1, token.lower()))
+    return tuple(parts)
+
+
+def _version_from_url(url: str) -> str:
+    text = url or ""
+    match = _RELEASE_TAG_RE.search(text)
+    if match:
+        return match.group(1).replace("_", ".").replace("-", ".")
+    match = _PATCH_RELEASE_RE.search(text)
+    if match:
+        return match.group(1).replace("-", ".")
     return ""
+
+
+def _fixed_from_versions(model: dict) -> str:
+    vuln_text = f"{model.get('vul_name', '')} {model.get('vul_desc', '')}".lower()
+    candidates: list[str] = []
+    for item in model.get("versions") or []:
+        if not isinstance(item, dict):
+            continue
+        soft = item.get("soft") or {}
+        name = str(soft.get("sft_name") or "").strip()
+        if not name or name.lower() not in vuln_text:
+            continue
+        versions = re.findall(r"\d+(?:[._-]\d+){1,4}(?:[A-Za-z][\w]*)?",
+                              str(item.get("ver_name") or ""))
+        if versions:
+            candidates.append(versions[-1].replace("_", ".").replace("-", "."))
+    if not candidates:
+        return ""
+    return max(candidates, key=_version_key)
+
+
+def _fixed_from_model(model: dict) -> str:
+    for url in re.split(r"[\r\n]+", str(model.get("vul_link") or "")):
+        version = _version_from_url(url)
+        if version:
+            return version
+    version = _fixed_from_versions(model)
+    if version:
+        return version
+    return _fixed_from_text(
+        str(model.get("vul_vmer") or "") + "\n" + str(model.get("vul_desc") or ""))
+
+
+def _affected_products(model: dict) -> list[dict]:
+    result: list[dict] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for item in model.get("versions") or []:
+        if not isinstance(item, dict):
+            continue
+        soft = item.get("soft") or {}
+        vendor = soft.get("vendor") or {}
+        platform = item.get("plf") or {}
+        row = {
+            "name": str(soft.get("sft_name") or "").strip(),
+            "vendor": str(vendor.get("vnd_name") or "").strip(),
+            "version": str(item.get("ver_name") or "").strip(),
+            "platform": str(platform.get("plf_name") or "").strip(),
+        }
+        key = (row["name"], row["vendor"], row["version"], row["platform"])
+        if row["name"] and key not in seen:
+            seen.add(key)
+            result.append(row)
+    return result
+
+
+_VMER_SECTION_RE = re.compile(
+    r"(?im)^\s*(?:рекомендации|компенсирующие меры|временные меры|"
+    r"если обновиться нельзя)\s*:\s*$")
+_VMER_NEXT_SECTION_RE = re.compile(
+    r"(?im)^\s*(?:уязвимые версии|ссылки|дополнительные|информация|"
+    r"источники|примечания)\b")
+
+
+def _compensating_from_vmer(model: dict) -> str:
+    text = re.sub(r"\r\n?", "\n", str(model.get("vul_vmer") or ""))
+    start = _VMER_SECTION_RE.search(text)
+    if not start:
+        return ""
+    tail = text[start.end():]
+    stop = _VMER_NEXT_SECTION_RE.search(tail)
+    if stop:
+        tail = tail[:stop.start()]
+    lines = []
+    for raw in tail.splitlines():
+        line = raw.strip(" \t-•")
+        low = line.lower()
+        if not line or line.startswith(("http://", "https://")):
+            continue
+        if low.startswith(("для ", "обновление", "установка обнов", "уязвимые версии")):
+            continue
+        if "http://" in low or "https://" in low:
+            continue
+        if re.search(r"\d+\.\d+(?:\.\d+)+", line) and ("верси" in low or "обнов" in low):
+            continue
+        lines.append(line)
+    text = " ".join(lines)
+    specific = ("siem", "??????", "????", "compatibility", "??????", "??????", "???????", "???????")
+    if not any(marker in text.lower() for marker in specific):
+        return ""
+    return text[:1600]
+
+
+def _remediation_from_model(model: dict) -> str:
+    values = []
+    for item in model.get("sop") or []:
+        if isinstance(item, dict):
+            value = str(item.get("sop_name") or "").strip()
+        else:
+            value = str(item or "").strip()
+        if value:
+            values.append(value)
+    generic = "; ".join(dict.fromkeys(values))
+    specific = _compensating_from_vmer(model)
+    return specific or generic
 
 
 def _clean_html_fragment(s: str) -> str:
@@ -227,6 +366,14 @@ def _cpe_matches_from_model(model: dict) -> list[CpeMatch]:
     versions = model.get("versions") or []
     if not isinstance(versions, list):
         return matches
+    vuln_text = f"{model.get('vul_name', '')} {model.get('vul_desc', '')}".lower()
+    preferred = [
+        item for item in versions
+        if isinstance(item, dict)
+        and str((item.get("soft") or {}).get("sft_name") or "").lower() in vuln_text
+    ]
+    if preferred:
+        versions = preferred
     for item in versions:
         if not isinstance(item, dict):
             continue
@@ -259,8 +406,7 @@ def _parse_from_model(model: dict, page: str, path_id: str) -> EnrichedVuln | No
     # ???? ? cvsses3 ????? ?????? CVSS 3.1. ??? ?????? ????? ?????????? 3.1.
     if cvss_ver in ("3.0", "3.1") and model.get("cvsses3"):
         cvss_ver = "3.1"
-    vmer = str(model.get("vul_vmer") or "")
-    fixed = _fixed_from_text(vmer + "\n" + desc)
+    fixed = _fixed_from_model(model)
     refs = [ln.strip() for ln in re.split(r"[\r\n]+", str(model.get("vul_link", "") or ""))
             if ln.strip().startswith(("http://", "https://"))]
     patch = next((u for u in refs if not u.startswith((BDU_API_BASE, "https://bdu.fstec.ru", "http://fstec.ru"))), "")
@@ -281,6 +427,8 @@ def _parse_from_model(model: dict, page: str, path_id: str) -> EnrichedVuln | No
         fixed_version=fixed,
         patch_url=patch,
         references=[{"source": "bdu", "url": u} for u in refs],
+        remediation=_remediation_from_model(model),
+        affected_products=_affected_products(model),
     )
 
 

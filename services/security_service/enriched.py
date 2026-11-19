@@ -55,6 +55,8 @@ class EnrichedVuln:
     fixed_version: str = ""
     patch_url: str = ""
     references: list[dict] = field(default_factory=list)
+    remediation: str = ""
+    affected_products: list[dict] = field(default_factory=list)
 
     @property
     def cpes(self) -> list[str]:
@@ -81,4 +83,6 @@ class EnrichedVuln:
             "fixed_version": _clean(self.fixed_version),
             "patch_url": _clean(self.patch_url),
             "references": self.references,
+            "remediation": _clean(self.remediation),
+            "affected_products": self.affected_products,
         }

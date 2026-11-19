@@ -1,48 +1,59 @@
 services:
   kafka:
-    image: bitnamilegacy/kafka:3.9
+    image: fstec-kafka412-patched3:latest
+    user: "1000:1000"
     container_name: fstec-kafka
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        export KAFKA_SSL_KEYSTORE_PASSWORD="$$(cat /etc/kafka/secrets/keystore.pass)"
+        export KAFKA_SSL_KEY_PASSWORD="$$(cat /etc/kafka/secrets/key.pass)"
+        export KAFKA_SSL_TRUSTSTORE_PASSWORD="$$(cat /etc/kafka/secrets/truststore.pass)"
+        exec /etc/kafka/docker/run
     environment:
-      - KAFKA_CFG_NODE_ID=0
-      - KAFKA_CFG_PROCESS_ROLES=controller,broker
-      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
-      - KAFKA_CFG_LISTENERS=INTERNAL://:9092,CONTROLLER://:9093
-      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://kafka:9092
-      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,INTERNAL:SASL_SSL
-      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=INTERNAL
-      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
-      - KAFKA_CFG_SASL_ENABLED_MECHANISMS=PLAIN
-      - KAFKA_CFG_SASL_MECHANISM_INTER_BROKER_PROTOCOL=PLAIN
-      - KAFKA_CLIENT_USERS=${KAFKA_SASL_USERNAME:-fstec}
-      - KAFKA_CLIENT_PASSWORDS=${KAFKA_SASL_PASSWORD:?KAFKA_SASL_PASSWORD is required}
-      - KAFKA_INTER_BROKER_USER=${KAFKA_INTER_BROKER_USER:-fstec-broker}
-      - KAFKA_INTER_BROKER_PASSWORD=${KAFKA_INTER_BROKER_PASSWORD:?KAFKA_INTER_BROKER_PASSWORD is required}
-      - KAFKA_TLS_TYPE=PEM
-      - KAFKA_TLS_CLIENT_AUTH=none
-      - KAFKA_TLS_TRUSTSTORE_FILE=/bitnami/kafka/config/certs/kafka.truststore.pem
-      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
-      - KAFKA_CFG_NUM_PARTITIONS=${FSTEC_KAFKA_PARTITIONS:-12}
-      - KAFKA_CFG_DEFAULT_REPLICATION_FACTOR=${FSTEC_KAFKA_REPLICATION_FACTOR:-1}
-      - KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=1
-      - KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
-      - KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=1
+      CLUSTER_ID: 0Kk2QJlhSu6glyaI9d2_OA
+      KAFKA_NODE_ID: "0"
+      KAFKA_PROCESS_ROLES: controller,broker
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:SASL_SSL
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+      KAFKA_SSL_KEYSTORE_LOCATION: /etc/kafka/secrets/kafka.keystore.jks
+      KAFKA_SSL_KEYSTORE_TYPE: JKS
+      KAFKA_SSL_KEYSTORE_CREDENTIALS: kafka.keystore.credentials
+      KAFKA_SSL_KEY_CREDENTIALS: kafka.key.credentials
+      KAFKA_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/kafka.truststore.jks
+      KAFKA_SSL_TRUSTSTORE_TYPE: JKS
+      KAFKA_SSL_TRUSTSTORE_CREDENTIALS: kafka.truststore.credentials
+      KAFKA_SSL_CLIENT_AUTH: none
+      KAFKA_OPTS: -Djava.security.auth.login.config=/etc/kafka/secrets/kafka_server_jaas.conf
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: ${FSTEC_KAFKA_PARTITIONS:-12}
+      KAFKA_DEFAULT_REPLICATION_FACTOR: ${FSTEC_KAFKA_REPLICATION_FACTOR:-1}
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
     ports:
       - "127.0.0.1:9092:9092"
     volumes:
-      - kafka_data:/bitnami/kafka
-      - ../certs/kafka.keystore.pem:/bitnami/kafka/config/certs/kafka.keystore.pem:ro
-      - ../certs/kafka.keystore.key:/bitnami/kafka/config/certs/kafka.keystore.key:ro
-      - ../certs/ca.crt:/bitnami/kafka/config/certs/kafka.truststore.pem:ro
-      - ./tools/kafka-healthcheck.sh:/usr/local/bin/kafka-healthcheck.sh:ro
+      - kafka41_data:/var/lib/kafka/data
+      - /home/raport/kafka-secrets:/etc/kafka/secrets:ro
+      - ./tools/kafka41-healthcheck.sh:/usr/local/bin/kafka41-healthcheck.sh:ro
     healthcheck:
-      test: ["CMD", "/usr/local/bin/kafka-healthcheck.sh"]
+      test: ["CMD", "/usr/local/bin/kafka41-healthcheck.sh"]
       interval: 10s
       timeout: 10s
       retries: 12
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.11-alpine
     container_name: fstec-redis
     restart: unless-stopped
     environment:
@@ -59,7 +70,7 @@ services:
       retries: 10
 
   postgres:
-    image: postgres:16-alpine
+    image: fstec-postgres-hardened:latest
     container_name: fstec-postgres
     restart: unless-stopped
     environment:
@@ -109,7 +120,7 @@ services:
       start_period: 600s
 
   vllm-proxy:
-    image: nginxinc/nginx-unprivileged:1.29-alpine
+    image: fstec-nginx-hardened:latest
     container_name: fstec-vllm-proxy
     restart: unless-stopped
     extra_hosts: ["host.docker.internal:host-gateway"]
@@ -255,6 +266,15 @@ services:
       VLLM_MODEL: ${VLLM_MODEL:-Qwen3.5-9B}
       FSTEC_RUBERT_MODEL: ${FSTEC_RUBERT_MODEL:-DeepPavlov/rubert-base-cased-conversational}
       FSTEC_RUBERT_DEVICE: ${FSTEC_RUBERT_DEVICE:-cpu}
+      FSTEC_IOC_CLASSIFIER_URL: ${FSTEC_IOC_CLASSIFIER_URL:-http://host.docker.internal:8002/extract}
+      FSTEC_LLM_DOCUMENT_MAX_CHARS: ${FSTEC_LLM_DOCUMENT_MAX_CHARS:-30000}
+      FSTEC_LLM_ENABLE_THINKING: ${FSTEC_LLM_ENABLE_THINKING:-0}
+      FSTEC_LLM_PREPROCESS: ${FSTEC_LLM_PREPROCESS:-1}
+      FSTEC_LLM_MERGED_MAX_CHARS: ${FSTEC_LLM_MERGED_MAX_CHARS:-12000}
+      FSTEC_LLM_MERGED_MAX_TOKENS: ${FSTEC_LLM_MERGED_MAX_TOKENS:-800}
+      FSTEC_LLM_DIGEST_MAX_CHARS: ${FSTEC_LLM_DIGEST_MAX_CHARS:-7000}
+      FSTEC_LLM_BERT_CHUNK_CHARS: ${FSTEC_LLM_BERT_CHUNK_CHARS:-10000}
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
       # РџРѕС‚РѕР»РѕРє РѕРґРЅРѕРІСЂРµРјРµРЅРЅС‹С… Р·Р°РїСЂРѕСЃРѕРІ РІ vLLM. Р”РµСЂР¶РёРј РµРіРѕ РЅР° СѓСЂРѕРІРЅРµ, РєРѕС‚РѕСЂС‹Р№
       # СЂРµР°Р»СЊРЅРѕ РїРµСЂРµРІР°СЂРёРІР°РµС‚ T4 (measured AWQ: concurrency 10-12), РёРЅР°С‡Рµ
       # РѕС‡РµСЂРµРґСЊ Р·Р°РїСЂРѕСЃРѕРІ РІ vLLM СЂР°СЃС‚С‘С‚ Рё p99 РІР·Р»РµС‚Р°РµС‚.
@@ -413,4 +433,5 @@ volumes:
   data:
   paddle_cache:
   kafka_data:
+  kafka41_data:
   hf_cache:

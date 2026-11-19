@@ -18,6 +18,7 @@ from shared.config import (LLM_PROVIDER, LLM_TIMEOUT_S, VLLM_BASE_URL,
                            VLLM_THINK_MAX_TOKENS, VLLM_THINK_BUDGET,
                            VLLM_CLASSIFY_MAX_CHARS, VLLM_EXTRACT_IO,
                            VLLM_EXTRACT_MAX_CHARS, VLLM_EXTRACT_MAX_TOKENS,
+                           LLM_MAX_MODEL_LEN, LLM_MERGED_MAX_CHARS, LLM_MERGED_MAX_TOKENS,
                            LLM_POOL_KEEPALIVE, LLM_POOL_MAX_CONNECTIONS,
                            LLM_MAX_CONCURRENCY, LLM_WARMUP_TIMEOUT_S)
 from shared.concurrency import gate
@@ -274,7 +275,11 @@ class VLLMProvider(LLMProvider):
     def _fit_context(self, text: str) -> str:
         """Обрезаем «голову» документа, чтобы влезть в контекст (LLM-классификация
         по первым абзацам: источник + тип угрозы указываются в начале письма)."""
-        budget_chars = int((CHUNK_MAX_TOKENS - self._completion_budget) * 2.2)
+        # Be conservative: Russian text on Qwen can tokenize at roughly
+        # 0.8-1.0 tokens per character. One character per token keeps the
+        # prompt plus completion below the deployed context limit.
+        budget_tokens = max(1024, LLM_MAX_MODEL_LEN - self._completion_budget - 256)
+        budget_chars = max(2000, budget_tokens)
         if budget_chars <= 0 or len(text) <= budget_chars:
             return text
         head = text[:budget_chars]
@@ -473,8 +478,8 @@ class VLLMProvider(LLMProvider):
     # худшее письмо — 19 691 символ ≈ 7 325 токенов, +3 500 на ответ = 10 825,
     # с запасом. VLLM_EXTRACT_MAX_TOKENS=6000 здесь уже не поместился бы.
 
-    _MERGED_MAX_CHARS = 18000
-    _MERGED_MAX_TOKENS = 3500
+    _MERGED_MAX_CHARS = LLM_MERGED_MAX_CHARS
+    _MERGED_MAX_TOKENS = LLM_MERGED_MAX_TOKENS
 
     # --- A: JSON-схемы для xgrammar guided decoding -------------------------
     _IOCS_SCHEMA = {

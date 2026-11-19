@@ -29,6 +29,46 @@ def test_threat_group_and_type():
     assert info.threats[1].group_name == "Cloud Werewolf"
 
 
+def test_referenced_measures_are_expanded_from_shared_catalog():
+    text = """
+    1. Хакерской группировкой Watch Wolf осуществляются фишинговые рассылки
+    электронных писем с тематикой «Документы, акты». Во вложениях прикреплен архив
+    с наименованием «Документы.7z», содержащий исполняемый файл
+    с наименованием «Документы.pdf.exe».
+    1.1. Производить автоматическую проверку вложений с использованием «песочницы».
+    1.2. Производить проверку почтовых вложений средствами антивирусной защиты.
+    1.3. Осуществлять автоматическую проверку указанных в письмах URL-адресов.
+    1.4. Проверять имя домена отправителя электронного письма.
+    1.5. Организовать получение почтовых вложений только от известных отправителей.
+    1.6. Не открывать и не загружать почтовые вложения.
+    1.7. Работать с электронной почтой под учетными записями с минимальными привилегиями.
+    2. Хакерской группировкой Clubfoot Wolf осуществляются фишинговые рассылки.
+    Необходимо реализовать меры защиты, указанные в пунктах 1.1-1.7.
+    Кроме того, необходимо обеспечить ограничение обращений к адресу bad[.]example.
+    Также необходимо осуществить настройку правил системы мониторинга событий.
+    3. Хакерскими группировками осуществляются фишинговые рассылки.
+    Необходимо реализовать меры защиты, указанные в пунктах 1.1-1.7.
+    Также необходимо осуществить настройку правил системы мониторинга событий.
+    """
+    info = analyze_letter(text)
+    assert len(info.threats) == 3
+
+    first = info.threats[0]
+    assert len(first.measures) == 7
+    assert any("URL" in measure for measure in first.measures)
+    assert any("известных отправителей" in measure for measure in first.measures)
+
+    second = info.threats[1]
+    assert len(second.measures) == 9
+    assert any("песочницы" in measure for measure in second.measures)
+    assert any("bad[.]example" in measure for measure in second.measures)
+
+    third = info.threats[2]
+    assert len(third.measures) == 8
+    assert not any("ограничение обращений" in measure.lower()
+                   for measure in third.measures)
+
+
 def test_numbered_measures_are_kept_whole():
     from shared.extractor.letter_analyzer import _extract_measures
     section = (

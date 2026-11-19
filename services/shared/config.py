@@ -118,6 +118,15 @@ VLLM_CA_FILE = os.environ.get("VLLM_CA_FILE", "")
 LLM_TIMEOUT_S = float(os.environ.get("FSTEC_LLM_TIMEOUT_S", "10"))
 VLLM_MAX_TOKENS = int(os.environ.get("FSTEC_VLLM_MAX_TOKENS", "900"))
 PLAN_MAX_TOKENS = max(800, int(os.environ.get("FSTEC_PLAN_MAX_TOKENS", "4000")))
+# Context budget of the deployed vLLM instance. Keep prompt chunks and
+# completion budgets inside this limit to avoid HTTP 400 context overflows.
+LLM_MAX_MODEL_LEN = max(2048, int(os.environ.get("FSTEC_LLM_MAX_MODEL_LEN", "12288")))
+LLM_DOCUMENT_MAX_CHARS = max(4000, int(os.environ.get("FSTEC_LLM_DOCUMENT_MAX_CHARS", "30000")))
+LLM_PREPROCESS = os.environ.get("FSTEC_LLM_PREPROCESS", "1").lower() in ("1", "true", "yes")
+LLM_MERGED_MAX_CHARS = max(2000, int(os.environ.get("FSTEC_LLM_MERGED_MAX_CHARS", "12000")))
+LLM_MERGED_MAX_TOKENS = max(256, int(os.environ.get("FSTEC_LLM_MERGED_MAX_TOKENS", "800")))
+LLM_DIGEST_MAX_CHARS = max(1000, int(os.environ.get("FSTEC_LLM_DIGEST_MAX_CHARS", "7000")))
+LLM_BERT_CHUNK_CHARS = max(2000, int(os.environ.get("FSTEC_LLM_BERT_CHUNK_CHARS", "10000")))
 VLLM_TEMPERATURE = float(os.environ.get("FSTEC_VLLM_TEMPERATURE", "0.1"))
 VLLM_TOP_P = float(os.environ.get("FSTEC_VLLM_TOP_P", "0.9"))
 # Прогрев/keepalive vLLM: первый запрос после старта не должен быть холодным.
@@ -171,7 +180,9 @@ LLM_POOL_MAX_CONNECTIONS = max(1, int(os.environ.get("FSTEC_LLM_POOL_MAX", "16")
 LLM_POOL_KEEPALIVE = max(1, int(os.environ.get("FSTEC_LLM_POOL_KEEPALIVE", "8")))
 # Контекст llama-server -c 16384: на ЛЕВЫЙ промпт (после _fit_context) остаётся
 # 16384 - VLLM_MAX_TOKENS = 15484 токенов — достаточно для писем целиком (макс ~12665).
-CHUNK_MAX_TOKENS = int(os.environ.get("FSTEC_CHUNK_MAX_TOKENS", "15400"))
+CHUNK_MAX_TOKENS = int(os.environ.get(
+    "FSTEC_CHUNK_MAX_TOKENS", str(max(4096, LLM_MAX_MODEL_LEN - 512))
+))
 SUMMARY_MAX_CHARS = 500
 
 # RuBERT-классификация (быстрый предиктор категорий, GPU под vLLM)

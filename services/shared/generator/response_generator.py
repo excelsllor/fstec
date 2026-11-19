@@ -81,7 +81,9 @@ def generate_reply_text(
     lines.append("Сообщаем о принятых мерах по повышению защищенности информационной инфраструктуры.")
 
     is_vuln_letter = letter_type == "vulnerability"
-    active_vulns = [v for v in vulnerabilities if v.get("cmdb_match") or v.get("is_applicable") is True]
+    active_vulns = ([v for v in vulnerabilities
+                     if v.get("cmdb_match") or v.get("is_applicable") is True]
+                    if is_vuln_letter else [])
     if active_vulns:
         lines.append("")
         lines.append("Выявлены уязвимости, затрагивающие используемое программное обеспечение. "

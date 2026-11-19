@@ -4,12 +4,13 @@
 import asyncio
 import logging
 import re
+from difflib import SequenceMatcher
 from dataclasses import dataclass, field
 
 from security_service.cmdb import InventoryClient, InventoryItem
 from security_service.enriched import EnrichedVuln
 from security_service.versioning import (compare_versions, match_cpe, match_product,
-                                         normalize_version, vuln_range_hit)
+                                         match_product_strict, vuln_range_hit)
 from shared.config import SECURITY_MODE
 
 logger = logging.getLogger("fstec.security.assessment")
@@ -91,18 +92,104 @@ def _cpe_ok(matcher, item_cpe: str) -> bool:
     return (not v[0] or not i[0] or v[0] == i[0]) and (not v[1] or not i[1] or v[1] == i[1])
 
 
-_REDOS_LINUX_NAMES = {"linux", "red os", "redos", "red-os"}
+_NON_PRODUCT_TOKENS = {
+    "bdu", "cve", "cvss", "api", "http", "https", "raw", "xml", "gnu", "os",
+    "and", "the", "for", "with",
+}
 
 
-def _is_redos_linux(software: str) -> bool:
-    low = " ".join((software or "").lower().replace("ё", "е").split())
-    if not low:
+def _description_product_candidates(description: str) -> list[str]:
+    """Извлекает названия продуктов из текста уязвимости без списка соответствий."""
+    text = " ".join((description or "").split())
+    match = re.search(
+        r"уязвимость\s+(.+?)(?:\s+связан|,\s*связан|\.(?:\s|$))",
+        text, re.IGNORECASE)
+    clause = match.group(1) if match else text
+    candidates = re.findall(
+        r"[A-Za-z][A-Za-z0-9]*(?:[ ._+&/-]+[A-Za-z][A-Za-z0-9]*)*",
+        clause)
+    result: list[str] = []
+    seen: set[str] = set()
+    for candidate in reversed(candidates):
+        candidate = candidate.strip(" .,;:-")
+        key = candidate.casefold()
+        if len(candidate) < 2 or key in seen or key in _NON_PRODUCT_TOKENS:
+            continue
+        seen.add(key)
+        result.append(candidate)
+    return result
+
+
+def _product_kind(description: str, product: str = "") -> str:
+    low = " ".join((description or "").lower().replace("ё", "е").split())
+    needle = (product or "").casefold()
+    position = low.rfind(needle) if needle else -1
+    context = low[max(0, position - 180):position] if position >= 0 else low
+    library_markers = (
+        "библиотек", "пакет", "модул", "фреймворк", "интерпретатор",
+        "языка программирования", "компонент",
+    )
+    application_markers = (
+        "платформ", "систем", "сервер", "приложен", "устройств", "процессор",
+        "операционн", "редактор", "средств",
+    )
+    library_pos = max((context.rfind(marker) for marker in library_markers), default=-1)
+    application_pos = max(
+        (context.rfind(marker) for marker in application_markers), default=-1)
+    return "library" if library_pos > application_pos else "application"
+
+
+def _product_for_cmdb(description: str, software: str) -> tuple[str, list[str]]:
+    """Возвращает отображаемый продукт и все разумные термины для GLPI."""
+    primary = " ".join((software or "").split()).strip(" ,;:-")
+    candidates = _description_product_candidates(description)
+    primary_key = primary.casefold().strip(" -")
+    valid_primary = (
+        bool(primary)
+        and any(ch.isalpha() and ch.isascii() for ch in primary)
+        and not primary.endswith("-")
+        and primary_key not in _NON_PRODUCT_TOKENS
+    )
+    product = primary if valid_primary else (candidates[0] if candidates else primary)
+    return product, ([product] if product else [])
+
+
+def _affected_product_hit(enriched: EnrichedVuln | None, software: str,
+                          current_version: str) -> bool:
+    if not enriched or not current_version:
         return False
-    if low in _REDOS_LINUX_NAMES:
+    current = current_version.casefold().replace("ё", "е")
+    for product in enriched.affected_products:
+        name = str(product.get("name") or "")
+        version = str(product.get("version") or "")
+        if not match_product(name, software):
+            continue
+        values = f"{name} {version}".casefold().replace("ё", "е")
+        if current and current in values:
+            return True
+    return False
+
+
+def _candidate_matches(candidate: InventoryItem, term: str, kind: str) -> bool:
+    if match_product_strict(candidate.name, term, kind):
         return True
-    return bool(re.fullmatch(
-        r"(?:linux(?:\s+(?:kernel|os))?(?:\s+[\d.]+)?|gnu[\s/]+linux|"
-        r"red[\s-]*os(?:\s+[\d.]+)?|операционная\s+система\s+linux)", low))
+    if not match_product(candidate.vendor, term):
+        return False
+    low_name = candidate.name.casefold()
+    blocked = ("runner", "agent", "update", "viewer", "util", "library",
+               "module", "plugin", "sdk", "driver", "firmware", "common")
+    return not any(marker in low_name for marker in blocked)
+
+
+def _related_glpi_names(candidates: list[InventoryItem], software: str) -> list[str]:
+    tokens = [token for token in re.split(r"[^0-9A-Za-zА-Яа-яЁё]+",
+                                          software.casefold()) if len(token) >= 3]
+    if not tokens:
+        return []
+    return [
+        candidate.name for candidate in candidates
+        if all(token in candidate.name.casefold() for token in tokens)
+    ]
 
 
 def _match_cmdb(enriched: EnrichedVuln | None, candidates: list[InventoryItem],
@@ -120,7 +207,8 @@ def _match_cmdb(enriched: EnrichedVuln | None, candidates: list[InventoryItem],
             continue
         cpe_hit = bool(enriched and enriched.cpes and item.cpe
                        and match_cpe(enriched.cpes, item.cpe))
-        name_hit = match_product(item.name, software)
+        name_hit = (match_product(item.name, software)
+                    or match_product(item.vendor, software))
         if not (cpe_hit or name_hit):
             continue
         version_hit = False
@@ -136,8 +224,6 @@ def _match_cmdb(enriched: EnrichedVuln | None, candidates: list[InventoryItem],
                 version_hit = bool(targets) and vuln_range_hit(item.version, targets)
             elif fixed_for_check:
                 version_hit = compare_versions(item.version, fixed_for_check) < 0
-            elif enriched is None:
-                version_hit = True
         if not version_hit:
             continue
         return item, True
@@ -186,72 +272,152 @@ class Assessment:
 async def _assess_one(v: dict, *, cmdb, enrich: bool, nvd, bdu, cmdb_cache: dict | None = None) -> tuple[dict, str]:
     """Обогащение + сопоставление с CMDB для одной уязвимости."""
     raw = dict(v or {})
-    software = " ".join((raw.get("software") or "").split())
+    raw_software = " ".join((raw.get("software") or "").split())
     enriched: EnrichedVuln | None = None
-    if enrich and (raw.get("cve_id") or raw.get("bdu_id")) and nvd and bdu:
+    if enrich and (raw.get("cve_id") or raw.get("bdu_id")) and (nvd or bdu):
         enriched, errs = await _enrich(raw, nvd, bdu)
         err_text = errs
     else:
         err_text = ""
 
-    bdu_mismatch = _bdu_description_mismatch(enriched, raw, software)
-    fixed = derive_fixed_version(None if bdu_mismatch else enriched, raw.get("description", ""))
+    bdu_mismatch = _bdu_description_mismatch(enriched, raw, raw_software)
+    preferred_description = _preferred_description(enriched, raw, raw_software)
+    software, lookup_terms = _product_for_cmdb(preferred_description, raw_software)
+    if not (raw.get("bdu_id") or raw.get("cve_id")):
+        software, lookup_terms = "", []
+    fixed = (derive_fixed_version(
+        None if bdu_mismatch else enriched, preferred_description)
+        or " ".join(str(raw.get("fixed_version") or "").split()).strip(" ,;"))
     item, matched = None, False
     cmdb_error = ""
     candidates: list[InventoryItem] = []
+    seen_candidates: set[tuple[str, str, int]] = set()
     try:
-        if cmdb_cache is not None and software in cmdb_cache:
-            candidates = cmdb_cache[software]
-        else:
-            candidates = await cmdb.find_many(software)
-            if cmdb_cache is not None:
-                cmdb_cache[software] = candidates
-        item, matched = _match_cmdb(enriched, candidates, software, fixed_hint=fixed)
+        for term in lookup_terms or ([software] if software else []):
+            cache_key = term.casefold()
+            if cmdb_cache is not None and cache_key in cmdb_cache:
+                found = cmdb_cache[cache_key]
+            else:
+                found = await cmdb.find_many(term)
+                if cmdb_cache is not None:
+                    cmdb_cache[cache_key] = found
+            for candidate in found:
+                key = (candidate.name.casefold(), candidate.version, candidate.assets)
+                if key not in seen_candidates:
+                    seen_candidates.add(key)
+                    candidates.append(candidate)
     except Exception as exc:  # noqa: BLE001 — CMDB недоступна (ТЗ 4.2)
         logger.warning("cmdb lookup failed for %r: %s", software, exc)
         cmdb_error = f"cmdb:{software}:{exc}"
         err_text = "; ".join(x for x in (err_text, f"cmdb:{software}:{exc}") if x)
 
+    lookup_targets = lookup_terms or ([software] if software else [])
+    product_kind = _product_kind(preferred_description, software)
+    raw_candidates = list(candidates)
+    candidates = [
+        candidate for candidate in candidates
+        if any(_candidate_matches(candidate, term, product_kind)
+               for term in lookup_targets)
+    ]
+    if not candidates and software:
+        normalized_software = software.casefold().replace(" ", "")
+        fallback_terms = [
+            candidate for candidate in _description_product_candidates(preferred_description)
+            if len(candidate) >= 4
+            and (candidate.casefold().replace(" ", "") in normalized_software
+                 or normalized_software in candidate.casefold().replace(" ", ""))
+        ]
+        for term in fallback_terms:
+            cache_key = term.casefold()
+            if cmdb_cache is not None and cache_key in cmdb_cache:
+                found = cmdb_cache[cache_key]
+            else:
+                found = await cmdb.find_many(term)
+                if cmdb_cache is not None:
+                    cmdb_cache[cache_key] = found
+            for candidate in found:
+                key = (candidate.name.casefold(), candidate.version, candidate.assets)
+                if key not in seen_candidates:
+                    seen_candidates.add(key)
+                    candidates.append(candidate)
+        candidates = [
+            candidate for candidate in candidates
+            if any(_candidate_matches(candidate, term, product_kind)
+                   for term in fallback_terms)
+        ]
+    for term in lookup_targets:
+        item, matched = _match_cmdb(
+            enriched, candidates, term, fixed_hint=fixed)
+        if item:
+            break
     installed = [candidate for candidate in candidates if candidate.installed]
     current_version = (item.version if item else
                        (installed[0].version if installed else ""))
-    linux_as_redos = not installed and _is_redos_linux(software)
+    range_info = bool(enriched and any(
+        spec.is_specified for cpe_match in enriched.cpe_matches for spec in cpe_match.ranges))
+    affected_hit = _affected_product_hit(enriched, software, current_version)
+    affected_named = bool(enriched and any(
+        match_product(str(p.get("name") or ""), software)
+        for p in enriched.affected_products))
+    related_names = _related_glpi_names(raw_candidates, software)
+    vendor_alias_hit = bool(
+        affected_named and any(
+            match_product(candidate.vendor, software)
+            and not match_product_strict(candidate.name, software, product_kind)
+            and candidate.name.isalnum()
+            and not any(token in candidate.name.casefold()
+                        for token in re.findall(r"[a-zа-яё0-9]{3,}", software.casefold()))
+            and SequenceMatcher(None, candidate.name.casefold(),
+                                software.casefold()).ratio() >= 0.6
+            for candidate in installed
+        )
+    )
     if cmdb_error:
         applicable = None
     else:
-        applicable = bool(installed) or linux_as_redos
-    if matched:
+        applicable = bool(installed) or (affected_named and bool(related_names))
+    if matched or affected_hit or vendor_alias_hit:
         action_type = "update" if fixed else "compensate"
-    elif linux_as_redos:
-        action_type = "update" if fixed else "compensate"
+    elif installed and not fixed and not range_info:
+        action_type = "skip" if enriched and enriched.affected_products else "verify"
+    elif affected_named and related_names:
+        action_type = "verify"
     elif applicable is not None:
         action_type = "skip"
     else:
         action_type = ""
     notes = ""
-    if linux_as_redos:
-        notes = "ОС Linux учитывается как RED OS; отдельная запись в GLPI Software не найдена."
-    elif installed and current_version:
+    if installed and current_version:
         notes = (f"ПО «{installed[0].name}» {current_version} найдено в GLPI (список ПО); "
                  f"{installed[0].assets} запись в списке.")
+        if software.casefold() != raw_software.casefold():
+            notes += f" Продукт уточнён по описанию: «{software}»."
+        if vendor_alias_hit:
+            notes += " Продукт сопоставлен с GLPI по вендору."
+        if action_type == "verify":
+            notes += " Диапазон уязвимых версий и исправленная версия не заданы."
+    elif affected_named and related_names:
+        notes = (f"Продукт «{software}» используется, но в GLPI найдена только "
+                 f"запись компонента «{related_names[0]}»; версия продукта не подтверждена.")
     elif applicable is False:
         notes = f"ПО «{software}» не найдено в установленном ПО GLPI."
+    remediation = enriched.remediation if enriched else ""
     rec = (f"Обновить {item.name if item else software} с {current_version} до {fixed}"
-           if matched and fixed else UPDATE_TEMPLATE)
+           if matched and fixed else (remediation or UPDATE_TEMPLATE))
     return {
         "cve_id": enriched.cve_id if enriched and enriched.cve_id else raw.get("cve_id", ""),
         "bdu_id": enriched.bdu_id if enriched and enriched.bdu_id else raw.get("bdu_id", ""),
-        "description": _preferred_description(enriched, raw, software),
+        "description": preferred_description,
         "software": software,
         "severity": ((raw.get("severity") or "unknown") if bdu_mismatch
                      else _severity(enriched, raw)),
         "cvss_score": (raw.get("cvss_score") if bdu_mismatch
                        else (enriched.cvss_score if enriched else raw.get("cvss_score"))),
         "cvss_version": (enriched.cvss_version if enriched else raw.get("cvss_version", "")),
-        "cpe": (raw.get("cpe") if bdu_mismatch
-                else (enriched.cpes[0] if enriched and enriched.cpes else (raw.get("cpe") or ""))),
-        "affected_range": (raw.get("affected_range") if bdu_mismatch
-                            else (enriched.affected_range if enriched else (raw.get("affected_range") or ""))),
+        "cpe": ((raw.get("cpe") if bdu_mismatch
+                 else (enriched.cpes[0] if enriched and enriched.cpes else raw.get("cpe"))) or ""),
+        "affected_range": ((raw.get("affected_range") if bdu_mismatch
+                            else (enriched.affected_range if enriched else raw.get("affected_range"))) or ""),
         "fixed_version": fixed,
         "patch_url": enriched.patch_url if enriched else (raw.get("patch_url") or ""),
         "cmdb_match": matched,
@@ -259,6 +425,8 @@ async def _assess_one(v: dict, *, cmdb, enrich: bool, nvd, bdu, cmdb_cache: dict
         "current_version": current_version,
         "target_version": fixed,
         "recommendation": rec,
+        "remediation": remediation,
+        "action_details": remediation,
         "source": enriched.source if enriched else "manual",
         "is_applicable": applicable,
         "action_type": action_type,
@@ -317,7 +485,6 @@ async def assess_document(vulns_raw: list[dict], *, cmdb: InventoryClient,
         if err_text:
             external_errors.append(err_text)
 
-    cmdb_failed = any(a.get("cmdb_error") for a in out)
     sla_score = "critical" if (
         any(a.get("cmdb_match") for a in out)
         or (letter_type or "").lower() in ("compromise", "clickfix")

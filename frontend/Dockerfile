@@ -7,7 +7,7 @@ RUN npm ci --include=optional
 COPY . .
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.29-alpine
+FROM nginxinc/nginx-unprivileged:1.29.8-alpine
 USER root
 RUN apk upgrade --no-cache
 USER nginx

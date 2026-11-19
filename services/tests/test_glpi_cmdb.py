@@ -115,7 +115,7 @@ def test_v2_oauth_and_versions():
     assert tokens["calls"] == 1
 
 
-def test_v2_uses_package_aliases_and_filters_names():
+def test_v2_does_not_use_unrequested_package_aliases():
     filters = []
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -138,9 +138,8 @@ def test_v2_uses_package_aliases_and_filters_names():
                     client_id="cid", client_secret="sec", transport=httpx.MockTransport(handler))
     items = _run(cmdb.find_many("CPython"))
     assert filters[0] == "CPython"
-    assert "python3" in filters
-    assert [item.version for item in items] == ["3.12.0"]
-    assert items[0].name == "python3"
+    assert "python3" not in filters
+    assert items == []
 
 
 def test_v2_falls_back_to_substring_for_mariadb_server():

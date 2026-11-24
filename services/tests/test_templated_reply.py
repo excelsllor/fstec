@@ -953,6 +953,37 @@ def test_software_placeholder_fallback_without_product():
     assert "не применяется" in out
 
 
+def test_reference_plan_does_not_inject_url_or_sender_without_source(doc_db):
+    db, doc, _ = doc_db
+    blocks = [{
+        "id": 1, "number": 1, "threat_type": "phishing",
+        "description": "Фишинговая рассылка.",
+        "explicit_measures": [],
+    }]
+    plan = plan_reply(db=db, letter_type="hacker", blocks=blocks,
+                      addr_count=1, use_llm=False)
+    texts = [m["text"] for m in plan["blocks"][0]["measures"]]
+    assert not any("URL-адрес" in text or "анализ ссылок" in text for text in texts)
+    assert not any("известных отправителей" in text for text in texts)
+
+
+def test_source_url_and_sender_measures_are_preserved(doc_db):
+    db, doc, _ = doc_db
+    blocks = [{
+        "id": 1, "number": 1, "threat_type": "phishing",
+        "description": "Фишинговая рассылка.",
+        "explicit_measures": [
+            "Осуществлять автоматическую проверку указанных в письмах URL-адресов",
+            "Организовать получение почтовых вложений только от известных отправителей",
+        ],
+    }]
+    plan = plan_reply(db=db, letter_type="hacker", blocks=blocks,
+                      addr_count=1, use_llm=False)
+    texts = [m["text"] for m in plan["blocks"][0]["measures"]]
+    assert any("URL-адрес" in text for text in texts)
+    assert any("известных отправителей" in text for text in texts)
+
+
 def test_source_measures_take_precedence_over_reference(doc_db):
     db, doc, _ = doc_db
     blocks = [{

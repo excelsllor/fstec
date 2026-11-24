@@ -1291,6 +1291,44 @@ def _measure_signature(blk: dict) -> tuple:
     )
 
 
+def _source_has_measure_text(source: dict, marker: str) -> bool:
+    marker = marker.casefold().replace("ё", "е")
+    return any(marker in str(value).casefold().replace("ё", "е")
+               for value in (source.get("explicit_measures") or []))
+
+
+def _source_has_url_measure(source: dict) -> bool:
+    return (_source_has_measure_text(source, "url-адрес")
+            or _source_has_measure_text(source, "анализ ссылок"))
+
+
+def _source_has_sender_measure(source: dict) -> bool:
+    return _source_has_measure_text(source, "известных отправител")
+
+
+def _is_url_measure_text(text: str) -> bool:
+    low = str(text or "").casefold()
+    return "url-адрес" in low or "анализ ссылок" in low
+
+
+def _is_sender_measure_text(text: str) -> bool:
+    return "известных отправител" in str(text or "").casefold()
+
+
+def _filter_reference_measures(items: list[dict], source: dict) -> list[dict]:
+    has_url = _source_has_url_measure(source)
+    has_sender = _source_has_sender_measure(source)
+    out = []
+    for item in items:
+        text = str(item.get("text") or "")
+        if _is_url_measure_text(text) and not has_url:
+            continue
+        if _is_sender_measure_text(text) and not has_sender:
+            continue
+        out.append(item)
+    return out
+
+
 def _reference_measure_plan(blocks: list[dict], library: list[dict] | None,
                             addr_count: int) -> list[list[dict]] | None:
     """Распределение мер как в эталонах: фишинг — полный core, остальные —
@@ -1315,7 +1353,7 @@ def _reference_measure_plan(blocks: list[dict], library: list[dict] | None,
                 # Поздний обезличенный фишинговый блок в эталонах идёт без core.
                 sel = [restrict]
             else:
-                sel = list(core)
+                sel = _filter_reference_measures(list(core), blk)
                 any_phishing = True
         else:
             sel = list(reduced)
@@ -1433,11 +1471,16 @@ def _apply_general_measure_policy(plan: dict, blocks: list[dict],
                 text for text in core
                 if "сетевых средств" not in text.casefold()
                 and "мониторинга" not in text.casefold()
+                and (not _is_url_measure_text(text)
+                     or _source_has_url_measure(source))
+                and (not _is_sender_measure_text(text)
+                     or _source_has_sender_measure(source))
             ]
-            if not any("URL-адрес" in text for text in body):
+            if (_source_has_url_measure(source)
+                    and not any("URL-адрес" in text for text in body)):
                 body.insert(min(2, len(body)), _STANDARD_URL_MEASURE)
-            if profile["sender"] and not any(
-                    "известных отправителей" in text for text in body):
+            if (_source_has_sender_measure(source)
+                    and not any("известных отправителей" in text for text in body)):
                 body.insert(min(4, len(body)), _STANDARD_SENDER_MEASURE)
             if profile["network"]:
                 body.append(_STANDARD_NETWORK_MEASURE)

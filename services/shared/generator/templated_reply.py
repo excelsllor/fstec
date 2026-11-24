@@ -928,6 +928,9 @@ async def _apply_live_bdu_block_measures_async(plan: dict, blocks: list[dict],
                 continue
             status, needs_compensation = _vulnerability_card_status(vuln)
             if not needs_compensation:
+                if (plan.get("template_key") == "hacker"
+                        and "не подвержена" in str(status).casefold()):
+                    continue
                 block.setdefault("bdu_compensations", []).append({
                     "bdu_id": bdu_id,
                     "status": status,
@@ -1709,6 +1712,25 @@ def _bdu_vulnerability_intro(desc: str) -> str:
             + " и ".join(phrases))
 
 
+_SPLIT_ARCHIVE_RE = re.compile(r"\.r\d{2,3}$", re.IGNORECASE)
+
+
+def _is_regular_archive(name: str) -> bool:
+    low = str(name or "").strip().casefold()
+    if not low or _SPLIT_ARCHIVE_RE.search(low):
+        return False
+    return low.endswith((".7z", ".zip", ".rar", ".tar", ".gz", ".bz2", ".tgz", ".xz"))
+
+
+def _virtualization_clause(desc: str) -> str:
+    match = re.search(
+        r"в\s+среде\s+виртуализации\s+(.+?)(?:,\s*а\s+также|\.|$)",
+        desc or "", re.IGNORECASE)
+    if not match:
+        return ""
+    return " ".join(match.group(1).split()).strip(" ,.;")
+
+
 def _template_intro(src: dict) -> str:
     """Единый шаблон вступления для hacker-блоков (максимальное переиспользование).
 
@@ -1781,7 +1803,7 @@ def _template_intro(src: dict) -> str:
     compact_phishing = kind == "phishing" and repeated_phishing
     if kind == "phishing":
         activity = "фишинговые рассылки электронных писем"
-        if compact_phishing and theme:
+        if theme:
             activity += f" с тематикой «{theme}»"
         verb = "осуществляющей" if singular else "осуществляющих"
     elif kind == "clickfix":
@@ -1794,12 +1816,20 @@ def _template_intro(src: dict) -> str:
                     else "эксплуатацию уязвимостей программного обеспечения")
         verb = "осуществляющей" if singular else "осуществляющих"
     elif kind == "malware":
+        vm_clause = _virtualization_clause(desc)
         m = re.search(
             r"вредоносн\w*\s+программн\w*\s+обеспечени\w*\s+(?:типов|типа)\s+"
             r"(.+?)(?:\.\s+(?:[А-ЯЁA-Z]|$)|\.$|$)",
             desc, re.I)
         mt = _short_clause(m.group(1), 180) if m else malware
-        if "эксплуатац" in desc_low and not mt:
+        if vm_clause:
+            activity = ("целевые компьютерные атаки с применением вредоносных "
+                        "инструментов, предназначенных для функционирования в среде "
+                        f"виртуализации {vm_clause}, а также внедрение вредоносного "
+                        "программного обеспечения")
+            if mt:
+                activity += f" типа {mt}"
+        elif "эксплуатац" in desc_low and not mt:
             m2 = re.search(r"эксплуатаци[яи]\s+(.+)$", desc)
             rest = _strip_cve(_short_clause(m2.group(1))) if m2 else ""
             activity = ("целевые компьютерные атаки путем эксплуатации " + rest if rest
@@ -1822,14 +1852,14 @@ def _template_intro(src: dict) -> str:
     if "\u0441\u0442\u0438\u043b\u0435\u0440" in desc_low and "\u0441\u0442\u0438\u043b\u0435\u0440" not in malware.lower():
         malware = f"{malware} / \u0441\u0442\u0438\u043b\u0435\u0440" if malware else "\u0441\u0442\u0438\u043b\u0435\u0440"
     malware = malware.replace("; ", ", ").strip()
-    if theme:
+    if theme and kind != "phishing":
         details.append(f"\u0442\u0435\u043c\u0430 \u2014 \u00ab{theme}\u00bb")
-    if archive:
+    regular_archive = _is_regular_archive(archive)
+    if archive and (kind != "phishing" or regular_archive):
         lower_archive = archive.lower()
         if lower_archive.endswith(".lnk"):
             details.append(f"вложением является файл-ярлык «{archive}»")
-        elif lower_archive.endswith((".7z", ".zip", ".rar", ".r11", ".r14",
-                                     ".tar", ".gz", ".bz2")):
+        elif regular_archive:
             attachment = f"вложением является архив «{archive}»"
             if exe and exe != archive:
                 if exe.startswith("."):
@@ -1845,18 +1875,26 @@ def _template_intro(src: dict) -> str:
                 else:
                     attachment += f", содержащий файл «{exe}»"
             details.append(attachment)
-    elif exe:
+    elif kind == "phishing" and not archive and "архив" in desc_low:
+        attachment = "вложением является архив"
+        if exe:
+            attachment += f", содержащий файл «{exe}»"
+        details.append(attachment)
+    elif exe and kind != "phishing":
         if exe.startswith("."):
             number = "расширениями" if "," in exe else "расширением"
             details.append(f"вложением являются файлы с {number} «{exe}»")
         else:
             details.append(f"вложением является файл «{exe}»")
-    if malware and kind != "malware":
+    if malware and kind != "malware" and (
+            kind != "phishing"
+            or (not compact_phishing and regular_archive)
+            or (not compact_phishing and not archive and not exe)):
         if malware.lower().startswith("по "):
             details.append(malware)
         else:
             details.append(f"\u0442\u0438\u043f \u0412\u041f\u041e \u2014 {malware}")
-    if compact_phishing:
+    if compact_phishing and theme:
         details = []
     tail = ("; ".join(details)) if details else ""
     if tail:

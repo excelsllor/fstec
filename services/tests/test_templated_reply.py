@@ -1042,6 +1042,54 @@ def test_referenced_source_measures_do_not_add_network_measure(doc_db):
     assert not any("ограничение обращений" in m["text"].lower() for m in second)
 
 
+def test_phishing_regular_archive_is_preserved():
+    intro = _template_intro({
+        "number": 4, "threat_type": "phishing",
+        "archive_name": "Приглашение.7z",
+        "exe_name": "Приглашение.exe",
+    })
+    assert "архив «Приглашение.7z»" in intro
+    assert "тип ВПО" not in intro
+
+
+def test_phishing_split_archive_is_not_expanded():
+    intro = _template_intro({
+        "number": 5, "threat_type": "phishing",
+        "theme": "Документы к авто",
+        "archive_name": "2026_10_19 UTS.r11",
+        "exe_name": "2026_10_19 UTS.exe",
+    })
+    assert "с тематикой «Документы к авто»" in intro
+    assert "вложением" not in intro
+    assert "тип ВПО" not in intro
+
+
+def test_phishing_plain_file_is_not_added_to_header():
+    intro = _template_intro({
+        "number": 1, "threat_type": "phishing",
+        "theme": "Досудебная претензия",
+        "archive_name": "документ рекламация.docx",
+        "malware_type": "Cobalt Strike",
+    })
+    assert "с тематикой «Досудебная претензия»" in intro
+    assert "вложением" not in intro
+    assert "тип ВПО" not in intro
+
+
+def test_malware_virtualization_context_is_preserved():
+    intro = _template_intro({
+        "threat_type": "malware_attack",
+        "description": (
+            "Реализуются целевые компьютерные атаки с применением вредоносных "
+            "инструментов, предназначенных для функционирования в среде виртуализации "
+            "Vmware ESXI и vCenter, а также внедрение вредоносного программного "
+            "обеспечения типа «шифровальщик»."
+        ),
+    })
+    assert "Vmware ESXI и vCenter" in intro
+    assert "шифровальщик" in intro
+
+
 def test_repeated_phishing_header_keeps_only_theme():
     intro = _template_intro({
         "number": 5,
